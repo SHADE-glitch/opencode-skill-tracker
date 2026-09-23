@@ -1,0 +1,1118 @@
+"""
+skill_db.py — shared data layer for the OpenCode skill tracker.
+
+Used by both `skill-stats.py` (legacy CLI, unchanged) and `skill-tui.py` (new TUI).
+Owns: schema, idempotent migration, queries, formatters, hashing/sync, insight,
+export, and the write helpers used by the TUI's data-management page.
+
+Safety contract:
+  * The OpenCode plugin `plugin/skill-tracker.js` owns the base schema and must
+    not be modified. We only ADD a column and a table, both idempotently.
+  * The plugin's `skills` upsert writes only name/category/path/description, so
+    `content_hash` survives every plugin scan.
+  * Never log or export secrets. `skill_usage.metadata.summary` is already
+    sanitized by the plugin; we pass it through untouched.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
+
+HOME = os.path.expanduser("~")
+DB_PATH = os.environ.get(
+    "OPENCODE_SKILL_TRACKER_DB",
+    os.path.join(HOME, ".local", "share", "opencode", "skill-usage.db"),
+)
+SKILLS_DIR = os.environ.get(
+    "OPENCODE_SKILL_TRACKER_SKILLS_DIR",
+    os.path.join(HOME, ".config", "opencode", "skills"),
+)
+BUSY_TIMEOUT_MS = 5000
+
+# Dedicated directory for retained backups. Kept separate from the DB's own
+# directory so the retention sweep can never touch an unrelated .db file.
+BACKUP_DIR = os.environ.get(
+    "OPENCODE_SKILL_TRACKER_BACKUP_DIR",
+    os.path.join(HOME, ".local", "share", "opencode", "backups"),
+)
+
+# Only files matching this exact name shape are ever considered for deletion.
+# Anything else (hand-made copies, the live DB, exports) is left alone.
+BACKUP_RE = re.compile(r"^skill-usage-backup-(\d{8})-(\d{6})\.db$")
+
+DAILY_KEEP = 30
+MONTHLY_KEEP = 12
+MIN_BACKUP_AGE_S = 120  # never delete a file younger than this
+
+# Source is derived, never stored (the user explicitly asked for no duplicated
+# storage). Keep this CASE expression in sync with source_of() below.
+SOURCE_CASE_SQL = (
+    "CASE s.category "
+    "WHEN 'personal-skills' THEN 'personal' "
+    "WHEN 'open-source-skills' THEN 'open-source' "
+    "ELSE COALESCE(s.category, 'unknown') END"
+)
+
+# Base DDL — verbatim copy of the plugin's schema, for fresh DBs and tests.
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS skills (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT    NOT NULL,
+  category    TEXT,
+  path        TEXT    NOT NULL UNIQUE,
+  description TEXT,
+  created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_skills_name     ON skills(name);
+CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
+
+CREATE TABLE IF NOT EXISTS skill_usage (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id     INTEGER REFERENCES skills(id) ON DELETE SET NULL,
+  skill_name   TEXT    NOT NULL,
+  session_id   TEXT,
+  project_path TEXT,
+  trigger_type TEXT    NOT NULL
+               CHECK (trigger_type IN ('tool_call','event_detected','permission_denied','manual')),
+  status       TEXT    NOT NULL DEFAULT 'unknown'
+               CHECK (status IN ('success','error','denied','ask','unknown')),
+  timestamp    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  duration_ms  INTEGER,
+  call_id      TEXT,
+  metadata     TEXT,
+  UNIQUE (session_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_skill   ON skill_usage(skill_name);
+CREATE INDEX IF NOT EXISTS idx_usage_ts      ON skill_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_usage_session ON skill_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_usage_trigger ON skill_usage(trigger_type);
+
+CREATE VIEW IF NOT EXISTS v_skill_totals AS
+SELECT skill_name,
+       COUNT(*)              AS total,
+       SUM(status='success') AS success,
+       SUM(status='error')   AS errors,
+       SUM(status='denied')  AS denied,
+       MAX(timestamp)        AS last_used
+FROM skill_usage GROUP BY skill_name;
+
+CREATE VIEW IF NOT EXISTS v_skill_last30 AS
+SELECT skill_name, COUNT(*) AS uses_30d, MAX(timestamp) AS last_used_30d
+FROM skill_usage
+WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')
+GROUP BY skill_name;
+
+CREATE VIEW IF NOT EXISTS v_skill_history AS
+SELECT u.id, u.skill_name, u.timestamp, u.project_path, u.session_id,
+       u.status, u.duration_ms, u.trigger_type,
+       json_extract(u.metadata,'$.model')   AS model,
+       json_extract(u.metadata,'$.agent')   AS agent,
+       json_extract(u.metadata,'$.branch')  AS branch,
+       json_extract(u.metadata,'$.summary') AS summary
+FROM skill_usage u
+ORDER BY u.timestamp DESC;
+"""
+
+# Migration-only DDL (new in this tool).
+VERSIONS_SQL = """
+CREATE TABLE IF NOT EXISTS skill_versions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id     INTEGER REFERENCES skills(id) ON DELETE SET NULL,
+  skill_name   TEXT    NOT NULL,
+  content_hash TEXT    NOT NULL,
+  size_bytes   INTEGER,
+  description  TEXT,
+  recorded_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (skill_name, content_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_skill_versions_name     ON skill_versions(skill_name);
+CREATE INDEX IF NOT EXISTS idx_skill_versions_recorded ON skill_versions(recorded_at);
+"""
+
+
+# ---------------------------------------------------------------------------
+# Connection & formatters
+# ---------------------------------------------------------------------------
+def open_db(path: str = DB_PATH, readonly: bool = True) -> sqlite3.Connection:
+    """Open the DB. Falls back to read-write if a read-only open fails (WAL)."""
+    if readonly and os.path.exists(path):
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+            return conn
+        except sqlite3.Error:
+            pass  # e.g. WAL needs -shm write access; fall through
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    return conn
+
+
+def fmt_time(ts) -> str:
+    """Stored UTC '...Z' -> local 'YYYY-MM-DD HH:MM'."""
+    if not ts:
+        return "-"
+    try:
+        t = str(ts).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(t)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return str(ts)[:16].replace("T", " ")
+
+
+def short_session(sid) -> str:
+    return (str(sid)[:8] + "…") if sid and len(str(sid)) > 8 else (str(sid) if sid else "-")
+
+
+def short_path(p, limit: int = 40) -> str:
+    if not p:
+        return "-"
+    p = str(p)
+    if p.startswith(HOME):
+        p = "~" + p[len(HOME):]
+    return p if len(p) <= limit else "…" + p[-(limit - 1):]
+
+
+def rows_to_dicts(rows):
+    return [dict(r) for r in rows]
+
+
+def source_of(category) -> str:
+    if category == "personal-skills":
+        return "personal"
+    if category == "open-source-skills":
+        return "open-source"
+    return category or "unknown"
+
+
+def success_rate(total, success) -> float | None:
+    if not total:
+        return None
+    return round(float(success) / float(total), 3)
+
+
+# ---------------------------------------------------------------------------
+# Schema + idempotent migration
+# ---------------------------------------------------------------------------
+def _column_exists(conn, table: str, col: str) -> bool:
+    return any(r[1] == col for r in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def has_content_hash(conn) -> bool:
+    try:
+        return _column_exists(conn, "skills", "content_hash")
+    except sqlite3.Error:
+        return False
+
+
+def ensure_schema(conn) -> dict:
+    """Create base schema, then apply the additive migration. Idempotent.
+
+    Also puts the DB into WAL mode with a busy timeout, matching the plugin, so
+    our writer and the plugin's bun:sqlite writer can coexist.
+    """
+    result = {"created_base": False, "added_content_hash": False, "created_versions": False}
+    for pragma in ("PRAGMA journal_mode = WAL",
+                   f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
+                   "PRAGMA synchronous = NORMAL"):
+        try:
+            conn.execute(pragma)
+        except sqlite3.Error:
+            pass
+
+    conn.executescript(SCHEMA_SQL)
+
+    if not _column_exists(conn, "skills", "content_hash"):
+        try:
+            conn.execute("ALTER TABLE skills ADD COLUMN content_hash TEXT")
+            result["added_content_hash"] = True
+        except sqlite3.OperationalError as e:
+            # Race with a second migrator (e.g. TUI + CLI starting together).
+            if "duplicate column name" not in str(e).lower():
+                raise
+
+    conn.executescript(VERSIONS_SQL)
+    result["created_versions"] = True
+
+    # Index on the new column is created after the column is guaranteed present.
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_content_hash ON skills(content_hash)")
+    except sqlite3.OperationalError:
+        pass
+
+    conn.commit()
+    return result
+
+
+def h(conn, column: str) -> str:
+    """Return `column` if it exists on skills, else a NULL placeholder.
+
+    Lets read-only callers keep working on a DB that has not been migrated.
+    """
+    return column if has_content_hash(conn) else f"NULL AS {column}"
+
+
+# ---------------------------------------------------------------------------
+# Skill scanning, hashing, version sync
+# ---------------------------------------------------------------------------
+def hash_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_frontmatter(text: str) -> dict:
+    """Tolerant parser for the SKILL.md YAML frontmatter. Never raises."""
+    out: dict = {}
+    if not isinstance(text, str) or not text:
+        return out
+    src = text.replace("\ufeff", "")
+    m = __import__("re").compile(r"^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)").search(src)
+    if not m:
+        return out
+    lines = m.group(1).split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip("\r")
+        mm = __import__("re").compile(r"^([A-Za-z0-9_-]+)\s*:\s*(.*)$").match(line)
+        if not mm:
+            i += 1
+            continue
+        key, val = mm.group(1), mm.group(2).strip()
+        if val in (">", "|", ">-", "|-"):
+            buf = []
+            while i + 1 < len(lines) and lines[i + 1][:1] in (" ", "\t"):
+                i += 1
+                buf.append(lines[i].strip())
+            val = " ".join(buf)
+        elif len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        out[key] = val
+        i += 1
+    return out
+
+
+def walk_skill_files(root: str) -> list[str]:
+    out = []
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = os.scandir(d)
+        except OSError:
+            continue
+        with entries:
+            for e in entries:
+                if e.is_dir(follow_symlinks=False):
+                    stack.append(e.path)
+                elif e.is_file() and e.name == "SKILL.md":
+                    out.append(e.path)
+    return sorted(out)
+
+
+def scan_skills(skills_dir: str = SKILLS_DIR) -> list[dict]:
+    """Return [{name, category, path, description, content_hash, size_bytes}]."""
+    found = []
+    for file in walk_skill_files(skills_dir):
+        try:
+            with open(file, "r", encoding="utf-8", errors="replace") as f:
+                raw = f.read()
+            fm = parse_frontmatter(raw)
+            d = os.path.dirname(file)
+            rel = os.path.relpath(d, skills_dir)
+            category = rel.split(os.sep)[0] if rel not in (".", "") else None
+            found.append(
+                {
+                    "name": fm.get("name") or os.path.basename(d),
+                    "category": category,
+                    "path": d,
+                    "description": fm.get("description") or None,
+                    "content_hash": hash_file(file),
+                    "size_bytes": os.path.getsize(file),
+                    "parsed_name": bool(fm.get("name")),
+                }
+            )
+        except OSError:
+            continue
+    return found
+
+
+def sync_versions(conn, skills_dir: str = SKILLS_DIR, dry_run: bool = False,
+                  prune_orphans: bool = False) -> dict:
+    """Hash every SKILL.md; record a skill_versions row per content change."""
+    stats = {
+        "scanned": 0, "baseline": 0, "changed": 0, "unchanged": 0,
+        "unparsed_name": 0, "orphan_versions_pruned": 0, "dry_run": dry_run,
+    }
+    if not dry_run:
+        # Writing needs content_hash + skill_versions to exist.
+        ensure_schema(conn)
+    found = scan_skills(skills_dir)
+    stats["scanned"] = len(found)
+
+    def _process(write: bool) -> None:
+        for s in found:
+            if not s["parsed_name"]:
+                stats["unparsed_name"] += 1
+            row = conn.execute(
+                "SELECT id, content_hash FROM skills WHERE path = ?", (s["path"],)
+            ).fetchone()
+            old_hash = row["content_hash"] if row and "content_hash" in row.keys() else None
+            skill_id = row["id"] if row else None
+
+            is_baseline = old_hash is None
+            is_change = old_hash is not None and old_hash != s["content_hash"]
+
+            if is_baseline or is_change:
+                stats["baseline" if is_baseline else "changed"] += 1
+                if not write:
+                    continue
+                conn.execute(
+                    """INSERT INTO skills (name, category, path, description, content_hash)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(path) DO UPDATE SET
+                         name         = excluded.name,
+                         category     = COALESCE(excluded.category, skills.category),
+                         description  = COALESCE(excluded.description, skills.description),
+                         content_hash = excluded.content_hash,
+                         updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+                    (s["name"], s["category"], s["path"], s["description"], s["content_hash"]),
+                )
+                if skill_id is None:
+                    skill_id = conn.execute(
+                        "SELECT id FROM skills WHERE path = ?", (s["path"],)
+                    ).fetchone()["id"]
+                conn.execute(
+                    """INSERT OR IGNORE INTO skill_versions
+                       (skill_id, skill_name, content_hash, size_bytes, description)
+                       VALUES (?,?,?,?,?)""",
+                    (skill_id, s["name"], s["content_hash"], s["size_bytes"], s["description"]),
+                )
+            else:
+                stats["unchanged"] += 1
+
+    if dry_run:
+        _process(False)
+    else:
+        with _write_txn(conn):
+            _process(True)
+            if prune_orphans:
+                cur = conn.execute(
+                    "DELETE FROM skill_versions WHERE skill_name NOT IN (SELECT name FROM skills)"
+                )
+                stats["orphan_versions_pruned"] = cur.rowcount or 0
+
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Query layer
+# ---------------------------------------------------------------------------
+def dashboard_summary(conn) -> dict:
+    total_skills = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
+    total_usage = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
+    today = conn.execute(
+        "SELECT COUNT(*) FROM skill_usage "
+        "WHERE date(timestamp) = date('now')"
+    ).fetchone()[0]
+    by_source = {
+        r["src"]: r["n"]
+        for r in conn.execute(
+            f"SELECT {SOURCE_CASE_SQL} AS src, COUNT(*) n FROM skills s GROUP BY src"
+        )
+    }
+    return {
+        "total_skills": total_skills,
+        "total_usage": total_usage,
+        "today_usage": today,
+        "personal": by_source.get("personal", 0),
+        "open_source": by_source.get("open-source", 0),
+    }
+
+
+def daily_activity(conn, days: int = 7) -> list[dict]:
+    """[{date, count}] for the last `days` days, zero-filled."""
+    rows = {
+        r["d"]: r["n"]
+        for r in conn.execute(
+            "SELECT date(timestamp) AS d, COUNT(*) n FROM skill_usage "
+            "WHERE date(timestamp) >= date('now', ?) GROUP BY d",
+            (f"-{days - 1} days",),
+        )
+    }
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = conn.execute("SELECT date('now', ?)", (f"-{i} days",)).fetchone()[0]
+        out.append({"date": d, "count": rows.get(d, 0)})
+    return out
+
+
+def stats_rows(conn) -> list[dict]:
+    """All skills (used and unused) with totals + derived source."""
+    sql = f"""
+    SELECT s.name AS skill_name, s.category, {SOURCE_CASE_SQL} AS source,
+           s.path, s.description,
+           COALESCE(t.total, 0)   AS total,
+           COALESCE(t.success, 0) AS success,
+           COALESCE(t.errors, 0)  AS errors,
+           COALESCE(t.denied, 0)  AS denied,
+           t.last_used            AS last_used,
+           COALESCE(l.uses_30d, 0) AS uses_30d
+    FROM skills s
+    LEFT JOIN v_skill_totals t ON t.skill_name = s.name
+    LEFT JOIN v_skill_last30 l ON l.skill_name = s.name
+    ORDER BY total DESC, s.name ASC
+    """
+    return rows_to_dicts(conn.execute(sql))
+
+
+def top_rows(conn, limit: int = 10) -> list[dict]:
+    return rows_to_dicts(
+        conn.execute(
+            "SELECT skill_name, total, success, errors, denied, last_used "
+            "FROM v_skill_totals ORDER BY total DESC, last_used DESC LIMIT ?",
+            (limit,),
+        )
+    )
+
+
+def history_rows(conn, skill: str, limit: int = 200) -> list[dict]:
+    return rows_to_dicts(
+        conn.execute(
+            "SELECT * FROM v_skill_history WHERE skill_name = ? "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (skill, limit),
+        )
+    )
+
+
+def recent_rows(conn, limit: int = 50) -> list[dict]:
+    return rows_to_dicts(
+        conn.execute(
+            "SELECT timestamp, skill_name, project_path, session_id, status, "
+            "       duration_ms, trigger_type FROM skill_usage "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+    )
+
+
+def skill_detail(conn, skill: str) -> dict | None:
+    row = conn.execute(
+        f"""SELECT s.*, {SOURCE_CASE_SQL} AS source,
+                   COALESCE(t.total,0) total, COALESCE(t.success,0) success,
+                   COALESCE(t.errors,0) errors, COALESCE(t.denied,0) denied,
+                   t.last_used, COALESCE(l.uses_30d,0) uses_30d
+            FROM skills s
+            LEFT JOIN v_skill_totals t ON t.skill_name = s.name
+            LEFT JOIN v_skill_last30 l ON l.skill_name = s.name
+            WHERE s.name = ?""",
+        (skill,),
+    ).fetchone()
+    if not row:
+        return None
+    detail = dict(row)
+    try:
+        detail["versions"] = rows_to_dicts(
+            conn.execute(
+                "SELECT content_hash, size_bytes, recorded_at FROM skill_versions "
+                "WHERE skill_name = ? ORDER BY recorded_at DESC",
+                (skill,),
+            )
+        )
+    except sqlite3.Error:
+        detail["versions"] = []
+    detail["history"] = history_rows(conn, skill, limit=200)
+    return detail
+
+
+def categories(conn) -> list[dict]:
+    sql = f"""
+    SELECT {SOURCE_CASE_SQL} AS source, s.category,
+           COUNT(*) AS skills,
+           COALESCE(SUM(t.total), 0) AS usage,
+           COALESCE(SUM(t.success), 0) AS success,
+           COALESCE(SUM(t.errors), 0) AS errors,
+           COALESCE(SUM(t.denied), 0) AS denied
+    FROM skills s
+    LEFT JOIN v_skill_totals t ON t.skill_name = s.name
+    GROUP BY s.category ORDER BY usage DESC, source ASC
+    """
+    return rows_to_dicts(conn.execute(sql))
+
+
+# ---------------------------------------------------------------------------
+# Insight
+# ---------------------------------------------------------------------------
+def insight_most_used(conn, limit: int = 10) -> list[dict]:
+    return top_rows(conn, limit)
+
+
+def insight_fastest_growing(conn, days: int = 30, min_uses: int = 3,
+                            limit: int = 10) -> list[dict]:
+    sql = """
+    WITH recent AS (
+      SELECT skill_name, COUNT(*) c FROM skill_usage
+      WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
+      GROUP BY skill_name),
+    prev AS (
+      SELECT skill_name, COUNT(*) c FROM skill_usage
+      WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
+        AND timestamp <  strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
+      GROUP BY skill_name),
+    j AS (
+      SELECT skill_name, c AS r, 0 AS p FROM recent
+      UNION ALL
+      SELECT skill_name, 0, c FROM prev
+      WHERE skill_name NOT IN (SELECT skill_name FROM recent))
+    SELECT skill_name, SUM(r) AS recent, SUM(p) AS prev,
+           SUM(r) - SUM(p) AS delta
+    FROM j GROUP BY skill_name
+    HAVING recent >= ?
+    ORDER BY (recent + 1.0) / (prev + 1.0) DESC, delta DESC, recent DESC
+    LIMIT ?
+    """
+    args = (f"-{days} days", f"-{2 * days} days", f"-{days} days", min_uses, limit)
+    return rows_to_dicts(conn.execute(sql, args))
+
+
+def insight_long_unused(conn, days: int = 30, limit: int = 50) -> list[dict]:
+    sql = f"""
+    SELECT s.name AS skill_name, s.category, {SOURCE_CASE_SQL} AS source,
+           t.last_used, COALESCE(t.total, 0) AS total
+    FROM skills s LEFT JOIN v_skill_totals t ON t.skill_name = s.name
+    WHERE t.last_used IS NULL
+       OR t.last_used < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
+    ORDER BY t.last_used IS NOT NULL, t.last_used ASC, s.name ASC
+    LIMIT ?
+    """
+    return rows_to_dicts(conn.execute(sql, (f"-{days} days", limit)))
+
+
+def insight_failure_rate(conn, min_uses: int = 3, limit: int = 10) -> list[dict]:
+    sql = """
+    SELECT skill_name, total, success, errors, denied,
+           ROUND(1.0*(errors+denied)/total, 3) AS fail_rate
+    FROM v_skill_totals WHERE total >= ?
+    ORDER BY fail_rate DESC, total DESC LIMIT ?
+    """
+    return rows_to_dicts(conn.execute(sql, (min_uses, limit)))
+
+
+def insight(conn, days: int = 30, min_uses: int = 3, limit: int = 10) -> dict:
+    return {
+        "windows": {"grow_days": days, "unused_days": days, "min_uses": min_uses},
+        "most_used": insight_most_used(conn, limit),
+        "fastest_growing": insight_fastest_growing(conn, days, min_uses, limit),
+        "long_unused": insight_long_unused(conn, days, limit),
+        "highest_failure_rate": insight_failure_rate(conn, min_uses, limit),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
+def _load_meta(raw):
+    try:
+        return json.loads(raw) if raw else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def export_document(conn, include_usage: bool = True, include_insight: bool = True) -> dict:
+    doc = {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "db_path": db_file_of(conn),
+        "skills": [],
+        "usage": [],
+        "versions": [],
+    }
+    for s in stats_rows(conn):
+        doc["skills"].append(
+            {
+                "name": s["skill_name"],
+                "category": s["category"],
+                "source": s["source"],
+                "path": s["path"],
+                "description": s["description"],
+                "stats": {
+                    "total": s["total"],
+                    "success": s["success"],
+                    "errors": s["errors"],
+                    "denied": s["denied"],
+                    "last_used": s["last_used"],
+                    "uses_30d": s["uses_30d"],
+                    "success_rate": success_rate(s["total"], s["success"]),
+                },
+            }
+        )
+    # content_hash is attached only when the column exists, so export keeps
+    # working against a DB that has not been migrated yet.
+    if has_content_hash(conn):
+        hash_map = {
+            r["name"]: r["content_hash"]
+            for r in conn.execute("SELECT name, content_hash FROM skills")
+        }
+        for d in doc["skills"]:
+            d["content_hash"] = hash_map.get(d["name"])
+
+    if include_usage:
+        for r in conn.execute("SELECT * FROM skill_usage ORDER BY timestamp DESC"):
+            row = dict(r)
+            row["metadata"] = _load_meta(row.get("metadata"))
+            doc["usage"].append(row)
+
+    try:
+        doc["versions"] = rows_to_dicts(
+            conn.execute(
+                "SELECT skill_name, content_hash, size_bytes, recorded_at "
+                "FROM skill_versions ORDER BY recorded_at DESC"
+            )
+        )
+    except sqlite3.Error:
+        doc["versions"] = []
+
+    if include_insight:
+        doc["insight"] = insight(conn)
+    return doc
+
+
+def write_private_json(path: str, doc: dict, pretty: bool = False, force: bool = False) -> str:
+    """Write JSON with 0600, refusing to clobber unless force."""
+    path = os.path.abspath(os.path.expanduser(path))
+    if os.path.exists(path) and not force:
+        raise FileExistsError(f"refusing to overwrite existing file: {path}")
+    data = json.dumps(doc, ensure_ascii=False, indent=2 if pretty else None)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+    finally:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Write helpers (used by the TUI data page and --cli)
+# ---------------------------------------------------------------------------
+@contextlib.contextmanager
+def _write_txn(conn):
+    """Run a write helper atomically.
+
+    Python's sqlite3 opens an implicit transaction on the first DML statement.
+    Without an explicit rollback a mid-way failure leaves that transaction open,
+    and a later `executescript` (in ensure_schema) would implicitly COMMIT the
+    half-finished work. Callers such as the TUI catch exceptions and keep using
+    the same connection, so this must always leave it clean.
+    """
+    try:
+        yield
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass  # the original exception is what matters
+        raise
+
+
+def db_file_of(conn) -> str:
+    """Path of the main database file behind this connection.
+
+    Used instead of the module-level DB_PATH so that a caller pointed at a
+    different DB (tests, --db PATH) writes backups/exports next to *its* file.
+    """
+    try:
+        for row in conn.execute("PRAGMA database_list"):
+            if row[1] == "main" and row[2]:
+                return row[2]
+    except sqlite3.Error:
+        pass
+    return DB_PATH
+
+
+def backup_db(conn, target: str | None = None) -> str:
+    if target:
+        target = os.path.abspath(os.path.expanduser(target))
+    else:
+        # The default name is second-resolution; two backups in the same second
+        # would otherwise collide. Bump the timestamp until a name is free.
+        base = os.path.dirname(db_file_of(conn))
+        now = datetime.now(timezone.utc)
+        for bump in range(5):
+            ts = (now + timedelta(seconds=bump)).strftime("%Y%m%d-%H%M%S")
+            candidate = os.path.join(base, f"skill-usage-backup-{ts}.db")
+            if not os.path.exists(candidate):
+                target = candidate
+                break
+        else:
+            raise FileExistsError(f"no free backup name near {base}")
+    if os.path.exists(target):
+        raise FileExistsError(f"refusing to overwrite existing file: {target}")
+    conn.commit()  # VACUUM cannot run inside an open transaction
+    conn.execute("VACUUM INTO ?", (target,))
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    return target
+
+
+def vacuum_db(conn) -> None:
+    conn.commit()
+    conn.execute("VACUUM")
+
+
+def clear_usage(conn, also_skills: bool = False) -> dict:
+    with _write_txn(conn):
+        n = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
+        conn.execute("DELETE FROM skill_usage")
+        m = 0
+        if also_skills:
+            m = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
+            conn.execute("DELETE FROM skills")
+            conn.execute("DELETE FROM skill_versions")
+    return {"usage_deleted": n, "skills_deleted": m}
+
+
+def delete_skill(conn, skill: str) -> dict:
+    """Delete a skill's usage + versions + skills row, leaving no orphans.
+
+    Python connections never enable PRAGMA foreign_keys, so the declared
+    `ON DELETE SET NULL` does not fire; usage and versions are removed
+    explicitly. Both are matched by name OR by skill_id, so rows left behind by
+    a renamed skill are cleaned up too.
+    """
+    by_name_or_id = (
+        "skill_name = ? OR skill_id IN (SELECT id FROM skills WHERE name = ?)"
+    )
+    with _write_txn(conn):
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM skill_usage WHERE {by_name_or_id}", (skill, skill)
+        ).fetchone()[0]
+        conn.execute(f"DELETE FROM skill_usage WHERE {by_name_or_id}", (skill, skill))
+        conn.execute(f"DELETE FROM skill_versions WHERE {by_name_or_id}", (skill, skill))
+        s = conn.execute("DELETE FROM skills WHERE name = ?", (skill,)).rowcount
+    return {"usage_deleted": n, "skills_deleted": s}
+
+
+SELFTEST_PROJECT = "/tmp/selftest-proj"
+
+
+def cleanup_selftest(conn, dry_run: bool = True) -> dict:
+    """Remove the synthetic rows a `__selftest()` run left in the production DB."""
+    rows = rows_to_dicts(
+        conn.execute(
+            "SELECT id, skill_name, status, timestamp FROM skill_usage "
+            "WHERE project_path = ? ORDER BY id",
+            (SELFTEST_PROJECT,),
+        )
+    )
+    if not dry_run and rows:
+        with _write_txn(conn):
+            conn.execute("DELETE FROM skill_usage WHERE project_path = ?", (SELFTEST_PROJECT,))
+    return {"dry_run": dry_run, "matched": len(rows), "rows": rows}
+
+
+# ---------------------------------------------------------------------------
+# Health report (read-only) — active / stale / unused + risk flags
+# ---------------------------------------------------------------------------
+HEALTH_ACTIVE_DAYS = 30
+HEALTH_STALE_DAYS = 90
+HIGH_FAILURE_MIN_USES = 5
+HIGH_FAILURE_RATE = 0.5
+FREQUENTLY_EDITED_VERSIONS = 5
+
+_BUCKET_ORDER = {"unused": 0, "stale": 1, "active": 2}
+
+
+def _table_exists(conn, name: str) -> bool:
+    try:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def _parse_utc(ts):
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def health_report(conn, now=None) -> dict:
+    """Classify every skill and flag risks. Strictly read-only.
+
+    Buckets: active = used within 30 days, stale = 30-90 days, unused = >90
+    days or never used. Flags are advisory only — nothing is ever deleted here.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    cut_active = now.timestamp() - HEALTH_ACTIVE_DAYS * 86400
+    cut_stale = now.timestamp() - HEALTH_STALE_DAYS * 86400
+
+    has_versions = _table_exists(conn, "skill_versions")
+    versions_sub = (
+        "(SELECT COUNT(*) FROM skill_versions v WHERE v.skill_name = s.name)"
+        if has_versions else "0"
+    )
+    sql = f"""
+    SELECT s.name AS skill_name, s.category, {SOURCE_CASE_SQL} AS source, s.path,
+           COALESCE(t.total, 0)   AS total,
+           COALESCE(t.success, 0) AS success,
+           COALESCE(t.errors, 0)  AS errors,
+           COALESCE(t.denied, 0)  AS denied,
+           t.last_used            AS last_used,
+           {versions_sub}         AS versions
+    FROM skills s
+    LEFT JOIN v_skill_totals t ON t.skill_name = s.name
+    """
+    skills = []
+    counts = {"total": 0, "active": 0, "stale": 0, "unused": 0}
+    risk_counts = {"high_failure": 0, "frequently_edited": 0, "never_used": 0}
+
+    for row in conn.execute(sql):
+        d = dict(row)
+        dt = _parse_utc(d["last_used"])
+        if dt is None:
+            bucket = "unused"
+        elif dt.timestamp() >= cut_active:
+            bucket = "active"
+        elif dt.timestamp() >= cut_stale:
+            bucket = "stale"
+        else:
+            bucket = "unused"
+
+        flags = []
+        total = d["total"] or 0
+        if total == 0:
+            flags.append("never_used")
+        if total >= HIGH_FAILURE_MIN_USES and (d["errors"] + d["denied"]) / total >= HIGH_FAILURE_RATE:
+            flags.append("high_failure")
+        if (d["versions"] or 0) >= FREQUENTLY_EDITED_VERSIONS:
+            flags.append("frequently_edited")
+
+        d["bucket"] = bucket
+        d["flags"] = flags
+        d["failure_rate"] = round((d["errors"] + d["denied"]) / total, 3) if total else None
+        skills.append(d)
+        counts["total"] += 1
+        counts[bucket] += 1
+        for f in flags:
+            risk_counts[f] += 1
+
+    skills.sort(key=lambda r: (_BUCKET_ORDER[r["bucket"]], -(r["total"] or 0), r["skill_name"]))
+
+    suggestions = []
+    if counts["unused"]:
+        suggestions.append(
+            f"{counts['unused']} skill(s) unused for over 90 days or never used; "
+            "review them before deciding whether to remove any "
+            "(this command never deletes data)"
+        )
+    if counts["stale"]:
+        suggestions.append(
+            f"{counts['stale']} skill(s) not used for 30-90 days; worth a look"
+        )
+    if risk_counts["high_failure"]:
+        suggestions.append(
+            f"{risk_counts['high_failure']} skill(s) fail at >= 50% "
+            f"(at least {HIGH_FAILURE_MIN_USES} calls); check their docs or dependencies"
+        )
+    if risk_counts["frequently_edited"]:
+        suggestions.append(
+            f"{risk_counts['frequently_edited']} skill(s) have >= "
+            f"{FREQUENTLY_EDITED_VERSIONS} versions, i.e. still changing often"
+        )
+    if not suggestions:
+        suggestions.append("All skills look healthy")
+
+    return {
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "windows": {
+            "active_days": HEALTH_ACTIVE_DAYS,
+            "stale_days": HEALTH_STALE_DAYS,
+            "high_failure_min_uses": HIGH_FAILURE_MIN_USES,
+            "high_failure_rate": HIGH_FAILURE_RATE,
+            "frequently_edited_versions": FREQUENTLY_EDITED_VERSIONS,
+        },
+        "counts": counts,
+        "risk_counts": risk_counts,
+        "skills": skills,
+        "suggestions": suggestions,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Backup retention + auto-backup
+# ---------------------------------------------------------------------------
+def _parse_backup_name(path: str):
+    m = BACKUP_RE.match(os.path.basename(path))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def plan_retention(paths, now=None) -> dict:
+    """Split backup paths into keep/delete. Pure function (no filesystem).
+
+    Keeps the newest backup of each of the last 30 days plus the newest of each
+    of the last 12 months. Files whose name does not match BACKUP_RE, or whose
+    timestamp cannot be parsed, are never scheduled for deletion.
+    """
+    parsed, unparsed = [], []
+    for p in paths:
+        dt = _parse_backup_name(p)
+        if dt is None:
+            unparsed.append(p)
+        else:
+            parsed.append((p, dt))
+
+    keep: set = set()
+    by_day: dict = {}
+    by_month: dict = {}
+    for p, dt in parsed:
+        by_day.setdefault(dt.date(), []).append((p, dt))
+        by_month.setdefault((dt.year, dt.month), []).append((p, dt))
+
+    for d in sorted(by_day.keys(), reverse=True)[:DAILY_KEEP]:
+        keep.add(max(by_day[d], key=lambda t: t[1])[0])
+    for mo in sorted(by_month.keys(), reverse=True)[:MONTHLY_KEEP]:
+        keep.add(max(by_month[mo], key=lambda t: t[1])[0])
+
+    return {
+        "keep": sorted(keep),
+        "delete": sorted(p for p, _ in parsed if p not in keep),
+        "unparsed": sorted(unparsed),
+    }
+
+
+class BackupLockError(RuntimeError):
+    """Raised when another auto-backup appears to be running."""
+
+
+_LOCK_STALE_S = 600
+
+
+@contextlib.contextmanager
+def _backup_lock(lock_path: str):
+    """O_EXCL lock with a staleness takeover so a crash cannot deadlock forever."""
+    if os.path.exists(lock_path):
+        try:
+            age = time.time() - os.path.getmtime(lock_path)
+        except OSError:
+            age = _LOCK_STALE_S + 1
+        if age > _LOCK_STALE_S:
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise BackupLockError(
+            f"another auto-backup appears to be running (lock: {lock_path})"
+        )
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        yield
+    finally:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+
+
+_LOCK_NAME = ".lock"
+
+
+def _list_backup_files() -> list:
+    """All regular files in BACKUP_DIR except our own lock file."""
+    if not os.path.isdir(BACKUP_DIR):
+        return []
+    out = []
+    for n in os.listdir(BACKUP_DIR):
+        if n == _LOCK_NAME:
+            continue
+        p = os.path.join(BACKUP_DIR, n)
+        if os.path.isfile(p):
+            out.append(p)
+    return out
+
+
+def auto_backup(conn, dry_run: bool = False, now=None) -> dict:
+    """Create a backup in BACKUP_DIR and prune old ones per plan_retention.
+
+    Safety: only files matching BACKUP_RE inside BACKUP_DIR are ever deleted;
+    files younger than MIN_BACKUP_AGE_S are skipped; a same-second name clash
+    fails loudly instead of overwriting; a lock file serialises concurrent runs.
+    """
+    now = now or datetime.now(timezone.utc)
+    target_name = f"skill-usage-backup-{now.strftime('%Y%m%d-%H%M%S')}.db"
+    target = os.path.join(BACKUP_DIR, target_name)
+
+    if dry_run:
+        plan = plan_retention(_list_backup_files(), now)
+        return {
+            "dry_run": True, "backup": target, "created": False,
+            "deleted": plan["delete"], "skipped_young": [],
+            "kept": plan["keep"], "unparsed": plan["unparsed"],
+            "backup_dir": BACKUP_DIR,
+        }
+
+    os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(BACKUP_DIR, 0o700)
+    except OSError:
+        pass
+
+    with _backup_lock(os.path.join(BACKUP_DIR, _LOCK_NAME)):
+        created = backup_db(conn, target)  # refuses to clobber an existing name
+
+        plan = plan_retention(_list_backup_files(), now)
+
+        deleted, skipped = [], []
+        for p in plan["delete"]:
+            try:
+                if time.time() - os.path.getmtime(p) < MIN_BACKUP_AGE_S:
+                    skipped.append(p)
+                    continue
+                os.remove(p)
+                deleted.append(p)
+            except OSError:
+                skipped.append(p)
+
+    return {
+        "dry_run": False, "backup": created, "created": True,
+        "deleted": sorted(deleted), "skipped_young": sorted(skipped),
+        "kept": plan["keep"], "unparsed": plan["unparsed"],
+        "backup_dir": BACKUP_DIR,
+    }
+

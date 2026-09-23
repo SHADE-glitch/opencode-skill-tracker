@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local state: databases and backups are runtime data, never source
+*.db
+*.db-wal
+*.db-shm
+backups/
+
+# Logs and local environment
+*.log
+.env
+.env.*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

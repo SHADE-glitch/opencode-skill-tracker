@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# skillt — unified entry point for the OpenCode skill tracker.
+#
+#   skillt                      launch the interactive TUI
+#   skillt stats|top|show|recent|delete|clear|backup|vacuum
+#                               delegate to the legacy CLI (skill-stats.py)
+#   skillt insight|export|sync|cleanup-selftest|health|auto-backup|doctor
+#                               headless mode of skill-tui.py (no textual needed)
+#   skillt help                 show the legacy CLI help
+#
+# Written in bash on purpose: it must still run and print a useful error when
+# the TUI venv is missing or broken, so it cannot depend on any Python.
+#
+# Location-independent: the script resolves itself through symlinks, so the repo
+# may live anywhere and the four install locations may be symlinks pointing back
+# at it. Override with SKILLT_SCRIPTS (a scripts/ dir) and SKILLT_VENV (a venv
+# dir or a python binary) when the layout is unusual.
+set -euo pipefail
+
+# `readlink -f` / `cd` return non-zero for exotic installs; the `|| true` guards
+# keep `set -e` from aborting with no message, so we can fall back instead.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+REPO_DIR="$(cd "$(dirname "${SELF:-$0}")/.." 2>/dev/null && pwd)" || REPO_DIR=""
+
+# Order: explicit override → repo next to this script → legacy install location.
+SCRIPTS="${SKILLT_SCRIPTS:-}"
+if [ -z "$SCRIPTS" ] || [ ! -d "$SCRIPTS" ]; then
+  if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/scripts" ]; then
+    SCRIPTS="$REPO_DIR/scripts"
+  else
+    SCRIPTS="$HOME/.config/opencode/scripts"
+  fi
+fi
+
+VENV_PY="${SKILLT_VENV:-}"
+if [ -n "$VENV_PY" ] && [ -d "$VENV_PY" ]; then
+  VENV_PY="$VENV_PY/bin/python"
+fi
+if [ -z "$VENV_PY" ] || [ ! -x "$VENV_PY" ]; then
+  if [ -n "$REPO_DIR" ] && [ -x "$REPO_DIR/.venv/bin/python" ]; then
+    VENV_PY="$REPO_DIR/.venv/bin/python"
+  else
+    VENV_PY="$HOME/.local/share/opencode/skillt-venv/bin/python"
+  fi
+fi
+
+SYS_PY="$(command -v python3 || true)"
+
+# Find the subcommand = the first token that is not a flag, while keeping every
+# other token (and the values of value-taking flags) in `rest` so global flags
+# may appear before OR after the subcommand: `skillt --json top` == `skillt top --json`.
+#
+# NOTE: the value-taking flag list below must stay in sync with the parsers in
+# skill-tui.py (--db --days --min-uses --limit --out) and skill-stats.py
+# (--db --limit).
+cmd=""
+skip=0
+cli=0
+rest=()
+for t in "$@"; do
+  if [ "$skip" -eq 1 ]; then
+    rest+=("$t"); skip=0; continue
+  fi
+  case "$t" in
+    --db|--days|--min-uses|--limit|--out) rest+=("$t"); skip=1 ;;
+    --cli) cli=1 ;;
+    -h|--help) cmd="help" ;;
+    --*) rest+=("$t") ;;
+    *)
+      if [ -z "$cmd" ]; then cmd="$t"; else rest+=("$t"); fi
+      ;;
+  esac
+done
+
+# `skillt --cli <cmd>` and `skillt <cmd>` behave identically; the headless
+# subcommands below always pass --cli through to skill-tui.py.
+if [ "$cli" -eq 1 ] && [ -z "$cmd" ]; then
+  echo "skillt: --cli requires a subcommand" >&2
+  echo "  insight|export|sync|cleanup-selftest|health|auto-backup|doctor" >&2
+  exit 2
+fi
+
+if [ -z "$SYS_PY" ]; then
+  echo "skillt: python3 not found on PATH" >&2
+  exit 1
+fi
+
+case "$cmd" in
+  "")
+    if [ ! -x "$VENV_PY" ]; then
+      echo "skillt: TUI venv not found (looked for $VENV_PY)" >&2
+      echo "  install from the repo root:  ./install.sh" >&2
+      echo "  or manually, from the repo root:" >&2
+      echo "    uv venv --python 3.13 .venv && uv pip install -r requirements.txt" >&2
+      echo "  or point at an existing venv:  export SKILLT_VENV=/path/to/venv" >&2
+      echo "  or use the headless CLI:  skillt insight | skillt health | skillt doctor" >&2
+      exit 1
+    fi
+    exec "$VENV_PY" "$SCRIPTS/skill-tui.py" "${rest[@]+"${rest[@]}"}"
+    ;;
+
+  stats|top|show|recent|delete|clear|backup|vacuum)
+    exec "$SYS_PY" "$SCRIPTS/skill-stats.py" "$cmd" "${rest[@]+"${rest[@]}"}"
+    ;;
+
+  insight|export|sync|cleanup-selftest|health|auto-backup|doctor)
+    py="$SYS_PY"
+    [ -x "$VENV_PY" ] && py="$VENV_PY"
+    exec "$py" "$SCRIPTS/skill-tui.py" --cli "$cmd" "${rest[@]+"${rest[@]}"}"
+    ;;
+
+  help|--help|-h)
+    exec "$SYS_PY" "$SCRIPTS/skill-stats.py" --help
+    ;;
+
+  *)
+    echo "skillt: unknown command '$cmd'" >&2
+    echo "  try: skillt | skillt stats | skillt insight | skillt health | skillt doctor" >&2
+    echo "       skillt export | skillt sync | skillt auto-backup | skillt help" >&2
+    exit 2
+    ;;
+esac

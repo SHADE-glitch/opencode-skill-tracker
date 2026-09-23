@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenCode skill tracker automatic backup
+Documentation=https://github.com/SHADE-glitch/opencode-skill-tracker/blob/master/README.zh-CN.md
+
+[Service]
+Type=oneshot
+# %h-relative on purpose: systemd's user PATH does not include ~/.local/bin, and
+# an absolute path would hardcode one machine's home directory.
+ExecStart=%h/.local/bin/skillt auto-backup
+Environment=LANG=C.UTF-8
+Environment=PYTHONIOENCODING=utf-8
+Nice=10

@@ -1,0 +1,4 @@
+# Runtime dependency of the interactive TUI (scripts/skill-tui.py).
+# The headless subcommands (insight/export/sync/health/doctor/auto-backup) and
+# the legacy CLI (skill-stats.py) need only the Python standard library.
+textual>=8.2,<9

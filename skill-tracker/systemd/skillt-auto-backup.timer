@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily OpenCode skill tracker auto-backup
+Documentation=https://github.com/SHADE-glitch/opencode-skill-tracker/blob/master/README.zh-CN.md
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1h
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
