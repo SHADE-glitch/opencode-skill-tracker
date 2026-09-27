@@ -435,7 +435,7 @@ async function resolveBranch(dir, $) {
   }
 
   // Cache failures as null too, so a broken dir is never retried in a hot loop.
-  branchByDir.set(dir, branch);
+  setCapped(branchByDir, dir, branch);
   return branch;
 }
 
@@ -602,7 +602,7 @@ async function skillTrackerPlugin(input) {
 
         case "vcs.branch.updated": {
           const branch = props.branch ?? null;
-          if (pluginDir) branchByDir.set(pluginDir, branch);
+          if (pluginDir) setCapped(branchByDir, pluginDir, branch);
           return;
         }
 
@@ -648,7 +648,7 @@ async function skillTrackerPlugin(input) {
           const type = perm && (perm.type || perm.action);
           if (type !== SKILL_TOOL) return;
           const raw = perm.pattern || (perm.metadata && perm.metadata.name) || "unknown";
-          pendingSkillPerms.set(perm.id, {
+          setCapped(pendingSkillPerms, perm.id, {
             name: String(Array.isArray(raw) ? raw[0] : raw),
             callID: perm.callID ?? null,
           });

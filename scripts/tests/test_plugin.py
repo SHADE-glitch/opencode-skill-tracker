@@ -59,6 +59,20 @@ def test_plugin_registers_all_hooks(src):
         assert marker in src, f"hook marker missing: {marker}"
 
 
+def test_long_lived_maps_are_capacity_bounded(src):
+    """M8: caches that outlive a session must not grow without limit.
+
+    `branchByDir` and `pendingSkillPerms` are never cleared during a run, so
+    a long-lived OpenCode process would leak entries. They must go through
+    `setCapped`.
+    """
+    assert "const MAP_CAP" in src
+    assert "function setCapped(" in src
+    for map_name in ("branchByDir", "pendingSkillPerms"):
+        assert f"{map_name}.set(" not in src, f"{map_name} must use setCapped, not .set("
+        assert f"setCapped({map_name}" in src, f"{map_name} must go through setCapped"
+
+
 def test_h1_schema_failure_disables_tracker_instead_of_throwing(src):
     assert 'log("fatal", "schema creation failed, tracker disabled: ' in src
     assert 'log("err", "scanSkills: " + errMsg(e));' in src
