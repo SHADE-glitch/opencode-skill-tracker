@@ -73,6 +73,19 @@ def test_long_lived_maps_are_capacity_bounded(src):
         assert f"setCapped({map_name}" in src, f"{map_name} must go through setCapped"
 
 
+def test_git_lookup_kills_its_subprocess(src):
+    """M7: the branch lookup must use a killable subprocess.
+
+    Bun's `$` shell exposes no kill/abort handle, so the old `Promise.race`
+    let a slow git run past its 500ms deadline and never cleared the timer.
+    """
+    body = src.split("async function resolveBranch(", 1)[1].split("\nasync function", 1)[0]
+    assert "AbortController" in body
+    assert "clearTimeout" in body
+    assert "Promise.race" not in body, "the unkillable race must be gone"
+    assert "Bun.spawn(" in src
+
+
 def test_h1_schema_failure_disables_tracker_instead_of_throwing(src):
     assert 'log("fatal", "schema creation failed, tracker disabled: ' in src
     assert 'log("err", "scanSkills: " + errMsg(e));' in src
@@ -297,3 +310,49 @@ def test_init_failure_is_retryable(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "FIRST_FAILED_AS_EXPECTED" in r.stdout, r.stdout + r.stderr
     assert "RETRIED_OK" in r.stdout, r.stdout + r.stderr
+
+
+@requires_bun
+def test_git_timeout_is_enforced_and_killed(tmp_path):
+    """A hanging git must be killed at the deadline, not left running.
+
+    A fake `git` that `exec sleep 30` is put first on PATH. If the timeout
+    still only raced a `setTimeout` (the old behaviour) the hook would block
+    for the full 30s; with an abort signal the child dies at ~500ms.
+    """
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    fake_git = fakebin / "git"
+    fake_git.write_text("#!/bin/sh\nexec sleep 30\n")
+    fake_git.chmod(0o755)
+
+    script = """
+    const t0 = Date.now();
+    const mod = await import(process.env.PLUGIN_PATH);
+    const plugin = await mod.default.server(
+      { directory: '/tmp/x', worktree: '/tmp/x', client: {} }, {}
+    );
+    if (typeof plugin['tool.execute.after'] !== 'function') {
+      console.log('FAIL: no hooks registered');
+      process.exit(1);
+    }
+    const sid = 'sess-timeout', cid = 'call-timeout';
+    await plugin['tool.execute.before'](
+      { tool: 'skill', sessionID: sid, callID: cid }, { args: { name: 'brainstorming' } }
+    );
+    await plugin['tool.execute.after'](
+      { tool: 'skill', sessionID: sid, callID: cid, args: { name: 'brainstorming' } },
+      { title: '', output: '', metadata: {} }
+    );
+    const ms = Date.now() - t0;
+    console.log('ELAPSED_MS=' + ms);
+    if (ms > 3000) { console.log('FAIL: git was not killed at the deadline'); process.exit(2); }
+    if (ms < 300) { console.log('FAIL: fake git did not run; timeout path untested'); process.exit(3); }
+    console.log('TIMEOUT_ENFORCED');
+    """
+    r = _run_bun(script, {
+        **_isolated(tmp_path),
+        "PATH": f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}",
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "TIMEOUT_ENFORCED" in r.stdout, r.stdout + r.stderr

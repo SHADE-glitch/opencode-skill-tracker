@@ -171,6 +171,12 @@ const callCtx = new Map(); // callID    -> { sessionID, startMs, skillName }
 const branchByDir = new Map(); // dir       -> branch | null
 const pendingSkillPerms = new Map(); // permissionID -> { name, callID }
 
+// Git branch lookup spawns a real subprocess so the timeout can actually kill
+// it — Bun's `$` shell exposes no kill/abort handle, so a slow git would
+// outlive its 500ms deadline. Injectable so __selftest can avoid spawning git.
+let spawnGit = (args, signal) =>
+  Bun.spawn(args, { stdout: "pipe", stderr: "ignore", signal });
+
 function setCapped(map, key, value) {
   if (map.size >= MAP_CAP && !map.has(key)) {
     const first = map.keys().next().value;
@@ -412,26 +418,31 @@ async function doInit() {
 }
 
 // ---------------------------------------------------------------------------
-// Git branch resolution (push from vcs.branch.updated, lazy pull via `$`)
+// Git branch resolution (push from vcs.branch.updated, lazy pull via git)
 // ---------------------------------------------------------------------------
-async function resolveBranch(dir, $) {
+async function resolveBranch(dir) {
   if (!dir) return null;
   if (branchByDir.has(dir)) return branchByDir.get(dir);
 
   let branch = null;
-  if (typeof $ === "function") {
-    try {
-      const res = await Promise.race([
-        $(`git -C ${dir} rev-parse --abbrev-ref HEAD`).quiet().nothrow(),
-        new Promise((r) => setTimeout(() => r(null), GIT_TIMEOUT_MS)),
-      ]);
-      if (res && res.exitCode === 0) {
-        const t = String(res.text() || "").trim();
-        if (t && t !== "HEAD") branch = t;
-      }
-    } catch (e) {
-      debug("branch resolve failed: " + errMsg(e));
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), GIT_TIMEOUT_MS);
+  try {
+    const proc = spawnGit(
+      ["git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD"],
+      ac.signal
+    );
+    const exitCode = await proc.exited;
+    if (exitCode === 0) {
+      const t = String((await new Response(proc.stdout).text()) || "").trim();
+      if (t && t !== "HEAD") branch = t;
     }
+  } catch (e) {
+    debug("branch resolve failed: " + errMsg(e));
+  } finally {
+    // Always clear the timer: on success it is stale, on timeout the abort
+    // has already killed the child (exitCode 143).
+    clearTimeout(timer);
   }
 
   // Cache failures as null too, so a broken dir is never retried in a hot loop.
@@ -443,14 +454,13 @@ async function resolveBranch(dir, $) {
 // Write helper — used by every detection path
 // ---------------------------------------------------------------------------
 async function recordUsage(
-  { skillName, sessionID, projectPath, triggerType, status, callID, durationMs, meta },
-  $
+  { skillName, sessionID, projectPath, triggerType, status, callID, durationMs, meta }
 ) {
   if (!db) return;
   try {
     const ctx = (sessionID && sessionCtx.get(sessionID)) || {};
     const dir = projectPath || ctx.directory || pluginDir || null;
-    const branch = await resolveBranch(dir, $); // resolved before the write
+    const branch = await resolveBranch(dir); // resolved before the write
 
     const metadata = {
       tool: SKILL_TOOL,
@@ -500,7 +510,7 @@ function safe(name, fn) {
 // Plugin entry point
 // ---------------------------------------------------------------------------
 async function skillTrackerPlugin(input) {
-  const { directory, worktree, $ } = input || {};
+  const { directory, worktree } = input || {};
   pluginDir = directory || worktree || null;
 
   if (DISABLED) {
@@ -555,8 +565,7 @@ async function skillTrackerPlugin(input) {
           callID: hookInput.callID,
           durationMs: duration,
           meta: { source: "hook" },
-        },
-        $
+        }
       );
     }),
 
@@ -577,8 +586,7 @@ async function skillTrackerPlugin(input) {
           callID: hookInput.callID ?? null,
           durationMs: null,
           meta: { source: "permission.ask", title: hookInput.title },
-        },
-        $
+        }
       );
     }),
 
@@ -636,8 +644,7 @@ async function skillTrackerPlugin(input) {
                 callID: part.callID,
                 durationMs: duration,
                 meta: { source: "event", error: st.status === "error" ? st.error : undefined },
-              },
-              $
+              }
             );
           }
           return;
@@ -674,8 +681,7 @@ async function skillTrackerPlugin(input) {
                 callID: perm.callID,
                 durationMs: null,
                 meta: { source: "permission.replied" },
-              },
-              $
+              }
             );
           }
           return;
@@ -766,18 +772,16 @@ export async function __selftest() {
     if (!cond) log("err", "selftest FAIL: " + label);
   };
 
-  // Stub BunShell: returns a successful `git` result.
-  const stubShell = () => {
-    const res = { exitCode: 0, text: () => "test-branch" };
-    res.quiet = () => res;
-    res.nothrow = () => res;
-    return res;
-  };
+  // Stub git: never spawn a subprocess, always report a branch.
+  const prevSpawnGit = spawnGit;
+  spawnGit = () => ({
+    stdout: new Response("test-branch").body,
+    exited: Promise.resolve(0),
+  });
 
   const plugin = await skillTrackerPlugin({
     directory: "/tmp/selftest-proj",
     worktree: "/tmp/selftest-proj",
-    $: stubShell,
     client: {},
   });
 
@@ -785,6 +789,7 @@ export async function __selftest() {
   if (!db) {
     // Bail before any db.query() so a failed init reports cleanly instead of
     // throwing out of the selftest.
+    spawnGit = prevSpawnGit;
     console.log("FATAL: no database available; selftest aborted");
     return false;
   }
@@ -825,7 +830,7 @@ export async function __selftest() {
     meta.summary && meta.summary.includes("[REDACTED]") && !meta.summary.includes("ark-00000000"),
     "summary sanitized in db"
   );
-  assert(meta.branch === "test-branch", "branch captured via shell");
+  assert(meta.branch === "test-branch", "branch captured via git");
   assert(meta.agent === "build" && meta.model === "p/m", "agent+model captured");
 
   // Event fallback for the SAME callID must not create a second row.
@@ -893,6 +898,7 @@ export async function __selftest() {
     }
   }
 
+  spawnGit = prevSpawnGit;
   const failed = results.filter((r) => !r.ok);
   for (const r of results) console.log(`${r.ok ? "PASS" : "FAIL"}  ${r.label}`);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);
