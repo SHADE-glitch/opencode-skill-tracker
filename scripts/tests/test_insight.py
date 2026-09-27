@@ -106,3 +106,24 @@ def test_dashboard_and_categories(seeded_db):
     assert sum(d["count"] for d in days) == 14
     assert days[-1]["count"] == 0, "nothing is dated today in the fixture"
     conn.close()
+
+
+def test_today_usage_uses_local_calendar(seeded_db):
+    """`Today` and the daily trend must bucket by the local calendar day.
+
+    A row written at the current instant has to land in the last bucket,
+    whatever the machine's UTC offset is.
+    """
+    conn = db.open_db(seeded_db, readonly=False)
+    conn.execute(
+        "INSERT INTO skill_usage (skill_name, session_id, project_path, trigger_type,"
+        " status, timestamp, call_id) "
+        "VALUES ('ok','s-today','/proj','tool_call','success',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'c-today')"
+    )
+    conn.commit()
+
+    assert db.dashboard_summary(conn)["today_usage"] >= 1
+    days = db.daily_activity(conn, 7)
+    assert days[-1]["count"] >= 1, "a row dated now must fall in the last (today) bucket"
+    conn.close()

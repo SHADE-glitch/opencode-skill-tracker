@@ -426,7 +426,7 @@ def dashboard_summary(conn) -> dict:
     total_usage = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
     today = conn.execute(
         "SELECT COUNT(*) FROM skill_usage "
-        "WHERE date(timestamp) = date('now')"
+        "WHERE date(timestamp,'localtime') = date('now','localtime')"
     ).fetchone()[0]
     by_source = {
         r["src"]: r["n"]
@@ -448,14 +448,14 @@ def daily_activity(conn, days: int = 7) -> list[dict]:
     rows = {
         r["d"]: r["n"]
         for r in conn.execute(
-            "SELECT date(timestamp) AS d, COUNT(*) n FROM skill_usage "
-            "WHERE date(timestamp) >= date('now', ?) GROUP BY d",
+            "SELECT date(timestamp,'localtime') AS d, COUNT(*) n FROM skill_usage "
+            "WHERE date(timestamp,'localtime') >= date('now','localtime', ?) GROUP BY d",
             (f"-{days - 1} days",),
         )
     }
     out = []
     for i in range(days - 1, -1, -1):
-        d = conn.execute("SELECT date('now', ?)", (f"-{i} days",)).fetchone()[0]
+        d = conn.execute("SELECT date('now','localtime', ?)", (f"-{i} days",)).fetchone()[0]
         out.append({"date": d, "count": rows.get(d, 0)})
     return out
 
