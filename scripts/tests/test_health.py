@@ -174,9 +174,30 @@ def test_health_report_is_read_only(tmp_path):
 def test_suggestions_never_instruct_deletion(tmp_path):
     conn = _db(tmp_path)
     _skill(conn, "never")
+    _skill(conn, "used")
+    # Pruning advice is only emitted once enough sessions/days have been
+    # observed; seed past the threshold so the real suggestions are exercised.
+    for i in range(20):
+        _use(conn, "used", at=REF - timedelta(days=i % 14), i=i)
     conn.commit()
     rep = db.health_report(conn, now=REF)
+    assert rep["sample"]["enough_for_advice"] is True
     assert rep["suggestions"], "at least one suggestion"
     joined = " ".join(rep["suggestions"])
     assert "review" in joined and "never deletes" in joined
+    conn.close()
+
+
+def test_insufficient_data_suppresses_pruning_advice(tmp_path):
+    conn = _db(tmp_path)
+    _skill(conn, "never")
+    _use(conn, "never", at=REF - timedelta(days=1))
+    conn.commit()
+    rep = db.health_report(conn, now=REF)
+    assert rep["sample"]["enough_for_advice"] is False
+    joined = " ".join(rep["suggestions"])
+    assert "Not enough data" in joined
+    assert "review" not in joined, "no pruning advice while the sample is too small"
+    # the facts themselves are still reported
+    assert rep["counts"]["total"] == 1
     conn.close()

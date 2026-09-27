@@ -179,12 +179,17 @@ def _cli_health(conn, args) -> int:
 
     c = report["counts"]
     w = report["windows"]
+    s = report["sample"]
     print("Skill health (read-only; nothing is deleted)")
     print("-" * 56)
     print(f"  Active   (<= {w['active_days']} days)              {c['active']}")
     print(f"  Stale    ({w['active_days']}-{w['stale_days']} days)             {c['stale']}")
     print(f"  Unused   (>{w['stale_days']} days or never used)   {c['unused']}")
     print(f"  Total                          {c['total']}")
+    print(
+        f"  Observed {s['sessions']} session(s) over {s['days_observed']} day(s)"
+        + ("" if s["enough_for_advice"] else "  (too little to advise on pruning)")
+    )
     print()
     print("Risk flags")
     print("-" * 56)
@@ -551,6 +556,11 @@ def _tui_classes() -> dict:
                     id="health-counts",
                 )
                 yield Static(
+                    f"[dim]Observed {r['sample']['sessions']} session(s) over "
+                    f"{r['sample']['days_observed']} day(s)[/dim]",
+                    id="health-sample",
+                )
+                yield Static(
                     "[b]Risk flags[/b]  "
                     f"never used {r['risk_counts']['never_used']}   "
                     f"high failure {r['risk_counts']['high_failure']}   "
@@ -684,7 +694,9 @@ def _tui_classes() -> dict:
                 )
                 self.query_one("#cards-legend", Static).update(
                     "[dim]Skills / Personal / OSS = skill counts  ·  "
-                    "Uses / Today = invocation counts[/dim]"
+                    "Uses / Today = invocation counts  ·  "
+                    f"observed {s['sample']['sessions']} session(s) over "
+                    f"{s['sample']['days_observed']} day(s)[/dim]"
                 )
 
                 days = db.daily_activity(conn, 7)

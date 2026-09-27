@@ -111,8 +111,13 @@ def test_source_is_derived_not_stored(seeded_db):
 def test_insight_bundle_shape(seeded_db):
     conn = db.open_db(seeded_db)
     data = db.insight(conn)
-    assert set(data) == {"windows", "most_used", "fastest_growing", "long_unused", "highest_failure_rate"}
+    assert set(data) == {
+        "windows", "sample", "most_used", "fastest_growing",
+        "long_unused", "highest_failure_rate",
+    }
     assert data["windows"]["min_uses"] == 3
+    assert data["sample"]["total_usage"] == 21
+    assert data["sample"]["sessions"] == 21
     conn.close()
 
 

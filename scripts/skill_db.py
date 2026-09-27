@@ -421,6 +421,36 @@ def sync_versions(conn, skills_dir: str = SKILLS_DIR, dry_run: bool = False,
 # ---------------------------------------------------------------------------
 # Query layer
 # ---------------------------------------------------------------------------
+def sample_size(conn) -> dict:
+    """How much data do we actually have?
+
+    `sessions` is the denominator that makes "0 uses" meaningful: OpenCode
+    offers every discovered skill in every session, so a skill with no
+    invocation after N sessions is a signal, while one with no invocation
+    after 2 sessions is noise.
+    """
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT session_id)              AS sessions, "
+        "       COUNT(DISTINCT date(timestamp,'localtime')) AS days_observed, "
+        "       MIN(timestamp)                           AS first_usage, "
+        "       MAX(timestamp)                           AS last_usage, "
+        "       COUNT(*)                                 AS total_usage "
+        "FROM skill_usage"
+    ).fetchone()
+    sessions = row["sessions"] or 0
+    days = row["days_observed"] or 0
+    return {
+        "sessions": sessions,
+        "days_observed": days,
+        "total_usage": row["total_usage"] or 0,
+        "first_usage": row["first_usage"],
+        "last_usage": row["last_usage"],
+        "enough_for_advice": (
+            sessions >= MIN_SESSIONS_FOR_ADVICE and days >= MIN_DAYS_FOR_ADVICE
+        ),
+    }
+
+
 def dashboard_summary(conn) -> dict:
     total_skills = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
     total_usage = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
@@ -440,6 +470,7 @@ def dashboard_summary(conn) -> dict:
         "today_usage": today,
         "personal": by_source.get("personal", 0),
         "open_source": by_source.get("open-source", 0),
+        "sample": sample_size(conn),
     }
 
 
@@ -470,10 +501,15 @@ def stats_rows(conn) -> list[dict]:
            COALESCE(t.errors, 0)  AS errors,
            COALESCE(t.denied, 0)  AS denied,
            t.last_used            AS last_used,
-           COALESCE(l.uses_30d, 0) AS uses_30d
+           COALESCE(l.uses_30d, 0) AS uses_30d,
+           COALESCE(sc.sessions, 0) AS sessions
     FROM skills s
     LEFT JOIN v_skill_totals t ON t.skill_name = s.name
     LEFT JOIN v_skill_last30 l ON l.skill_name = s.name
+    LEFT JOIN (
+        SELECT skill_name, COUNT(DISTINCT session_id) AS sessions
+        FROM skill_usage GROUP BY skill_name
+    ) sc ON sc.skill_name = s.name
     ORDER BY total DESC, s.name ASC
     """
     return rows_to_dicts(conn.execute(sql))
@@ -616,6 +652,7 @@ def insight_failure_rate(conn, min_uses: int = 3, limit: int = 10) -> list[dict]
 def insight(conn, days: int = 30, min_uses: int = 3, limit: int = 10) -> dict:
     return {
         "windows": {"grow_days": days, "unused_days": days, "min_uses": min_uses},
+        "sample": sample_size(conn),
         "most_used": insight_most_used(conn, limit),
         "fastest_growing": insight_fastest_growing(conn, days, min_uses, limit),
         "long_unused": insight_long_unused(conn, days, limit),
@@ -841,6 +878,13 @@ HIGH_FAILURE_MIN_USES = 5
 HIGH_FAILURE_RATE = 0.5
 FREQUENTLY_EDITED_VERSIONS = 5
 
+# A pruning decision needs a denominator. OpenCode exposes every discovered
+# skill to every session, so the number of observed sessions is what makes a
+# "0 uses" count meaningful. Below these thresholds the report still shows the
+# facts (buckets, flags) but refuses to advise on pruning.
+MIN_SESSIONS_FOR_ADVICE = 20
+MIN_DAYS_FOR_ADVICE = 14
+
 _BUCKET_ORDER = {"unused": 0, "stale": 1, "active": 2}
 
 
@@ -887,9 +931,14 @@ def health_report(conn, now=None) -> dict:
            COALESCE(t.errors, 0)  AS errors,
            COALESCE(t.denied, 0)  AS denied,
            t.last_used            AS last_used,
-           {versions_sub}         AS versions
+           {versions_sub}         AS versions,
+           COALESCE(sc.sessions, 0) AS sessions
     FROM skills s
     LEFT JOIN v_skill_totals t ON t.skill_name = s.name
+    LEFT JOIN (
+        SELECT skill_name, COUNT(DISTINCT session_id) AS sessions
+        FROM skill_usage GROUP BY skill_name
+    ) sc ON sc.skill_name = s.name
     """
     skills = []
     counts = {"total": 0, "active": 0, "stale": 0, "unused": 0}
@@ -927,24 +976,33 @@ def health_report(conn, now=None) -> dict:
 
     skills.sort(key=lambda r: (_BUCKET_ORDER[r["bucket"]], -(r["total"] or 0), r["skill_name"]))
 
+    sample = sample_size(conn)
     suggestions = []
     never_used_n = risk_counts["never_used"]
     stale_unused_n = counts["unused"] - never_used_n
-    if never_used_n:
+    if not sample["enough_for_advice"]:
         suggestions.append(
-            f"{never_used_n} skill(s) have never been used; review them before "
-            "deciding whether to remove any (this command never deletes data)"
+            f"Not enough data to advise on pruning yet: {sample['sessions']} "
+            f"session(s) over {sample['days_observed']} day(s); need >= "
+            f"{MIN_SESSIONS_FOR_ADVICE} sessions over >= {MIN_DAYS_FOR_ADVICE} days"
         )
-    if stale_unused_n:
-        suggestions.append(
-            f"{stale_unused_n} skill(s) unused for over {HEALTH_STALE_DAYS} days; "
-            "review them before deciding whether to remove any "
-            "(this command never deletes data)"
-        )
-    if counts["stale"]:
-        suggestions.append(
-            f"{counts['stale']} skill(s) not used for 30-90 days; worth a look"
-        )
+    else:
+        if never_used_n:
+            suggestions.append(
+                f"{never_used_n} skill(s) have never been used; review them before "
+                "deciding whether to remove any (this command never deletes data)"
+            )
+        if stale_unused_n:
+            suggestions.append(
+                f"{stale_unused_n} skill(s) unused for over {HEALTH_STALE_DAYS} days; "
+                "review them before deciding whether to remove any "
+                "(this command never deletes data)"
+            )
+        if counts["stale"]:
+            suggestions.append(
+                f"{counts['stale']} skill(s) not used for "
+                f"{HEALTH_ACTIVE_DAYS}-{HEALTH_STALE_DAYS} days; worth a look"
+            )
     if risk_counts["high_failure"]:
         suggestions.append(
             f"{risk_counts['high_failure']} skill(s) fail at >= 50% "
@@ -966,7 +1024,10 @@ def health_report(conn, now=None) -> dict:
             "high_failure_min_uses": HIGH_FAILURE_MIN_USES,
             "high_failure_rate": HIGH_FAILURE_RATE,
             "frequently_edited_versions": FREQUENTLY_EDITED_VERSIONS,
+            "min_sessions_for_advice": MIN_SESSIONS_FOR_ADVICE,
+            "min_days_for_advice": MIN_DAYS_FOR_ADVICE,
         },
+        "sample": sample,
         "counts": counts,
         "risk_counts": risk_counts,
         "skills": skills,
