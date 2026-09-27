@@ -592,7 +592,8 @@ def insight_fastest_growing(conn, days: int = 30, min_uses: int = 3,
 def insight_long_unused(conn, days: int = 30, limit: int = 50) -> list[dict]:
     sql = f"""
     SELECT s.name AS skill_name, s.category, {SOURCE_CASE_SQL} AS source,
-           t.last_used, COALESCE(t.total, 0) AS total
+           t.last_used, COALESCE(t.total, 0) AS total,
+           (t.last_used IS NULL) AS never_used
     FROM skills s LEFT JOIN v_skill_totals t ON t.skill_name = s.name
     WHERE t.last_used IS NULL
        OR t.last_used < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
@@ -927,9 +928,16 @@ def health_report(conn, now=None) -> dict:
     skills.sort(key=lambda r: (_BUCKET_ORDER[r["bucket"]], -(r["total"] or 0), r["skill_name"]))
 
     suggestions = []
-    if counts["unused"]:
+    never_used_n = risk_counts["never_used"]
+    stale_unused_n = counts["unused"] - never_used_n
+    if never_used_n:
         suggestions.append(
-            f"{counts['unused']} skill(s) unused for over 90 days or never used; "
+            f"{never_used_n} skill(s) have never been used; review them before "
+            "deciding whether to remove any (this command never deletes data)"
+        )
+    if stale_unused_n:
+        suggestions.append(
+            f"{stale_unused_n} skill(s) unused for over {HEALTH_STALE_DAYS} days; "
             "review them before deciding whether to remove any "
             "(this command never deletes data)"
         )

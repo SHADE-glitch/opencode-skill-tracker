@@ -95,13 +95,22 @@ def _cli_insight(conn, args) -> int:
     for r in data["fastest_growing"]:
         print(f"  {r['skill_name']:<40} {r['recent']:>4}  (prev {r['prev']}, delta {r['delta']:+d})")
 
+    never = [r for r in data["long_unused"] if r["never_used"]]
+    stale = [r for r in data["long_unused"] if not r["never_used"]]
+
     print()
-    section(f"Long unused (>{args.days} days)")
-    if not data["long_unused"]:
+    section(f"Never used ({len(never)})")
+    if not never:
         print("  (no data)")
-    for r in data["long_unused"]:
-        tag = "never used" if r["last_used"] is None else db.fmt_time(r["last_used"])
-        print(f"  {r['skill_name']:<40} {r['source']:<12} {tag}")
+    for r in never:
+        print(f"  {r['skill_name']:<40} {r['source']}")
+
+    print()
+    section(f"Unused for >{args.days} days ({len(stale)})")
+    if not stale:
+        print("  (no data)")
+    for r in stale:
+        print(f"  {r['skill_name']:<40} {r['source']:<12} {db.fmt_time(r['last_used'])}")
 
     print()
     section(f"Highest failure rate (min {args.min_uses} uses)")

@@ -56,6 +56,33 @@ def test_long_unused_includes_never_used_and_stale(seeded_db):
     conn.close()
 
 
+def test_long_unused_flags_never_used_separately(seeded_db):
+    """`never_used` must distinguish "no record at all" from "stale but used".
+
+    The old single list let a skill that only existed a few days be reported
+    under a ">30 days" heading. The flag lets callers split the two.
+    """
+    conn = db.open_db(seeded_db, readonly=False)
+    conn.execute(
+        "INSERT INTO skills (name, category, path, description) "
+        "VALUES ('stale','open-source-skills','/s/stale','used long ago')"
+    )
+    conn.execute(
+        "INSERT INTO skill_usage (skill_name, session_id, project_path, trigger_type,"
+        " status, timestamp, call_id) "
+        "VALUES ('stale','s-stale','/proj','tool_call','success',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now','-45 days'), 'c-stale')"
+    )
+    conn.commit()
+
+    rows = {r["skill_name"]: r for r in db.insight_long_unused(conn, days=30, limit=50)}
+    assert rows["unused"]["never_used"] == 1, "never-invoked skill must be flagged"
+    assert rows["unused"]["last_used"] is None
+    assert rows["stale"]["never_used"] == 0, "stale-but-used skill must not be flagged"
+    assert rows["stale"]["last_used"] is not None
+    conn.close()
+
+
 def test_failure_rate_threshold_and_ordering(seeded_db):
     conn = db.open_db(seeded_db)
     rows = db.insight_failure_rate(conn, min_uses=3, limit=10)
