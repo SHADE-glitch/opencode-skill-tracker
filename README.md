@@ -143,7 +143,7 @@ The five Dashboard cards, each labelled above its number:
 |---|---|
 | `Skills` | total skills known (rows in `skills`) |
 | `Uses` | total recorded uses (rows in `skill_usage`) |
-| `Today` | uses today (UTC) |
+| `Today` | uses today (local calendar day) |
 | `Personal` | locally authored skills (`category = personal`) |
 | `OSS` | skills synced from an open-source upstream (`category = open-source`) |
 
@@ -179,13 +179,16 @@ skillt doctor  [--json]
 skillt cleanup-selftest [--yes]
 ```
 
-- `insight` — most used / fastest growing / dormant / highest failure rate.
+- `insight` — most used / fastest growing / **never used** / dormant / highest
+  failure rate, plus the observed sample (sessions and days).
 - `export` — dump JSON (mode 0600); prints to stdout without `--out`.
 - `sync` — rescan `SKILL.md` files, recording content changes in
   `skill_versions`; `--dry-run` counts without writing.
 - `health` — buckets every skill into **active (≤30d) / dormant (30–90d) /
-  unused (>90d or never)** with risk flags and suggestions. **Read-only, advisory
-  only, never deletes.**
+  unused (>90d or never)** with risk flags and suggestions, and reports the
+  observed sample. Usage-based pruning suggestions are **suppressed** until at
+  least 20 sessions over 14 days have been observed — below that, "0 uses"
+  means nothing. **Read-only, advisory only, never deletes.**
 - `auto-backup` — snapshot into the backup directory and prune by retention
   policy (see [Backups](#backups)).
 - `doctor` — health check printing PASS/WARN/FAIL; **exit code 1 if any FAIL**.
@@ -327,7 +330,7 @@ skillt doctor
 | No new data in the stats | The plugin only writes while OpenCode runs. Check OpenCode's log for `failed to load plugin` — if `skill-tracker.js` appears there, the plugin failed to load, no hook was registered, and the problem is **not** that skills went uncalled. Then confirm `skillt doctor` shows `plugin.exists` / `plugin.hooks` as PASS. |
 | `failed to load plugin path=list error="Plugin export is not a function"` | A project-level `.opencode/opencode.json` lists a non-plugin npm package in its `plugin` array (e.g. `"list"`). Remove that entry. `path=list` means the source is the config's plugin list, not the `plugin/` directory. |
 | `doctor` reports `db.wal` FAIL | The file is corrupt or not SQLite. Confirm with `sqlite3 ... "PRAGMA integrity_check;"`, then restore from a backup. |
-| Timestamps look shifted | By-day bucketing uses UTC — see [Known limitations](#known-limitations). |
+| Timestamps look shifted | Day buckets follow the local calendar. Older rows written before that fix are still stored in UTC. |
 | Mojibake / `UnicodeEncodeError` | Non-UTF-8 locale. Set `LANG=C.UTF-8` or `LC_ALL=C.UTF-8`. |
 | `backups.latest` WARN | `auto-backup` has never run, or has not run in 7 days. Run `skillt auto-backup`. |
 
@@ -340,15 +343,22 @@ The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 The full audit — M1 through M10, with reproduction notes — lives in
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制). Highlights:
 
-- **M1** Day buckets (`Today`, daily trend) use **UTC**; at UTC+8, local
-  00:00–08:00 lands on the previous day. Time windows themselves are correct.
+- **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
+  UTC+8, local 00:00–08:00 landed on the previous day. They now follow the
+  local calendar. Time windows themselves were always correct.
 - **M2** Some read commands (`insight`, `export`, `doctor`) open the DB
   read-write; `open_db(readonly=True)` creates an empty DB instead of erroring
   when the path does not exist.
 - **M5** `VACUUM` / backup / export / refresh run on the UI thread, so a very
   large database briefly freezes the TUI.
-- **M7** `resolveBranch`'s 500 ms timeout does not kill the `git` child process
-  or clear its timer; on a bad mount point it leaks one process per call.
+- **M7** (fixed) `resolveBranch`'s 500 ms timeout did not kill the `git` child
+  process or clear its timer, leaking one process per call on a bad mount
+  point. It now spawns git directly and aborts it.
+- **M8** (fixed) `branchByDir` / `pendingSkillPerms` had no capacity limit and
+  grew for the lifetime of the process; both are now bounded.
+- **M9** (fixed) `initDone` was set before `init()` did any work, so a failed
+  init left the tracker permanently disabled with only a log line to show for
+  it. It is now set only on success, and a failed init can be retried.
 - **M10** `app.run()` is not wrapped in `try/finally`, so a fatal error may still
   exit with code 0.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`

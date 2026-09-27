@@ -87,11 +87,11 @@ skillt
 |---|---|
 | `Skills` | 库里已知的 skill 总数（`skills` 表行数） |
 | `Uses` | 累计使用次数（`skill_usage` 行数） |
-| `Today` | 今天（UTC）的使用次数 |
+| `Today` | 今天（本地日历天）的使用次数 |
 | `Personal` | 本地自建 skill 的数量（`category = personal`） |
 | `OSS` | 来自开源上游的 skill 数量（`category = open-source`） |
 
-卡片下方有图例说明；若 `Uses` 为 0，表格区会提示「还没有使用记录」。
+卡片下方有图例说明，并显示**观察样本**（N 个 session、D 天）；若 `Uses` 为 0，表格区会提示「还没有使用记录」。
 
 | 按键 | 作用 |
 |---|---|
@@ -124,10 +124,10 @@ skillt doctor  [--json]
 skillt cleanup-selftest [--yes]
 ```
 
-- `insight`：最常使用 / 增长最快 / 长期未使用 / 失败率最高。
+- `insight`：最常使用 / 增长最快 / **从未使用** / 长期未使用 / 失败率最高，并附观察样本（session 数与天数）。
 - `export`：导出 JSON（0600）；不指定 `--out` 则打印到 stdout。
 - `sync`：重新扫描 `SKILL.md`，把内容变更记录进 `skill_versions`；`--dry-run` 只统计不写。
-- `health`：把每个 skill 分成 **活跃（≤30 天）/ 沉寂（30–90 天）/ 未使用（>90 天或从未）**，并给出风险标记与建议。**只读、只建议、绝不自动删除。**
+- `health`：把每个 skill 分成 **活跃（≤30 天）/ 沉寂（30–90 天）/ 未使用（>90 天或从未）**，并给出风险标记与建议。会显示**观察样本**（N 个 session、D 天）；样本不足 **20 个 session 或 14 天**时只输出一行"数据不足"，不给剪枝建议——在样本足够之前，"0 次使用"没有意义。**只读、只建议、绝不自动删除。**
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
@@ -258,7 +258,7 @@ skillt doctor
 | 统计里没有新数据 | 插件只在 OpenCode 运行时写入。先看 OpenCode 运行日志里的 `failed to load plugin`：若出现 `skill-tracker.js`，说明插件加载失败（见「已知限制 → 插件导出契约」），hook 根本没注册，而不是技能没被调用。再确认 `skillt doctor` 里 `plugin.exists` / `plugin.hooks` 为 PASS。 |
 | `failed to load plugin path=list error="Plugin export is not a function"` | 某个**项目级** `.opencode/opencode.json` 的 `plugin` 数组里写了不是插件的 npm 包名（例如 `"list"`）。删掉该条目即可；`path=list` 表示来源是配置里的插件列表而非 `plugin/` 目录。 |
 | `doctor` 报 `db.wal` FAIL | 库文件损坏或不是 SQLite。用 `sqlite3 ... "PRAGMA integrity_check;"` 确认，必要时从备份恢复。 |
-| 时间对不上（差几小时） | 见「已知限制」M1：按天分桶使用 UTC。 |
+| 时间对不上（差几小时） | 已修复（M1）：按天分桶现用**本地日历天**。修复前写入的旧记录仍按当时的时间戳存储。 |
 | 输出乱码 / `UnicodeEncodeError` | 见 M6：非 UTF-8 locale。设 `LANG=C.UTF-8` 或 `LC_ALL=C.UTF-8`。 |
 | `backups.latest` WARN | 还没跑过 `auto-backup`，或最近 7 天没备份。跑一次 `skillt auto-backup`。 |
 
@@ -300,11 +300,11 @@ rm -rf ~/.local/share/opencode/backups
 
 ## 9. 已知限制
 
-以下问题在审计中确认存在。本轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等），其余如实记录、**本次不修**。多数是边界情况，不影响日常使用。
+以下问题在审计中确认存在。此前几轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等）；本轮又修掉了 **M1 / M7 / M8 / M9**（下文标注"已修复"）。其余如实记录、**本次不修**。多数是边界情况，不影响日常使用。
 
 ### 数据与时间
 
-- **M1 按天分桶使用 UTC。** `今日`、`按天趋势` 都以 UTC 计算。在 UTC+8 下，本地 00:00–08:00 的记录会被算进**前一天**（最多 8 小时/天的错配）。时间窗口本身（`-N days`）是正确的。如需本地日历，可自行用 `datetime(timestamp,'localtime')` 查询。
+- **M1 按天分桶曾使用 UTC（已修复）。** 旧版 `今日`、`按天趋势` 以 UTC 计算，在 UTC+8 下本地 00:00–08:00 的记录会被算进**前一天**（最多 8 小时/天的错配）。现改为按**本地日历天**分桶（`date(timestamp,'localtime')`）。时间窗口本身（`-N days`）一直是滚动窗口，未受影响。
 - **M2 纯读命令以读写方式打开 DB。** `insight`/`export`/`doctor` 用读写连接（`health` 已改为只读）。另外 `open_db(readonly=True)` 在**路径不存在**时会创建一个空库而不是报错。
 - **M3 迁移的隐式提交。** `ensure_schema` 里的 `executescript` 会隐式提交当前挂起的事务；返回值里 `created_base` 从不置位、`created_versions` 恒为 `True`（仅影响该字典的语义，不影响实际建表）。
 
@@ -319,9 +319,9 @@ rm -rf ~/.local/share/opencode/backups
 
 ### 插件
 
-- **M7 git 子进程泄漏。** `resolveBranch` 的 500ms 超时**不杀 git 子进程、也不清定时器**；在坏挂载点上每次会泄漏一个进程。
-- **M8 未做容量上限。** `skill_db.h()` 是死代码（0 调用）；`branchByDir` / `pendingSkillPerms` 没有容量上限，长期运行会缓慢增长。
-- **M9 重试静默失效。** `initDone = true` 在 `init()` 完成**之前**置位；若 `init()` 抛错，后续重试会静默 no-op。
+- **M7 git 子进程泄漏（已修复）。** 旧版 `resolveBranch` 的 500ms 超时**不杀 git 子进程、也不清定时器**，在坏挂载点上每次会泄漏一个进程。现改用 `Bun.spawn` + `AbortController`：超时会真正终止子进程（exit 143），并在 `finally` 里 `clearTimeout`。
+- **M8 未做容量上限（已修复）。** `branchByDir` / `pendingSkillPerms` 现与 `sessionCtx` / `callCtx` 一样走 `setCapped`（上限 `MAP_CAP`），不再随进程生命周期增长。另：`skill_db.h()` 仍是死代码（0 调用）。
+- **M9 重试静默失效（已修复）。** 旧版 `initDone = true` 在 `init()` 完成**之前**置位，任何早退都会让后续重试静默 no-op。现在 `initDone` 仅在 schema 创建成功后置位，并发调用由 `initInFlight` 去重，失败后仍可重试。
 
 ### 编码
 
