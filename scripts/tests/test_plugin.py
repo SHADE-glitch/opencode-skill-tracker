@@ -240,3 +240,46 @@ def test_selftest_still_refuses_without_isolated_db(tmp_path):
     r = _run_bun(script, _isolated(tmp_path, isolate_db=False))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "Selftest requires isolated database" in r.stdout
+
+
+@requires_bun
+def test_init_failure_is_retryable(tmp_path):
+    """A failed init() must not permanently disable recording (M9).
+
+    `initDone` used to be set *before* init() did any work, so any early
+    failure left the flag true and every later attempt became a silent no-op
+    — recording would stay dead for the whole process with nothing but a log
+    line. Here the DB's parent is a regular file, so opening/schema creation
+    fails on the first factory call; removing that blocker must let the
+    second call succeed.
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")  # a file where a directory must be
+    script = """
+    const fs = await import('node:fs');
+    const mod = await import(process.env.PLUGIN_PATH);
+    const input = { directory: '/tmp/x', worktree: '/tmp/x', client: {}, $: () => {} };
+
+    const first = await mod.default.server(input, {});
+    if (typeof first['tool.execute.after'] === 'function') {
+      console.log('FAIL: init reported success against an unusable DB path');
+      process.exit(1);
+    }
+    console.log('FIRST_FAILED_AS_EXPECTED');
+
+    fs.unlinkSync(process.env.OPENCODE_SKILL_TRACKER_BLOCKER);
+    const second = await mod.default.server(input, {});
+    if (typeof second['tool.execute.after'] !== 'function') {
+      console.log('FAIL: init did not retry after the failure was removed');
+      process.exit(2);
+    }
+    console.log('RETRIED_OK');
+    """
+    r = _run_bun(script, {
+        "OPENCODE_SKILL_TRACKER_LOG": str(tmp_path / "plugin.log"),
+        "OPENCODE_SKILL_TRACKER_DB": str(blocker / "iso.db"),
+        "OPENCODE_SKILL_TRACKER_BLOCKER": str(blocker),
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "FIRST_FAILED_AS_EXPECTED" in r.stdout, r.stdout + r.stderr
+    assert "RETRIED_OK" in r.stdout, r.stdout + r.stderr

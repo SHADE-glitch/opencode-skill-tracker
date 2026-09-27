@@ -161,6 +161,7 @@ WHERE skill_usage.duration_ms IS NULL
 let Database = null; // bun:sqlite Database constructor, resolved dynamically
 let db = null; // open connection
 let initDone = false;
+let initInFlight = null; // dedupes concurrent init() calls
 let sqliteUnavailable = false;
 let pluginDir = null; // PluginInput.directory / worktree fallback
 
@@ -330,8 +331,19 @@ async function loadSqlite() {
 
 async function init() {
   if (initDone) return;
-  initDone = true;
+  if (initInFlight) return initInFlight;
+  initInFlight = doInit();
+  try {
+    await initInFlight;
+  } finally {
+    // Clear even on failure so a later call can retry instead of awaiting
+    // this already-settled promise forever. `initDone` is set only by a
+    // successful doInit(), so a transient failure stays retryable.
+    initInFlight = null;
+  }
+}
 
+async function doInit() {
   await loadSqlite();
   if (!Database) return;
 
@@ -395,6 +407,7 @@ async function init() {
   } catch (e) {
     log("err", "scanSkills: " + errMsg(e));
   }
+  initDone = true;
   log("info", `initialized (db=${DB_PATH}, tool="${SKILL_TOOL}")`);
 }
 
