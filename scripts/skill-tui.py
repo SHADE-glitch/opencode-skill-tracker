@@ -668,6 +668,7 @@ def _tui_classes() -> dict:
                         yield Static(id="card-today", classes="card")
                         yield Static(id="card-personal", classes="card")
                         yield Static(id="card-oss", classes="card")
+                        yield Static(id="card-mcp", classes="card")
                     yield Static(id="cards-legend")
                     yield Static(id="mcp-summary")
                     yield Static(id="trend")
@@ -754,9 +755,13 @@ def _tui_classes() -> dict:
                 self.query_one("#card-oss", Static).update(
                     f"[b]{s['open_source']}[/b]\n[dim]OSS[/dim]"
                 )
+                self.query_one("#card-mcp", Static).update(
+                    f"[b]{s['total_mcp']}[/b]\n[dim]MCP[/dim]"
+                )
                 self.query_one("#cards-legend", Static).update(
                     "[dim]Skills / Personal / OSS = skill counts  ·  "
-                    "Uses / Today = invocation counts  ·  "
+                    "Uses / Today = skill invocation counts  ·  "
+                    "MCP = MCP calls  ·  "
                     f"observed {s['sample']['sessions']} session(s) over "
                     f"{s['sample']['days_observed']} day(s)[/dim]"
                 )

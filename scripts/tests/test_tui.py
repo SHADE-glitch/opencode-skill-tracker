@@ -519,3 +519,18 @@ def test_tui_mcp_tab_is_empty_without_mcp_data(seeded_db):
             assert "MCP:" in text and "0 tool(s)" in text, text
 
     _run(_run_it())
+
+
+def test_tui_dashboard_has_an_mcp_card(seeded_mcp_db):
+    """MCP sits in the same card row as Skills/Uses, not only in the summary."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            text = static_text(app.screen.query_one("#card-mcp", Static))
+            assert "8" in text, f"MCP count missing from the card: {text!r}"
+            # The summary line stays: it carries servers/tools/today, which the
+            # card has no room for.
+            assert "MCP:" in static_text(app.screen.query_one("#mcp-summary", Static))
+
+    _run(_run_it())

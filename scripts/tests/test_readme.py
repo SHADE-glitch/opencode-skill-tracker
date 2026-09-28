@@ -69,8 +69,8 @@ def test_readme_documents_ctrl_shortcuts_and_dashboard_cards():
     # ctrl+s / ctrl+r are the always-available alternates (search box steals letters)
     assert "ctrl+s" in text
     assert "ctrl+r" in text
-    # the five Dashboard cards must be named
-    for card in ("Skills", "Uses", "Today", "Personal", "OSS"):
+    # the six Dashboard cards must be named
+    for card in ("Skills", "Uses", "Today", "Personal", "OSS", "MCP"):
         assert card in text, f"Dashboard card not documented: {card}"
     # the Data-page delete entry is gone; deletion lives on the Skills tab
     assert "删除选中 skill" not in text
