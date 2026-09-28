@@ -1,6 +1,6 @@
-# OpenCode Skill Tracker (`skillt`)
+# OpenCode Skill + MCP Tracker (`skillt`)
 
-记录并查询 OpenCode 里每个 skill 的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
+记录并查询 OpenCode 里每个 skill **和 MCP 工具**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
 数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
 
 > **本仓库的安装方式见 [README.md](README.md)（英文）。** 本仓库是唯一来源，
@@ -20,11 +20,17 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 - 识别到工具名称为 `skill` 时，把调用写入 SQLite；
 - `skillt` 负责查询、统计、导出、备份、体检。
 
+**MCP 工具走的是同一套钩子。** 所有注册的工具（内置的和 MCP 的）都经过同一个包装器，
+因此 MCP 调用会和 skill 一样触发这些 hook。MCP 工具 id 形如 `{server}_{tool}`
+（例如 `basic-memory_read_note`）；由于服务名和工具名都可能含下划线，插件用
+**已配置服务列表做最长前缀匹配**来切分，而不是简单 `split("_")`。
+
 设计约束（刻意遵守）：
 
 - **不修改 OpenCode 源码**，只用公开的 Plugin Hook；
 - **不要求在 SKILL.md 里加任何脚本或埋点**；
 - 只记录结构化元数据（skill 名、状态、耗时、项目路径、session、模型/agent/分支），**不记录 secrets、不记录完整消息**；
+- MCP 调用**只记参数名，绝不记参数值**（`Object.keys()`，不读取属性）；
 - 单个插件文件 + 一个共享数据层 + 一个入口命令，尽量少依赖。
 
 ---
@@ -33,7 +39,7 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 
 ```
 OpenCode 运行
-   │  tool.execute.before/after, permission.ask, event
+   │  tool.execute.before/after, permission.ask, event   (skill 与 MCP 共用)
    ▼
 ~/.config/opencode/plugin/skill-tracker.js      (Bun 运行时, bun:sqlite)
    │  写入
@@ -42,12 +48,12 @@ OpenCode 运行
    │  读取
    ├── skillt                → skill-tui.py      (Textual TUI, 需要 venv)
    ├── skillt stats|top|...  → skill-stats.py    (旧版 CLI, 行为向后兼容)
-   └── skillt insight|health|doctor|...  → skill-tui.py --cli  (无 textual 也能跑)
+   └── skillt insight|health|doctor|mcp|...  → skill-tui.py --cli  (无 textual 也能跑)
 ```
 
 - **写入方**：只有插件（OpenCode 运行时）。所有写入都用 `UNIQUE(session_id, call_id)` 去重 + `ON CONFLICT` upsert。
-- **读取方**：`skillt` 的所有命令。`health` 以只读方式打开数据库，绝不修改。
-- **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里。
+- **读取方**：`skillt` 的所有命令。`health` / `mcp` 以只读方式打开数据库，绝不修改。
+- **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里。skill 计数（`skill_usage`）与 MCP 计数（`mcp_usage`）是**两张独立的表**，互不影响。
 
 ---
 
@@ -79,7 +85,7 @@ skillt
 ```
 
 需要真正的终端（`stdin`/`stdout`/`stderr` 三者都必须是 TTY，且 `TERM` 不能为空或 `dumb`）。
-页面：**Dashboard / Skills / Recent / Categories / Data**。
+页面：**Dashboard / Skills / Recent / Categories / Data / MCP**。
 
 **Dashboard 顶部的 5 张卡片**（每张卡片有名字，下面一行是数字）：
 
@@ -92,6 +98,10 @@ skillt
 | `OSS` | 来自开源上游的 skill 数量（`category = open-source`） |
 
 卡片下方有图例说明，并显示**观察样本**（N 个 session、D 天）；若 `Uses` 为 0，表格区会提示「还没有使用记录」。
+
+图例下面还有**一行 MCP 汇总**：`MCP: N call(s) · S server(s) · T tool(s) · D today`。MCP 计数与 skill 计数**分开统计**，所以 `Uses` 卡片永远不会把 MCP 流量算进去。
+
+**MCP 页**（最后一个标签页）每个 `(server, tool)` 组合一行，显示调用次数、成功率、平均耗时、最近使用时间；排序与 Skills 页共用 `s` / `ctrl+s`。
 
 | 按键 | 作用 |
 |---|---|
@@ -119,6 +129,7 @@ skillt insight [--days N] [--min-uses N] [--limit N] [--json]
 skillt export  [--out FILE] [--pretty] [--force] [--skills-only]
 skillt sync    [--dry-run] [--prune-orphans] [--json]
 skillt health  [--json] [--limit N]
+skillt mcp     [--json] [--limit N]
 skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json]
 skillt cleanup-selftest [--yes]
@@ -128,6 +139,7 @@ skillt cleanup-selftest [--yes]
 - `export`：导出 JSON（0600）；不指定 `--out` 则打印到 stdout。
 - `sync`：重新扫描 `SKILL.md`，把内容变更记录进 `skill_versions`；`--dry-run` 只统计不写。
 - `health`：把每个 skill 分成 **活跃（≤30 天）/ 沉寂（30–90 天）/ 未使用（>90 天或从未）**，并给出风险标记与建议。会显示**观察样本**（N 个 session、D 天）；样本不足 **20 个 session 或 14 天**时只输出一行"数据不足"，不给剪枝建议——在样本足够之前，"0 次使用"没有意义。**只读、只建议、绝不自动删除。**
+- `mcp`：MCP 工具使用情况——按 server 汇总，再列出调用最多的工具（次数、成功率、最近使用）。**只读。**
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
@@ -159,6 +171,10 @@ skillt help
 - **`skill_usage`**：每次调用一行。`UNIQUE(session_id, call_id)` 保证幂等去重。
   `status ∈ {success, error, denied, ask, unknown}`；`trigger_type ∈ {tool_call, event_detected, permission_denied, manual}`。
   `metadata` 是 JSON 文本（model / agent / branch / summary，已由插件清洗）。
+- **`mcp_usage`**：每次 MCP 工具调用一行，按 `(server_name, tool_name)` 区分。
+  与 `skill_usage` 同样的 `UNIQUE(session_id, call_id)` 去重，同样的 status / trigger_type 取值。
+  `tool_name = '*'` 表示只知道 server、不知道具体工具（权限拒绝路径）。
+  `arg_names` 是调用**参数名**组成的 JSON 数组——参数**值**从不读取，因此不可能被存进来。
 - **`skill_versions`**：内容哈希历史，`UNIQUE(skill_name, content_hash)`。
 
 ### 5.2 视图
@@ -166,6 +182,9 @@ skillt help
 - `v_skill_totals`：每个 skill 的 total / success / errors / denied / last_used。
 - `v_skill_last30`：近 30 天使用次数。
 - `v_skill_history`：把 `metadata` 里的字段展开成列，便于查询。
+- `v_mcp_totals`：每个 `(server, tool)` 的 total / success / errors / denied / last_used。
+- `v_mcp_last30`：近 30 天调用次数。
+- `v_mcp_history`：MCP 版的历史视图，额外带 `arg_names`。
 
 ### 5.3 运行参数
 
@@ -178,6 +197,8 @@ skillt help
 ```bash
 sqlite3 ~/.local/share/opencode/skill-usage.db \
   "SELECT skill_name, total, success, errors, last_used FROM v_skill_totals ORDER BY total DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode/skill-usage.db \
+  "SELECT server_name, tool_name, total, errors FROM v_mcp_totals ORDER BY total DESC LIMIT 10;"
 ```
 
 ---
@@ -322,6 +343,7 @@ rm -rf ~/.local/share/opencode/backups
 - **M7 git 子进程泄漏（已修复）。** 旧版 `resolveBranch` 的 500ms 超时**不杀 git 子进程、也不清定时器**，在坏挂载点上每次会泄漏一个进程。现改用 `Bun.spawn` + `AbortController`：超时会真正终止子进程（exit 143），并在 `finally` 里 `clearTimeout`。
 - **M8 未做容量上限（已修复）。** `branchByDir` / `pendingSkillPerms` 现与 `sessionCtx` / `callCtx` 一样走 `setCapped`（上限 `MAP_CAP`），不再随进程生命周期增长。另：`skill_db.h()` 仍是死代码（0 调用）。
 - **M9 重试静默失效（已修复）。** 旧版 `initDone = true` 在 `init()` 完成**之前**置位，任何早退都会让后续重试静默 no-op。现在 `initDone` 仅在 schema 创建成功后置位，并发调用由 `initInFlight` 去重，失败后仍可重试。
+- **M11 MCP 服务列表只在插件初始化时解析一次。** 新增或改名一个 MCP 服务后，必须**重启 OpenCode** 它的调用才会被记录；在那之前这些调用是**不可见**的（只是被跳过，**不会**记错）。检测**失败即关闭**：若一个服务都识别不出来，宁可不写，也不去猜哪些工具是 MCP。只记**参数名**、绝不记参数值。
 
 ### 编码
 

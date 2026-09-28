@@ -25,7 +25,7 @@ def test_readme_has_all_sections():
 
 def test_readme_documents_every_known_limitation():
     text = _text()
-    for marker in ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10"):
+    for marker in ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11"):
         assert marker in text, f"README does not mention {marker}"
     for keyword in (
         "UTC",                          # M1
@@ -38,6 +38,7 @@ def test_readme_documents_every_known_limitation():
         "容量上限",                      # M8
         "initDone",                     # M9
         "退出码",                        # M10
+        "重启 OpenCode",                 # M11
     ):
         assert keyword in text, f"known-limitation detail missing: {keyword}"
 

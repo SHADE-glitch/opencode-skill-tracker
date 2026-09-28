@@ -1,9 +1,9 @@
-# OpenCode Skill Tracker (`skillt`)
+# OpenCode Skill + MCP Tracker (`skillt`)
 
-Record and query how every skill in [OpenCode](https://opencode.ai) is actually
-used: which skill ran, when, whether it succeeded, how long it took, and in which
-project. Everything lands in a single local SQLite file — no network, no upload,
-no conversation content.
+Record and query how every skill **and every MCP tool** in
+[OpenCode](https://opencode.ai) is actually used: what ran, when, whether it
+succeeded, how long it took, and in which project. Everything lands in a single
+local SQLite file — no network, no upload, no conversation content.
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -15,17 +15,22 @@ OpenCode has no dedicated skill hook. This project recognises skill usage
 indirectly, through the generic tool hooks:
 
 - OpenCode exposes skills as a tool named `skill` with input `{ name }`;
+- MCP tools are exposed as `{server}_{tool}` (e.g. `basic-memory_read_note`)
+  and go through the **same** generic tool wrapper, so they are observed
+  through the same hooks;
 - the plugin `skill-tracker.js` listens on `tool.execute.before` /
   `tool.execute.after` / `permission.ask` / `event` / `chat.message`;
-- when the tool name is `skill`, the call is written to SQLite;
+- when the tool is `skill` the call is written to `skill_usage`; when it belongs
+  to a known MCP server it is written to `mcp_usage`;
 - `skillt` queries, reports, exports, backs up and health-checks that data.
 
 Design constraints, deliberately kept:
 
 - **No OpenCode source changes** — public plugin hooks only.
 - **No instrumentation in `SKILL.md`** — nothing to add to your skills.
-- Only structured metadata is stored (skill name, status, duration, project
-  path, session, model/agent/branch). **No secrets, no message bodies.**
+- Only structured metadata is stored (tool name, status, duration, project
+  path, session, model/agent/branch). **No secrets, no message bodies.** For
+  MCP calls, only the argument *key names* are recorded — values are never read.
 - One plugin file + one shared data layer + one entry point, minimal deps.
 
 ---
@@ -40,9 +45,9 @@ Design constraints, deliberately kept:
 | `uv` | optional but recommended for creating the venv; plain `python3 -m venv` also works |
 
 The headless subcommands (`insight`, `health`, `doctor`, `export`, `sync`,
-`auto-backup`) need **only the Python standard library**. The interactive TUI
-needs [Textual](https://textual.textualize.io/) (`textual>=8.2,<9`), installed
-into a venv by `install.sh`.
+`mcp`, `auto-backup`) need **only the Python standard library**. The interactive
+TUI needs [Textual](https://textual.textualize.io/) (`textual>=8.2,<9`),
+installed into a venv by `install.sh`.
 
 ---
 
@@ -135,17 +140,26 @@ skillt
 ```
 
 Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs, and `TERM` neither
-empty nor `dumb`). Pages: **Dashboard / Skills / Recent / Categories / Data**.
+empty nor `dumb`). Pages: **Dashboard / Skills / Recent / Categories / Data /
+MCP**.
 
 The five Dashboard cards, each labelled above its number:
 
 | Card | Meaning |
 |---|---|
 | `Skills` | total skills known (rows in `skills`) |
-| `Uses` | total recorded uses (rows in `skill_usage`) |
-| `Today` | uses today (local calendar day) |
+| `Uses` | total recorded skill uses (rows in `skill_usage`) |
+| `Today` | skill uses today (local calendar day) |
 | `Personal` | locally authored skills (`category = personal`) |
 | `OSS` | skills synced from an open-source upstream (`category = open-source`) |
+
+Below the cards a single line summarises MCP activity — `MCP: N call(s) · S
+server(s) · T tool(s) · D today`. The counters are kept separate from the skill
+ones, so `Uses` never silently includes MCP traffic.
+
+The **MCP** page lists one row per `(server, tool)` pair with call count,
+success rate, average duration and last use. It shares the `s` / `ctrl+s` sort
+cycling with the Skills page.
 
 | Key | Action |
 |---|---|
@@ -174,6 +188,7 @@ skillt insight [--days N] [--min-uses N] [--limit N] [--json]
 skillt export  [--out FILE] [--pretty] [--force] [--skills-only]
 skillt sync    [--dry-run] [--prune-orphans] [--json]
 skillt health  [--json] [--limit N]
+skillt mcp     [--json] [--limit N]
 skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json]
 skillt cleanup-selftest [--yes]
@@ -189,6 +204,8 @@ skillt cleanup-selftest [--yes]
   observed sample. Usage-based pruning suggestions are **suppressed** until at
   least 20 sessions over 14 days have been observed — below that, "0 uses"
   means nothing. **Read-only, advisory only, never deletes.**
+- `mcp` — MCP tool usage: per-server roll-up plus the top tools by call count,
+  success rate and last use. **Read-only.**
 - `auto-backup` — snapshot into the backup directory and prune by retention
   policy (see [Backups](#backups)).
 - `doctor` — health check printing PASS/WARN/FAIL; **exit code 1 if any FAIL**.
@@ -243,6 +260,10 @@ OpenCode runtime
 | Variable | Effect |
 |---|---|
 | `OPENCODE_SKILL_TRACKER_DB` | override the database path (the plugin) |
+| `OPENCODE_SKILL_TRACKER_MCP_SERVERS` | comma-separated MCP server names; **when set, automatic detection is skipped** (even when empty) |
+| `OPENCODE_SKILL_TRACKER_MCP_DISABLE` | `1` stops MCP recording while skill recording stays on |
+| `OPENCODE_SKILL_TRACKER_DISABLE` | `1` disables the plugin entirely |
+| `OPENCODE_SKILL_TRACKER_DEBUG` | `1` enables per-call debug lines in the plugin log |
 | `SKILLT_SCRIPTS` | override the `scripts/` directory the launcher uses |
 | `SKILLT_VENV` | point the launcher at a venv dir or a python binary |
 
@@ -250,12 +271,18 @@ OpenCode runtime
 
 - `skills` — one row per `SKILL.md`. `path` is `UNIQUE`; `name` is **not**.
   Migration adds `content_hash` for version tracking.
-- `skill_usage` — one row per call. `UNIQUE(session_id, call_id)` makes it
+- `skill_usage` — one row per skill call. `UNIQUE(session_id, call_id)` makes it
   idempotent. `status ∈ {success, error, denied, ask, unknown}`;
   `trigger_type ∈ {tool_call, event_detected, permission_denied, manual}`.
   `metadata` is sanitized JSON (model / agent / branch / summary).
+- `mcp_usage` — one row per MCP tool call, keyed by `(server_name, tool_name)`.
+  Same `UNIQUE(session_id, call_id)` and status/trigger vocabulary as
+  `skill_usage`. `tool_name = '*'` means only the server was known (the
+  permission paths). `arg_names` is a JSON array of the call's **argument key
+  names only** — argument values are never read, so they cannot be stored.
 - `skill_versions` — content-hash history, `UNIQUE(skill_name, content_hash)`.
-- Views: `v_skill_totals`, `v_skill_last30`, `v_skill_history`.
+- Views: `v_skill_totals`, `v_skill_last30`, `v_skill_history`, plus the MCP
+  analogues `v_mcp_totals`, `v_mcp_last30`, `v_mcp_history`.
 - `journal_mode = WAL`, `busy_timeout = 5000`, `synchronous = NORMAL`, file mode
   `0600`. The `source` (personal / open-source) column is derived from
   `category` at query time, not stored.
@@ -265,6 +292,8 @@ Query it directly:
 ```bash
 sqlite3 ~/.local/share/opencode/skill-usage.db \
   "SELECT skill_name, total, success, errors, last_used FROM v_skill_totals ORDER BY total DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode/skill-usage.db \
+  "SELECT server_name, tool_name, total, errors FROM v_mcp_totals ORDER BY total DESC LIMIT 10;"
 ```
 
 ---
@@ -340,7 +369,7 @@ The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 
 ## Known limitations
 
-The full audit — M1 through M10, with reproduction notes — lives in
+The full audit — M1 through M11, with reproduction notes — lives in
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制). Highlights:
 
 - **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
@@ -361,6 +390,11 @@ The full audit — M1 through M10, with reproduction notes — lives in
   it. It is now set only on success, and a failed init can be retried.
 - **M10** `app.run()` is not wrapped in `try/finally`, so a fatal error may still
   exit with code 0.
+- **M11** The MCP server list is resolved **once, at plugin init**. Adding or
+  renaming an MCP server needs an OpenCode restart before its calls are
+  recorded — until then those calls are invisible (they are never misrecorded,
+  just skipped). Detection fails **closed**: if no server can be identified,
+  nothing is written rather than guessing which tools are MCP.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 

@@ -4,12 +4,15 @@ Guidance for AI coding agents working in this repository.
 
 ## What this is
 
-An OpenCode plugin plus a CLI/TUI that records skill usage into a local SQLite
-database. Three layers, in dependency order:
+An OpenCode plugin plus a CLI/TUI that records **skill and MCP tool** usage into
+a local SQLite database. Three layers, in dependency order:
 
 1. `plugin/skill-tracker.js` — the **only writer**. Runs inside OpenCode's Bun
    runtime. Listens on `tool.execute.before` / `tool.execute.after` /
-   `permission.ask` / `event` / `chat.message`.
+   `permission.ask` / `event` / `chat.message`. Every registered tool goes
+   through the same wrapper, so MCP calls are captured alongside skills; an MCP
+   tool id is `{server}_{tool}` and is resolved against the configured server
+   list by longest-prefix match.
 2. `scripts/skill_db.py` — the shared data layer (schema, migrations, queries,
    export, backup). Imported by both the TUI and the tests.
 3. `scripts/skill-tui.py` (Textual TUI + `--cli` headless subcommands) and
@@ -47,6 +50,14 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
 - **Never commit secrets.** The plugin sanitizes secrets before storing them;
   its self-test fixtures use synthetic values only. Keep it that way.
+- **MCP capture records argument *names* only, never values.** `mcpArgNames()`
+  calls `Object.keys()` and must never read a property. The MCP server list is
+  resolved once at init and detection fails closed (no servers → nothing
+  written). `OPENCODE_SKILL_TRACKER_MCP_DISABLE=1` is the kill switch.
+- **The schema lives in three places and must not drift**: `TABLES_SQL` /
+  `VIEWS_SQL` in the plugin, `SCHEMA_SQL` in `skill_db.py`, and the fixtures in
+  `scripts/tests/conftest.py`. `test_plugin_and_python_schema_do_not_drift`
+  enforces plugin ↔ Python; update all copies together.
 - `__selftest()` requires `OPENCODE_SKILL_TRACKER_DB` to point somewhere other
   than the production database; it refuses to run otherwise.
 
@@ -57,7 +68,7 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **Docs are bilingual**: `README.md` (English, the landing page) and
   `README.zh-CN.md` (Chinese, the exhaustive reference). `scripts/tests/test_readme.py`
   asserts that `README.zh-CN.md` documents every section and limitation
-  M1–M10 — update the Chinese README when behaviour changes, or the suite fails.
+  M1–M11 — update the Chinese README when behaviour changes, or the suite fails.
 - Commit messages follow Conventional Commits (`feat:`, `docs:`, `chore:`,
   `fix:`), code before docs.
 - The test suite must be green before pushing. Tests locate files via
