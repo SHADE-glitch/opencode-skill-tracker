@@ -74,7 +74,8 @@ def test_doctor_json_is_structured(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert doc["summary"]["fail"] == 0
     names = {c["name"] for c in doc["checks"]}
-    assert {"db.quick_check", "plugin.hooks", "skills.frontmatter_names"} <= names
+    assert {"db.quick_check", "plugin.hooks", "plugin.mcp_hooks",
+            "skills.frontmatter_names"} <= names
     conn.close()
 
 

@@ -17,7 +17,15 @@ from conftest import load_module  # noqa: E402
 
 st = load_module("skill-tui.py", "skill_tui")
 
-from textual.widgets import DataTable  # noqa: E402
+from textual.widgets import DataTable, Static  # noqa: E402
+
+
+def static_text(widget) -> str:
+    """Plain text of a Static (Textual 8.x exposes it as `.content`)."""
+    try:
+        return str(widget.content)
+    except Exception:  # noqa: BLE001
+        return ""
 
 SkillTUI = st.get_app_class()
 
@@ -439,3 +447,75 @@ def test_duplicate_skill_names_do_not_crash(tmp_path):
 
     _run(_run_it())
 
+
+
+def test_tui_tab_order_is_pinned(seeded_db):
+    """The tab contract: MCP is appended LAST.
+
+    Three tests reach the Data page by pressing `tab` four times. Inserting a
+    new tab anywhere earlier would silently move them onto a different pane, so
+    the order is pinned here rather than inferred from those tests passing.
+    """
+    from textual.widgets import TabPane
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ids = [p.id for p in app.screen.query(TabPane)]
+            assert ids == [
+                "tab-dash", "tab-skills", "tab-recent", "tab-cats", "tab-data", "tab-mcp",
+            ], ids
+
+            # Four presses still land on Data, which is what the other tests rely on.
+            for _ in range(4):
+                await pilot.press("tab")
+                await pilot.pause()
+            assert app.screen.query_one("TabbedContent").active == "tab-data"
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.screen.query_one("TabbedContent").active == "tab-mcp"
+
+    _run(_run_it())
+
+
+def test_tui_mcp_tab_renders_rows(seeded_mcp_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            summary = app.screen.query_one("#mcp-summary", Static)
+            text = static_text(summary)
+            assert "8" in text, f"MCP call count missing from the summary: {text!r}"
+
+            table = app.screen.query_one("#mcp-table", DataTable)
+            assert table.row_count == 5, "one row per (server, tool) pair"
+
+            # The table is reachable by tabbing and supports sorting.
+            for _ in range(5):
+                await pilot.press("tab")
+                await pilot.pause()
+            assert app.screen.query_one("TabbedContent").active == "tab-mcp"
+            await pilot.press("s")
+            await pilot.pause()
+            assert table.row_count == 5
+
+    _run(_run_it())
+
+
+def test_tui_mcp_tab_is_empty_without_mcp_data(seeded_db):
+    """A skills-only DB must render an empty MCP tab, not an error."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#mcp-table", DataTable)
+            assert table.row_count == 0
+            text = static_text(app.screen.query_one("#mcp-summary", Static))
+            # The summary carries markup, so assert on fragments that markup
+            # does not split.
+            assert "MCP:" in text and "0 tool(s)" in text, text
+
+    _run(_run_it())

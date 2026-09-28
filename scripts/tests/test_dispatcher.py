@@ -95,7 +95,7 @@ def test_directory_db_exit_2(tmp_path):
 
 
 # --- headless routes all reachable ----------------------------------------
-@pytest.mark.parametrize("cmd", ["insight", "health", "doctor", "auto-backup"])
+@pytest.mark.parametrize("cmd", ["insight", "health", "mcp", "doctor", "auto-backup"])
 def test_headless_commands_run(db_path, cmd):
     args = [cmd, "--db", db_path]
     if cmd == "auto-backup":

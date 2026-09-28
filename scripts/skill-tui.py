@@ -6,7 +6,7 @@ Two modes in one file:
   * TUI   (default)      requires `textual` (installed in the skillt venv)
   * --cli <subcommand>   stdlib only; works on the system python3
                          subcommands: insight | export | sync | cleanup-selftest
-                                      | health | auto-backup | doctor
+                                      | health | mcp | auto-backup | doctor
 
 `textual` is imported lazily so the --cli path never depends on the venv.
 
@@ -42,19 +42,20 @@ SORT_LABELS = {
 # ===========================================================================
 # Shared helpers
 # ===========================================================================
-def sort_rows(rows, mode):
+def sort_rows(rows, mode, name_key="skill_name"):
+    """Sort rows by `mode`. `name_key` lets the MCP table reuse this verbatim."""
     if mode == "count":
-        return sorted(rows, key=lambda r: (-r["total"], r["skill_name"]))
+        return sorted(rows, key=lambda r: (-r["total"], r[name_key]))
     if mode == "last_used":
-        return sorted(rows, key=lambda r: (r["last_used"] is None, _neg_str(r["last_used"]), r["skill_name"]))
+        return sorted(rows, key=lambda r: (r["last_used"] is None, _neg_str(r["last_used"]), r[name_key]))
     if mode == "success_rate":
         def rate(r):
             sr = db.success_rate(r["total"], r["success"])
-            # The trailing name keeps ties deterministic (skills with no data
+            # The trailing name keeps ties deterministic (rows with no data
             # all share `sr is None`).
-            return (sr is None, -(sr or 0.0), -r["total"], r["skill_name"])
+            return (sr is None, -(sr or 0.0), -r["total"], r[name_key])
         return sorted(rows, key=rate)
-    return sorted(rows, key=lambda r: r["skill_name"])
+    return sorted(rows, key=lambda r: r[name_key])
 
 
 def _neg_str(s):
@@ -214,6 +215,47 @@ def _cli_health(conn, args) -> int:
     return 0
 
 
+def _cli_mcp(conn, args) -> int:
+    servers = db.mcp_server_rows(conn)
+    tools = db.mcp_stats_rows(conn)
+
+    if args.json:
+        print(json.dumps({"servers": servers, "tools": tools}, ensure_ascii=False, indent=2))
+        return 0
+
+    print("MCP tool usage (read-only)")
+    print("-" * 56)
+    if not tools:
+        print("  no MCP calls recorded yet")
+        print("  (the plugin records MCP tools once a session actually invokes one)")
+        return 0
+
+    print("Servers")
+    print("-" * 56)
+    for s in servers:
+        sr = db.success_rate(s["total"], s["success"])
+        rate = f"{round(sr * 100)}%" if sr is not None else "-"
+        print(
+            f"  {s['server_name']:<24} {s['total']:>5} calls  "
+            f"{s['tools']:>2} tool(s)  ok {rate:<5} last {db.fmt_time(s['last_used'])}"
+        )
+
+    shown = min(args.limit, len(tools))
+    print()
+    print(f"Top tools (showing {shown} of {len(tools)})")
+    print("-" * 56)
+    for t in tools[: args.limit]:
+        sr = db.success_rate(t["total"], t["success"])
+        rate = f"{round(sr * 100)}%" if sr is not None else "-"
+        print(
+            f"  {t['tool_id']:<44} {t['total']:>4}  ok {rate:<5} "
+            f"last {db.fmt_time(t['last_used'])}"
+        )
+    if len(tools) > args.limit:
+        print(f"  ... {len(tools) - args.limit} more (use --limit N)")
+    return 0
+
+
 def _cli_auto_backup(conn, args) -> int:
     try:
         res = db.auto_backup(conn, dry_run=args.dry_run)
@@ -245,6 +287,9 @@ def _cli_auto_backup(conn, args) -> int:
 
 PLUGIN_PATH = os.path.join(db.HOME, ".config", "opencode", "plugin", "skill-tracker.js")
 PLUGIN_MARKERS = ("tool.execute.before", "tool.execute.after", "permission.ask", "event:")
+# Markers of MCP capture. An older plugin records skills only, so a missing
+# marker is a WARN (MCP data stays empty), never a FAIL.
+PLUGIN_MCP_MARKERS = ("mcp_usage", "function classify(", "recordMcpUsage")
 
 
 def _doctor_checks(conn, args) -> list:
@@ -312,8 +357,14 @@ def _doctor_checks(conn, args) -> list:
             miss = [m for m in PLUGIN_MARKERS if m not in src]
             add("plugin.hooks", not miss,
                 "all hooks present" if not miss else f"missing: {', '.join(miss)}", warn=True)
+            miss_mcp = [m for m in PLUGIN_MCP_MARKERS if m not in src]
+            add("plugin.mcp_hooks", not miss_mcp,
+                "MCP capture present" if not miss_mcp
+                else f"missing: {', '.join(miss_mcp)} (MCP calls will not be recorded)",
+                warn=True)
         except OSError as e:
             add("plugin.hooks", False, f"read failed: {e}")
+            add("plugin.mcp_hooks", False, f"read failed: {e}", warn=True)
 
     # --- Environment ----------------------------------------------------
     add("env.python", sys.version_info >= (3, 10), sys.version.split()[0], warn=True)
@@ -378,10 +429,10 @@ def cli_main(args) -> int:
         print(f"skillt: --db must be a file, not a directory: {args.db}", file=sys.stderr)
         return 2
 
-    # sync / cleanup-selftest / doctor need write access (migration); health is
-    # a pure read and opens read-only so it can never alter the DB.
+    # sync / cleanup-selftest / doctor need write access (migration); health and
+    # mcp are pure reads and open read-only so they can never alter the DB.
     try:
-        conn = db.open_db(args.db, readonly=(args.command == "health"))
+        conn = db.open_db(args.db, readonly=(args.command in ("health", "mcp")))
     except sqlite3.Error as e:
         print(f"skillt: cannot open database {args.db}: {e}", file=sys.stderr)
         return 1
@@ -400,6 +451,8 @@ def cli_main(args) -> int:
             return _cli_sync(conn, args)
         if args.command == "health":
             return _cli_health(conn, args)
+        if args.command == "mcp":
+            return _cli_mcp(conn, args)
         if args.command == "auto-backup":
             return _cli_auto_backup(conn, args)
         if args.command == "cleanup-selftest":
@@ -616,6 +669,7 @@ def _tui_classes() -> dict:
                         yield Static(id="card-personal", classes="card")
                         yield Static(id="card-oss", classes="card")
                     yield Static(id="cards-legend")
+                    yield Static(id="mcp-summary")
                     yield Static(id="trend")
                     yield Label("Top Skills", classes="section")
                     t = DataTable(id="dash-top", zebra_stripes=True)
@@ -656,6 +710,14 @@ def _tui_classes() -> dict:
                         yield Button("Health", id="btn-health")
                         yield Button("Clear usage", id="btn-clear", variant="warning")
                     yield Static(id="data-result")
+                # Appended last on purpose: three tests reach the Data tab by
+                # pressing `tab` four times, so inserting earlier would shift
+                # them onto a different pane.
+                with TabPane("MCP", id="tab-mcp"):
+                    yield Static(id="mcp-label")
+                    t = DataTable(id="mcp-table", zebra_stripes=True)
+                    t.cursor_type = "row"
+                    yield t
             yield Footer()
 
         # -- lifecycle ------------------------------------------------------
@@ -698,6 +760,16 @@ def _tui_classes() -> dict:
                     f"observed {s['sample']['sessions']} session(s) over "
                     f"{s['sample']['days_observed']} day(s)[/dim]"
                 )
+
+                mcp_rows = db.mcp_stats_rows(conn)
+                mcp_servers = {r["server_name"] for r in mcp_rows}
+                self.query_one("#mcp-summary", Static).update(
+                    "[dim]MCP: "
+                    f"[b]{s['total_mcp']}[/b] call(s) · "
+                    f"{len(mcp_servers)} server(s) · {len(mcp_rows)} tool(s) · "
+                    f"{s['today_mcp']} today[/dim]"
+                )
+                self.render_mcp(mcp_rows)
 
                 days = db.daily_activity(conn, 7)
                 peak = max((d["count"] for d in days), default=0)
@@ -796,6 +868,45 @@ def _tui_classes() -> dict:
                 except Exception:  # noqa: BLE001 - filtered out or table empty
                     pass
 
+        def render_mcp(self, rows=None) -> None:
+            if rows is None:
+                rows = db.mcp_stats_rows(self.app.conn)
+            rows = sort_rows(rows, self.app.sort_mode, name_key="tool_id")
+
+            table = self.query_one("#mcp-table", DataTable)
+            selected = None
+            if table.row_count:
+                try:
+                    selected = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+                except Exception:  # noqa: BLE001
+                    selected = None
+
+            self.query_one("#mcp-label", Static).update(
+                f"[dim]Sort: {SORT_LABELS[self.app.sort_mode]}   ·   "
+                f"showing {len(rows)} tool(s)[/dim]"
+            )
+            if not table.columns:
+                table.add_columns(
+                    "Server", "Tool", "Calls", "Success Rate", "Avg", "Last Used"
+                )
+            table.clear()
+            for r in rows:
+                sr = db.success_rate(r["total"], r["success"])
+                avg = r.get("avg_ms")
+                # Keyed by the full tool id, which is unique per row.
+                table.add_row(
+                    r["server_name"], r["tool_name"], str(r["total"]),
+                    f"{round(sr*100)}%" if sr is not None else "-",
+                    f"{round(avg)}ms" if avg is not None else "-",
+                    db.fmt_time(r["last_used"]),
+                    key=r["tool_id"],
+                )
+            if selected is not None:
+                try:
+                    table.move_cursor(row=table.get_row_index(selected))
+                except Exception:  # noqa: BLE001 - table empty
+                    pass
+
         def _selected_skill(self) -> str | None:
             """The skill name explicitly selected on the Skills tab, else None.
 
@@ -857,7 +968,7 @@ def _tui_classes() -> dict:
             elif bid == "btn-health":
                 self.action_health()
             elif bid == "btn-clear":
-                self._confirm("Clear ALL skill_usage records? The skills table is kept.", self._do_clear)
+                self._confirm("Clear ALL usage records (skills + MCP)? The skills table is kept.", self._do_clear)
 
         # -- actions --------------------------------------------------------
         def action_refresh_data(self) -> None:
@@ -871,7 +982,11 @@ def _tui_classes() -> dict:
         def action_cycle_sort(self) -> None:
             i = SORT_MODES.index(self.app.sort_mode)
             self.app.sort_mode = SORT_MODES[(i + 1) % len(SORT_MODES)]
-            self.render_skills()
+            # `s` sorts whichever table the user is looking at.
+            if self.query_one(TabbedContent).active == "tab-mcp":
+                self.render_mcp()
+            else:
+                self.render_skills()
 
         def action_next_tab(self) -> None:
             tc = self.query_one(TabbedContent)
@@ -886,6 +1001,7 @@ def _tui_classes() -> dict:
                 "tab-skills": "#skills-table",
                 "tab-recent": "#recent-table",
                 "tab-cats": "#cats-table",
+                "tab-mcp": "#mcp-table",
             }
             sel = mapping.get(tc.active)
             return self.query_one(sel, DataTable) if sel else None
@@ -1072,7 +1188,7 @@ def tui_main(args) -> int:
             "  ./install.sh\n"
             "or manually:\n"
             "  uv venv --python 3.13 .venv && uv pip install -r requirements.txt\n"
-            "Or use the headless CLI:  skillt insight | export | sync",
+            "Or use the headless CLI:  skillt insight | export | sync | mcp",
             file=sys.stderr,
         )
         return 3
@@ -1097,7 +1213,7 @@ class Args:
 
 
 CLI_COMMANDS = {
-    "insight", "export", "sync", "cleanup-selftest", "health", "auto-backup", "doctor",
+    "insight", "export", "sync", "cleanup-selftest", "health", "mcp", "auto-backup", "doctor",
 }
 
 
@@ -1204,7 +1320,7 @@ def main(argv):
         if not args.command:
             raise SystemExit(
                 "--cli requires a subcommand: "
-                "insight|export|sync|cleanup-selftest|health|auto-backup|doctor"
+                "insight|export|sync|cleanup-selftest|health|mcp|auto-backup|doctor"
             )
         return cli_main(args)
 
@@ -1215,7 +1331,7 @@ def main(argv):
         print(
             "skillt: not an interactive terminal (stdin/stdout/stderr must all be TTYs); "
             "cannot start the TUI.\n"
-            "Try instead: skillt insight | skillt export | skillt sync | skillt health\n"
+            "Try instead: skillt insight | skillt export | skillt sync | skillt mcp\n"
             "Or:          skillt --cli insight",
             file=sys.stderr,
         )
