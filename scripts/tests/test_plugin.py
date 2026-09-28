@@ -38,6 +38,13 @@ def upsert_sql(src):
     return m.group(1)
 
 
+@pytest.fixture(scope="module")
+def upsert_mcp_sql(src):
+    m = re.search(r"const UPSERT_MCP_SQL\s*=\s*`([^`]*)`", src)
+    assert m, "UPSERT_MCP_SQL not found in the plugin source"
+    return m.group(1)
+
+
 def _conn():
     c = sqlite3.connect(":memory:")
     c.executescript(db.SCHEMA_SQL)
@@ -48,6 +55,16 @@ def _put(conn, sql, status, duration=None, session="S", call="C", meta="{}"):
     conn.execute(
         sql,
         (None, "skill-x", session, "/p", "tool_call", status, duration, call, meta),
+    )
+
+
+def _put_mcp(
+    conn, sql, status, duration=None, session="S", call="C",
+    server="srv", tool="tool-a", args=None, meta="{}",
+):
+    conn.execute(
+        sql,
+        (server, tool, session, "/p", "tool_call", status, duration, call, args, meta),
     )
 
 
@@ -62,13 +79,13 @@ def test_plugin_registers_all_hooks(src):
 def test_long_lived_maps_are_capacity_bounded(src):
     """M8: caches that outlive a session must not grow without limit.
 
-    `branchByDir` and `pendingSkillPerms` are never cleared during a run, so
+    `branchByDir` and `pendingPerms` are never cleared during a run, so
     a long-lived OpenCode process would leak entries. They must go through
     `setCapped`.
     """
     assert "const MAP_CAP" in src
     assert "function setCapped(" in src
-    for map_name in ("branchByDir", "pendingSkillPerms"):
+    for map_name in ("branchByDir", "pendingPerms"):
         assert f"{map_name}.set(" not in src, f"{map_name} must use setCapped, not .set("
         assert f"setCapped({map_name}" in src, f"{map_name} must go through setCapped"
 
@@ -163,6 +180,103 @@ def test_upsert_keeps_first_metadata(upsert_sql):
 
 
 # ---------------------------------------------------------------------------
+# MCP UPSERT semantics
+# ---------------------------------------------------------------------------
+def test_mcp_upsert_dedup_and_error_override(upsert_mcp_sql):
+    c = _conn()
+    _put_mcp(c, upsert_mcp_sql, "success", 100)
+    _put_mcp(c, upsert_mcp_sql, "success", 100)             # duplicate call
+    assert c.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0] == 1
+    assert c.execute("SELECT status, duration_ms FROM mcp_usage").fetchone()[:] == ("success", 100)
+
+    _put_mcp(c, upsert_mcp_sql, "error", 150)               # event error corrects it
+    assert c.execute("SELECT status FROM mcp_usage").fetchone()[0] == "error"
+
+
+def test_mcp_upsert_success_never_downgrades_error(upsert_mcp_sql):
+    c = _conn()
+    _put_mcp(c, upsert_mcp_sql, "error", 10)
+    _put_mcp(c, upsert_mcp_sql, "success", 20)
+    assert c.execute("SELECT status FROM mcp_usage").fetchone()[0] == "error"
+
+
+def test_mcp_upsert_denied_is_not_overridden_by_error(upsert_mcp_sql):
+    c = _conn()
+    _put_mcp(c, upsert_mcp_sql, "denied", 10)
+    _put_mcp(c, upsert_mcp_sql, "error", 20)
+    assert c.execute("SELECT status FROM mcp_usage").fetchone()[0] == "denied"
+
+
+def test_mcp_upsert_upgrades_the_star_sentinel(upsert_mcp_sql):
+    """The permission path only knows the server, so it writes tool_name='*'.
+
+    A later tool-level observation for the same call must upgrade it to the
+    real tool name — otherwise the TUI would show a permanent '*' bucket.
+    """
+    c = _conn()
+    _put_mcp(c, upsert_mcp_sql, "denied", None, call="C1", tool="*")
+    _put_mcp(c, upsert_mcp_sql, "success", 30, call="C1", tool="read_note")
+    row = c.execute("SELECT tool_name, status FROM mcp_usage WHERE call_id='C1'").fetchone()
+    assert row[0] == "read_note"
+    assert row[1] == "denied", "the upgrade must not resurrect a denied call"
+
+
+def test_mcp_upsert_keeps_first_arg_names(upsert_mcp_sql):
+    c = _conn()
+    _put_mcp(c, upsert_mcp_sql, "success", 10, call="C2", args='["a"]')
+    _put_mcp(c, upsert_mcp_sql, "error", 20, call="C2", args='["b"]')
+    assert c.execute(
+        "SELECT arg_names FROM mcp_usage WHERE call_id='C2'"
+    ).fetchone()[0] == '["a"]'
+
+
+def test_mcp_upsert_fills_missing_arg_names(upsert_mcp_sql):
+    """COALESCE must let a later observation supply names the first one lacked."""
+    c = _conn()
+    _put_mcp(c, upsert_mcp_sql, "success", 10, call="C3", args=None)
+    c.execute("UPDATE mcp_usage SET duration_ms=NULL, status='ask' WHERE call_id='C3'")
+    _put_mcp(c, upsert_mcp_sql, "success", 20, call="C3", args='["identifier"]')
+    assert c.execute(
+        "SELECT arg_names FROM mcp_usage WHERE call_id='C3'"
+    ).fetchone()[0] == '["identifier"]'
+
+
+# ---------------------------------------------------------------------------
+# Schema drift
+# ---------------------------------------------------------------------------
+def _sql_lines(text: str) -> list[str]:
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def test_plugin_and_python_schema_do_not_drift(src):
+    """The DDL lives in two places and nothing else keeps them in sync.
+
+    `skill_db.SCHEMA_SQL` is documented as a verbatim copy of the plugin's
+    TABLES_SQL + VIEWS_SQL. If they drift, the two writers/readers silently
+    disagree about the schema: a DB created by one would be missing objects
+    the other assumes. Compare normalised line sequences so indentation and
+    blank lines stay free.
+    """
+    tables = re.search(r"const TABLES_SQL\s*=\s*`([^`]*)`", src)
+    views = re.search(r"const VIEWS_SQL\s*=\s*`([^`]*)`", src)
+    assert tables, "TABLES_SQL not found in the plugin source"
+    assert views, "VIEWS_SQL not found in the plugin source"
+
+    plugin_lines = _sql_lines(tables.group(1)) + _sql_lines(views.group(1))
+    python_lines = _sql_lines(db.SCHEMA_SQL)
+
+    if plugin_lines != python_lines:
+        import difflib
+
+        diff = "\n".join(
+            difflib.unified_diff(
+                plugin_lines, python_lines, "plugin", "skill_db.SCHEMA_SQL", lineterm=""
+            )
+        )
+        pytest.fail("plugin DDL and skill_db.SCHEMA_SQL have drifted:\n" + diff)
+
+
+# ---------------------------------------------------------------------------
 # Loader contract (OpenCode 1.18.32)
 #
 # The loader invokes EVERY export of a plugin module as a plugin factory, and
@@ -185,7 +299,12 @@ def _run_bun(script: str, extra_env: dict | None = None):
 
 
 def _isolated(tmp_path, isolate_db: bool = True) -> dict:
-    env = {"OPENCODE_SKILL_TRACKER_LOG": str(tmp_path / "plugin.log")}
+    env = {
+        "OPENCODE_SKILL_TRACKER_LOG": str(tmp_path / "plugin.log"),
+        # Pin the MCP server set so detection never reads the developer's real
+        # opencode.json (which exists and does declare servers).
+        "OPENCODE_SKILL_TRACKER_MCP_SERVERS": "test-server",
+    }
     if isolate_db:
         env["OPENCODE_SKILL_TRACKER_DB"] = str(tmp_path / "iso.db")
     return env
@@ -356,3 +475,52 @@ def test_git_timeout_is_enforced_and_killed(tmp_path):
     })
     assert r.returncode == 0, r.stdout + r.stderr
     assert "TIMEOUT_ENFORCED" in r.stdout, r.stdout + r.stderr
+
+
+@requires_bun
+def test_mcp_calls_are_recorded_and_arg_values_never_are(tmp_path):
+    """End-to-end MCP capture through the real hooks.
+
+    Asserts the row shape AND that no argument *value* reached the database —
+    the whole point of recording key names only.
+    """
+    script = """
+    const mod = await import(process.env.PLUGIN_PATH);
+    const plugin = await mod.default.server(
+      { directory: '/tmp/x', worktree: '/tmp/x', client: {} }, {}
+    );
+    const sid = 'sess-mcp', cid = 'call-mcp';
+    const args = { identifier: 'LEAK-ME', query: 'ALSO-LEAK' };
+    await plugin['tool.execute.before'](
+      { tool: 'test-server_read_note', sessionID: sid, callID: cid }, { args }
+    );
+    await plugin['tool.execute.after'](
+      { tool: 'test-server_read_note', sessionID: sid, callID: cid, args }, {}
+    );
+    // A builtin tool must be ignored entirely.
+    await plugin['tool.execute.before'](
+      { tool: 'bash', sessionID: sid, callID: 'call-sh' }, { args: { command: 'x' } }
+    );
+    await plugin['tool.execute.after'](
+      { tool: 'bash', sessionID: sid, callID: 'call-sh', args: { command: 'x' } }, {}
+    );
+    console.log('HOOKS_OK');
+    """
+    r = _run_bun(script, _isolated(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "HOOKS_OK" in r.stdout, r.stdout + r.stderr
+
+    c = sqlite3.connect(str(tmp_path / "iso.db"))
+    try:
+        rows = c.execute(
+            "SELECT server_name, tool_name, trigger_type, status, arg_names FROM mcp_usage"
+        ).fetchall()
+        assert rows == [
+            ("test-server", "read_note", "tool_call", "success", '["identifier","query"]')
+        ], rows
+        assert c.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0] == 0
+        dump = "\n".join(c.iterdump())
+        assert "LEAK-ME" not in dump, "an argument value reached the database"
+        assert "ALSO-LEAK" not in dump, "an argument value reached the database"
+    finally:
+        c.close()

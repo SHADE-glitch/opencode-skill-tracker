@@ -95,6 +95,29 @@ CREATE INDEX IF NOT EXISTS idx_usage_ts      ON skill_usage(timestamp);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON skill_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_usage_trigger ON skill_usage(trigger_type);
 
+CREATE TABLE IF NOT EXISTS mcp_usage (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_name  TEXT    NOT NULL,
+  tool_name    TEXT    NOT NULL,
+  session_id   TEXT,
+  project_path TEXT,
+  trigger_type TEXT    NOT NULL
+               CHECK (trigger_type IN ('tool_call','event_detected','permission_denied','manual')),
+  status       TEXT    NOT NULL DEFAULT 'unknown'
+               CHECK (status IN ('success','error','denied','ask','unknown')),
+  timestamp    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  duration_ms  INTEGER,
+  call_id      TEXT,
+  arg_names    TEXT,
+  metadata     TEXT,
+  UNIQUE (session_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_server  ON mcp_usage(server_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_tool    ON mcp_usage(tool_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_ts      ON mcp_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_mcp_session ON mcp_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_trigger ON mcp_usage(trigger_type);
+
 CREATE VIEW IF NOT EXISTS v_skill_totals AS
 SELECT skill_name,
        COUNT(*)              AS total,
@@ -118,6 +141,32 @@ SELECT u.id, u.skill_name, u.timestamp, u.project_path, u.session_id,
        json_extract(u.metadata,'$.branch')  AS branch,
        json_extract(u.metadata,'$.summary') AS summary
 FROM skill_usage u
+ORDER BY u.timestamp DESC;
+
+CREATE VIEW IF NOT EXISTS v_mcp_totals AS
+SELECT server_name,
+       tool_name,
+       COUNT(*)              AS total,
+       SUM(status='success') AS success,
+       SUM(status='error')   AS errors,
+       SUM(status='denied')  AS denied,
+       MAX(timestamp)        AS last_used
+FROM mcp_usage GROUP BY server_name, tool_name;
+
+CREATE VIEW IF NOT EXISTS v_mcp_last30 AS
+SELECT server_name, tool_name, COUNT(*) AS uses_30d, MAX(timestamp) AS last_used_30d
+FROM mcp_usage
+WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')
+GROUP BY server_name, tool_name;
+
+CREATE VIEW IF NOT EXISTS v_mcp_history AS
+SELECT u.id, u.server_name, u.tool_name, u.timestamp, u.project_path, u.session_id,
+       u.status, u.duration_ms, u.trigger_type, u.arg_names,
+       json_extract(u.metadata,'$.model')   AS model,
+       json_extract(u.metadata,'$.agent')   AS agent,
+       json_extract(u.metadata,'$.branch')  AS branch,
+       json_extract(u.metadata,'$.summary') AS summary
+FROM mcp_usage u
 ORDER BY u.timestamp DESC;
 """
 
@@ -222,7 +271,12 @@ def ensure_schema(conn) -> dict:
     Also puts the DB into WAL mode with a busy timeout, matching the plugin, so
     our writer and the plugin's bun:sqlite writer can coexist.
     """
-    result = {"created_base": False, "added_content_hash": False, "created_versions": False}
+    result = {
+        "created_base": False,
+        "added_content_hash": False,
+        "created_versions": False,
+        "created_mcp": False,
+    }
     for pragma in ("PRAGMA journal_mode = WAL",
                    f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
                    "PRAGMA synchronous = NORMAL"):
@@ -231,7 +285,12 @@ def ensure_schema(conn) -> dict:
         except sqlite3.Error:
             pass
 
+    # Sampled before SCHEMA_SQL runs, which is what actually creates the MCP
+    # objects. Unlike `created_versions` this is a truthful signal.
+    mcp_existed = _table_exists(conn, "mcp_usage")
+
     conn.executescript(SCHEMA_SQL)
+    result["created_mcp"] = not mcp_existed
 
     if not _column_exists(conn, "skills", "content_hash"):
         try:
@@ -458,6 +517,17 @@ def dashboard_summary(conn) -> dict:
         "SELECT COUNT(*) FROM skill_usage "
         "WHERE date(timestamp,'localtime') = date('now','localtime')"
     ).fetchone()[0]
+
+    # MCP counters are kept separate from the skill ones — `total_usage` and
+    # `today_usage` mean skills and must keep meaning that.
+    total_mcp = today_mcp = 0
+    if _mcp_available(conn):
+        total_mcp = conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0]
+        today_mcp = conn.execute(
+            "SELECT COUNT(*) FROM mcp_usage "
+            "WHERE date(timestamp,'localtime') = date('now','localtime')"
+        ).fetchone()[0]
+
     by_source = {
         r["src"]: r["n"]
         for r in conn.execute(
@@ -470,6 +540,8 @@ def dashboard_summary(conn) -> dict:
         "today_usage": today,
         "personal": by_source.get("personal", 0),
         "open_source": by_source.get("open-source", 0),
+        "total_mcp": total_mcp,
+        "today_mcp": today_mcp,
         "sample": sample_size(conn),
     }
 
@@ -544,6 +616,102 @@ def recent_rows(conn, limit: int = 50) -> list[dict]:
             (limit,),
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# MCP reads
+#
+# Migration is only triggered by the TUI, `sync`, `doctor` and
+# `cleanup-selftest`. `health`, `insight` and `export` can therefore meet a DB
+# that predates the mcp_usage table, so every read below degrades to an empty
+# result instead of raising.
+# ---------------------------------------------------------------------------
+def _mcp_available(conn) -> bool:
+    return _table_exists(conn, "mcp_usage")
+
+
+def mcp_stats_rows(conn) -> list[dict]:
+    """Every observed (server, tool) pair with totals. [] when unmigrated."""
+    if not _mcp_available(conn):
+        return []
+    sql = """
+    SELECT t.server_name, t.tool_name,
+           t.server_name || '_' || t.tool_name AS tool_id,
+           t.total, t.success, t.errors, t.denied, t.last_used,
+           COALESCE(l.uses_30d, 0)  AS uses_30d,
+           COALESCE(sc.sessions, 0) AS sessions,
+           COALESCE(sc.projects, 0) AS projects,
+           sc.avg_ms                AS avg_ms
+    FROM v_mcp_totals t
+    LEFT JOIN v_mcp_last30 l
+           ON l.server_name = t.server_name AND l.tool_name = t.tool_name
+    LEFT JOIN (
+        SELECT server_name, tool_name,
+               COUNT(DISTINCT session_id)   AS sessions,
+               COUNT(DISTINCT project_path) AS projects,
+               AVG(duration_ms)             AS avg_ms
+        FROM mcp_usage GROUP BY server_name, tool_name
+    ) sc ON sc.server_name = t.server_name AND sc.tool_name = t.tool_name
+    ORDER BY t.total DESC, t.server_name ASC, t.tool_name ASC
+    """
+    return rows_to_dicts(conn.execute(sql))
+
+
+def mcp_server_rows(conn) -> list[dict]:
+    """Per-server roll-up. [] when unmigrated."""
+    if not _mcp_available(conn):
+        return []
+    sql = """
+    SELECT server_name,
+           COUNT(DISTINCT tool_name) AS tools,
+           COUNT(*)                  AS total,
+           SUM(status='success')     AS success,
+           SUM(status='error')       AS errors,
+           SUM(status='denied')      AS denied,
+           MAX(timestamp)            AS last_used
+    FROM mcp_usage GROUP BY server_name
+    ORDER BY total DESC, server_name ASC
+    """
+    return rows_to_dicts(conn.execute(sql))
+
+
+def mcp_recent_rows(conn, limit: int = 50) -> list[dict]:
+    if not _mcp_available(conn):
+        return []
+    return rows_to_dicts(
+        conn.execute(
+            "SELECT timestamp, server_name, tool_name, project_path, session_id, "
+            "       status, duration_ms, trigger_type, arg_names FROM mcp_usage "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+    )
+
+
+def mcp_tool_detail(conn, server: str, tool: str, limit: int = 200) -> dict | None:
+    if not _mcp_available(conn):
+        return None
+    row = conn.execute(
+        "SELECT server_name, tool_name, COUNT(*) AS total, "
+        "       SUM(status='success') AS success, SUM(status='error') AS errors, "
+        "       SUM(status='denied') AS denied, MAX(timestamp) AS last_used, "
+        "       AVG(duration_ms) AS avg_ms "
+        "FROM mcp_usage WHERE server_name=? AND tool_name=? "
+        "GROUP BY server_name, tool_name",
+        (server, tool),
+    ).fetchone()
+    if not row:
+        return None
+    detail = dict(row)
+    detail["history"] = rows_to_dicts(
+        conn.execute(
+            "SELECT timestamp, project_path, session_id, status, duration_ms, "
+            "       trigger_type, arg_names FROM mcp_usage "
+            "WHERE server_name=? AND tool_name=? ORDER BY timestamp DESC LIMIT ?",
+            (server, tool, limit),
+        )
+    )
+    return detail
 
 
 def skill_detail(conn, skill: str) -> dict | None:
@@ -672,12 +840,16 @@ def _load_meta(raw):
 
 def export_document(conn, include_usage: bool = True, include_insight: bool = True) -> dict:
     doc = {
-        "schema_version": 1,
+        # 2 added the `mcp_usage` key. The change is additive — a v1 consumer
+        # that iterates `skills`/`usage` is unaffected — but the document shape
+        # did change, so the version says so.
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "db_path": db_file_of(conn),
         "skills": [],
         "usage": [],
         "versions": [],
+        "mcp_usage": [],
     }
     for s in stats_rows(conn):
         doc["skills"].append(
@@ -723,6 +895,13 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
         )
     except sqlite3.Error:
         doc["versions"] = []
+
+    # Absent on a DB that predates the mcp_usage table.
+    if _mcp_available(conn):
+        for r in conn.execute("SELECT * FROM mcp_usage ORDER BY timestamp DESC"):
+            row = dict(r)
+            row["metadata"] = _load_meta(row.get("metadata"))
+            doc["mcp_usage"].append(row)
 
     if include_insight:
         doc["insight"] = insight(conn)
@@ -822,12 +1001,18 @@ def clear_usage(conn, also_skills: bool = False) -> dict:
     with _write_txn(conn):
         n = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
         conn.execute("DELETE FROM skill_usage")
+        # "Clear usage" means both kinds of usage. Leaving MCP rows behind
+        # would keep the Dashboard showing MCP counts after a clear.
+        c = 0
+        if _mcp_available(conn):
+            c = conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0]
+            conn.execute("DELETE FROM mcp_usage")
         m = 0
         if also_skills:
             m = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
             conn.execute("DELETE FROM skills")
             conn.execute("DELETE FROM skill_versions")
-    return {"usage_deleted": n, "skills_deleted": m}
+    return {"usage_deleted": n, "skills_deleted": m, "mcp_deleted": c}
 
 
 def delete_skill(conn, skill: str) -> dict:
@@ -863,10 +1048,27 @@ def cleanup_selftest(conn, dry_run: bool = True) -> dict:
             (SELFTEST_PROJECT,),
         )
     )
-    if not dry_run and rows:
+    mcp_rows = []
+    if _mcp_available(conn):
+        mcp_rows = rows_to_dicts(
+            conn.execute(
+                "SELECT id, server_name, tool_name, status, timestamp FROM mcp_usage "
+                "WHERE project_path = ? ORDER BY id",
+                (SELFTEST_PROJECT,),
+            )
+        )
+    if not dry_run and (rows or mcp_rows):
         with _write_txn(conn):
             conn.execute("DELETE FROM skill_usage WHERE project_path = ?", (SELFTEST_PROJECT,))
-    return {"dry_run": dry_run, "matched": len(rows), "rows": rows}
+            if _mcp_available(conn):
+                conn.execute("DELETE FROM mcp_usage WHERE project_path = ?", (SELFTEST_PROJECT,))
+    return {
+        "dry_run": dry_run,
+        "matched": len(rows),
+        "rows": rows,
+        "mcp_matched": len(mcp_rows),
+        "mcp_rows": mcp_rows,
+    }
 
 
 # ---------------------------------------------------------------------------

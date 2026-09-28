@@ -106,3 +106,71 @@ def seeded_db(tmp_path):
     conn.commit()
     conn.close()
     return path
+
+
+@pytest.fixture
+def seeded_mcp_db(tmp_path):
+    """A migrated DB with crafted MCP rows.
+
+    Deliberately separate from `seeded_db`: every count in that fixture is
+    asserted exactly, so adding MCP rows to it would ripple through unrelated
+    tests.
+    """
+    path = str(tmp_path / "seeded-mcp.db")
+    conn = _make_db(path)
+
+    def add(server, tool, status, ago_days, duration=100, session=None,
+            project="/proj", args='["identifier"]'):
+        conn.execute(
+            "INSERT INTO mcp_usage (server_name, tool_name, session_id, project_path,"
+            " trigger_type, status, timestamp, duration_ms, call_id, arg_names, metadata) "
+            "VALUES (?,?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ','now',?),?,?,?,?)",
+            (
+                server,
+                tool,
+                session or f"s-{server}-{tool}-{ago_days}",
+                project,
+                "tool_call",
+                status,
+                f"-{ago_days} days",
+                duration,
+                f"c-{server}-{tool}-{ago_days}",
+                args,
+                '{"model":"p/m","agent":"build","branch":"main"}',
+            ),
+        )
+
+    # basic-memory: a busy tool, a flaky tool, and a denied one.
+    for d in range(1, 4):
+        add("basic-memory", "read_note", "success", d, duration=10)
+    add("basic-memory", "search_notes", "success", 2, duration=500)
+    add("basic-memory", "search_notes", "error", 3, duration=900)
+    add("basic-memory", "write_note", "denied", 4, duration=None, args=None)
+    # playwright: older usage only, so it falls outside the 30-day window.
+    add("playwright", "browser_click", "success", 45, duration=2000)
+    # The permission path only knows the server.
+    add("context7", "*", "denied", 5, duration=None, args=None)
+
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture
+def legacy_db(tmp_path):
+    """A DB as an older version of the tool left it: no MCP objects at all.
+
+    Derived by dropping the MCP objects from the current base schema, so it
+    keeps tracking SCHEMA_SQL instead of duplicating an old copy of the DDL.
+    """
+    path = str(tmp_path / "legacy.db")
+    conn = _make_db(path, migrate=False)
+    conn.executescript(
+        "DROP VIEW IF EXISTS v_mcp_totals;"
+        "DROP VIEW IF EXISTS v_mcp_last30;"
+        "DROP VIEW IF EXISTS v_mcp_history;"
+        "DROP TABLE IF EXISTS mcp_usage;"
+    )
+    conn.commit()
+    conn.close()
+    return path
