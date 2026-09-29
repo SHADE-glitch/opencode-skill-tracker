@@ -1,5 +1,11 @@
 # OpenCode Skill + MCP + Plugin Tracker (`skillt`)
 
+![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x-blue)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+[![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-skill-tracker)
+
 记录并查询 OpenCode 里每个 skill、**MCP 工具和插件工具/命令**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
 数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
 
@@ -8,6 +14,8 @@
 > `~/.local/bin/skillt` 都是**指回本仓库的软链接**，执行 `./install.sh` 一键完成。
 > 下文按**安装后的布局**描述；TUI 虚拟环境推荐放在 `./.venv`，旧的
 > `~/.local/share/opencode/skillt-venv` 仍可用（启动器会自动回退）。
+>
+> 仅在 Linux 上测试，开发与验证环境为 Ubuntu 26.04；其他发行版/平台未验证。
 
 ---
 
@@ -408,3 +416,21 @@ rm -rf ~/.local/share/opencode/backups
 ### 状态语义
 
 - **event 的 `error` 可单向覆盖已记录的 `success`。** 这是刻意的修正：若一次 skill 调用先被 `tool.execute.after` 记为 success，随后 event 报错，则状态会被纠正为 `error`；反向（success 覆盖 error/denied）**不会**发生，`denied` 也不会被覆盖。event 的错误文本不会并入 `metadata`。
+
+---
+
+## 10. 参与贡献
+
+欢迎提交 Issue 与 Pull Request。提交前请确保测试全绿：
+
+```bash
+python3 -m pytest scripts/tests -q     # 仅标准库；TUI 测试会被跳过
+```
+
+改动请保持聚焦；若改动了已记录的行为，请**同时**更新 `README.md` 与
+`README.zh-CN.md` —— `scripts/tests/test_readme.py` 会校验中文文档覆盖了全部
+已知限制（M1–M13）。
+
+## 11. 许可证
+
+[MIT](LICENSE) © 2026 SHADE-glitch

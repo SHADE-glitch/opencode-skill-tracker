@@ -1,5 +1,11 @@
 # OpenCode Skill + MCP + Plugin Tracker (`skillt`)
 
+![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x-blue)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+[![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-skill-tracker)
+
 Record and query how every skill, **every MCP tool** and **every plugin tool /
 command** in [OpenCode](https://opencode.ai) is actually used: what ran, when,
 whether it succeeded, how long it took, and in which project. Everything lands in
@@ -43,6 +49,7 @@ Design constraints, deliberately kept:
 
 | | |
 |---|---|
+| OS | Linux — developed and verified on Ubuntu 26.04; other distributions are **unverified** |
 | OpenCode | 1.18.x (developed and tested against 1.18.32) |
 | Python | 3.11+ for the CLI and TUI (tested on 3.11, 3.13, 3.14) |
 | Bun | bundled with OpenCode — used to run the plugin; only needed for the plugin self-test |
@@ -512,6 +519,21 @@ systemctl --user disable --now skillt-auto-backup.timer
 rm ~/.config/systemd/user/skillt-auto-backup.{service,timer}
 systemctl --user daemon-reload
 ```
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Before opening a PR, make sure the suite
+is green:
+
+```bash
+python3 -m pytest scripts/tests -q     # standard library only; TUI tests are skipped
+```
+
+Keep changes scoped, and update **both** `README.md` and `README.zh-CN.md` when
+you change documented behaviour — `scripts/tests/test_readme.py` asserts that the
+Chinese documentation covers every known limitation.
 
 ---
 
