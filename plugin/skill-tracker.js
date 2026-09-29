@@ -55,7 +55,8 @@ const MCP_DISABLED = process.env.OPENCODE_SKILL_TRACKER_MCP_DISABLE === "1";
 // Plugin-provided tool/command recording has a third one, for the same reason.
 const PLUGIN_DISABLED = process.env.OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE === "1";
 
-const SUMMARY_MAX = 120;
+const SANITIZE_MAX = 120;
+const META_TEXT_MAX = 200; // cap for sanitized free-text metadata (title/error)
 const BUSY_TIMEOUT_MS = 5000;
 const MAP_CAP = 5000; // FIFO eviction guard for in-memory maps
 const GIT_TIMEOUT_MS = 500;
@@ -395,8 +396,14 @@ let pluginSurface = new Map(); // plugin name -> { tools: Set, commands: Set }
 let toolToPlugin = new Map(); // plugin tool id  -> plugin name
 let commandToPlugin = new Map(); // plugin command id -> plugin name
 let builtinTools = null; // lazily built; null means "not read yet"
-const sessionCtx = new Map(); // sessionID -> { directory, model, agent, summary, title }
-const callCtx = new Map(); // callID    -> { sessionID, startMs, kind, skillName, server, tool, argNames }
+const sessionCtx = new Map(); // sessionID -> { directory, model, agent }
+// callIDs are only unique within a session, so every in-flight key includes the
+// session id. Keying on the call id alone let two sessions running the same id
+// share (and clobber) each other's start time, kind and skill name.
+function callKey(sessionID, callID) {
+  return `${sessionID ?? ""}:${callID ?? ""}`;
+}
+const callCtx = new Map(); // callKey(sessionID, callID) -> { sessionID, startMs, kind, skillName, server, tool, argNames }
 const branchByDir = new Map(); // dir       -> branch | null
 const pendingPerms = new Map(); // permissionID -> { kind, name, server, tool, callID }
 
@@ -457,7 +464,10 @@ function classify(toolId, opts) {
   // MCP first: its namespace is explicit, and the configured server set is the
   // authority for the ambiguous `{server}_{tool}` ids. Still fail closed —
   // an id we cannot positively place is never guessed to be MCP.
-  if (!MCP_DISABLED) {
+  //
+  // Runs even when MCP recording is disabled, so an MCP id is still recognised
+  // here and does not fall through to the plugin branch below.
+  {
     const ns = serverFromNamespace(toolId);
     if (ns) return { kind: "mcp", server: ns, tool: null };
     if (mcpServers.size) {
@@ -595,9 +605,12 @@ async function fetchMcpServersFromClient(client) {
 }
 
 async function loadMcpServers(client) {
+  // Discovery runs even when recording is disabled. `classify` needs the server
+  // names to recognise an MCP tool id; without them an MCP id falls through to
+  // the plugin branch and is stored as a bogus "(unknown)" plugin call.
+  // Suppressing the write is recordMcpUsage()'s job, not this function's.
   if (MCP_DISABLED) {
     log("info", "mcp recording disabled via OPENCODE_SKILL_TRACKER_MCP_DISABLE");
-    return;
   }
 
   // 1. An explicit override always wins — even when empty — so tests never
@@ -918,26 +931,45 @@ export function parseFrontmatter(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Sanitization — applied only to the user-message text used as `summary`.
+// Sanitization — applied to every free-text field that reaches the DB
+// (permission `title` and tool `error`). Message bodies are never stored at
+// all, so there is nothing of theirs to sanitize.
+//
 // Replace -> collapse -> truncate -> replace again (catches a secret that
 // straddles the truncation boundary). Raw text is never persisted or logged.
+//
+// This is best-effort defence in depth: no pattern list is ever complete, so
+// the real guarantee comes from only ever storing metadata, never message or
+// tool-argument content.
 // ---------------------------------------------------------------------------
 const SECRET_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{8,}/g, // OpenAI-style
-  /\bghp_[A-Za-z0-9]{20,}/g, // GitHub PAT
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g, // Stripe
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g, // GitHub tokens
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g, // GitHub fine-grained PAT
   /\bark-[A-Za-z0-9-]{16,}/g, // Volcengine (a live key exists in opencode.json)
+  /\bAIza[A-Za-z0-9_-]{35}\b/g, // Google API key
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, // Slack
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, // AWS access key id
   /\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*/gi, // bearer tokens
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g, // JWT
   /\b[A-Fa-f0-9]{32,}\b/g, // long hex
   /\b[A-Za-z0-9+/]{40,}={0,2}\b/g, // long base64
-  /\b(?:api[_-]?key|apikey|access[_-]?token|token|password|passwd|secret)\s*[=:]\s*\S+/gi,
+  /\b[A-Za-z0-9_-]{40,}\b/g, // long base64url (opaque tokens)
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@/gi, // URL with embedded credentials
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/g, // PEM private key header
+  // KEY=VALUE / KEY: VALUE for secret-looking keys. The `\b` before the key
+  // is what keeps benign names such as `max_tokens` from matching.
+  /\b[A-Za-z0-9_]*(?:SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[=:]\s*\S+/gi,
+  /\b(?:ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|REFRESH[_-]?TOKEN|TOKEN)\s*[=:]\s*\S+/gi,
 ];
 
-export function sanitize(input) {
+export function sanitize(input, max = SANITIZE_MAX) {
   if (!input) return "";
   let t = String(input);
   for (const re of SECRET_PATTERNS) t = t.replace(re, "[REDACTED]");
   t = t.replace(/\s+/g, " ").trim();
-  if (t.length > SUMMARY_MAX) t = t.slice(0, SUMMARY_MAX);
+  if (t.length > max) t = t.slice(0, max);
   for (const re of SECRET_PATTERNS) t = t.replace(re, "[REDACTED]");
   return t;
 }
@@ -1000,7 +1032,18 @@ function scanSkills() {
     }
   }
 
-  // Rebuild name -> id cache (also used to resolve skill_id on writes).
+  refreshSkillIdCache();
+
+  log("info", `scanned ${count} skills (${noName} without frontmatter name) from ${SKILLS_DIR}`);
+  return count;
+}
+
+// Rebuild the name -> id cache used to resolve `skill_id` on writes. Called at
+// the end of a scan and again if a write fails its foreign-key check, because
+// the skills rows can disappear underneath a running session (e.g. a
+// `skillt clear --all`).
+function refreshSkillIdCache() {
+  if (!db) return;
   try {
     skillIdByName = new Map();
     for (const row of db.query("SELECT id, name FROM skills").all()) {
@@ -1009,9 +1052,6 @@ function scanSkills() {
   } catch (e) {
     log("err", "skill id cache: " + errMsg(e));
   }
-
-  log("info", `scanned ${count} skills (${noName} without frontmatter name) from ${SKILLS_DIR}`);
-  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,25 +1211,31 @@ async function resolveWriteContext(sessionID, projectPath) {
 }
 
 function buildMetadata(ctx, branch, callID, source, toolId, meta) {
+  // Metadata only — never message bodies and never tool-argument values.
+  // `title` and `error` are free text that routinely echoes inputs (commands,
+  // stderr, file contents), so both go through sanitize().
   const metadata = {
     tool: toolId,
     call_id: callID ?? null,
     agent: ctx.agent ?? null,
     model: ctx.model ?? null,
     branch: branch ?? null,
-    summary: ctx.summary ?? null,
     source,
   };
-  if (meta && meta.title) metadata.title = meta.title;
-  if (meta && meta.error) metadata.error = String(meta.error).slice(0, 200);
+  if (meta && meta.title) metadata.title = sanitize(meta.title, META_TEXT_MAX);
+  if (meta && meta.error) metadata.error = sanitize(meta.error, META_TEXT_MAX);
   return metadata;
+}
+
+function isForeignKeyError(e) {
+  return /FOREIGN KEY constraint failed/i.test(errMsg(e));
 }
 
 async function recordUsage(
   { skillName, sessionID, projectPath, triggerType, status, callID, durationMs, meta }
 ) {
   if (!db) return;
-  try {
+  const write = async () => {
     const { ctx, dir, branch } = await resolveWriteContext(sessionID, projectPath);
     const metadata = buildMetadata(
       ctx,
@@ -1199,7 +1245,6 @@ async function recordUsage(
       SKILL_TOOL,
       meta
     );
-
     db.query(UPSERT_USAGE_SQL).run(
       skillIdByName.get(skillName) ?? null,
       skillName || "unknown",
@@ -1211,8 +1256,27 @@ async function recordUsage(
       callID ?? null,
       JSON.stringify(metadata)
     );
+  };
+
+  try {
+    await write();
     debug(`recorded ${skillName} (${triggerType}/${status}) session=${sessionID} call=${callID}`);
   } catch (e) {
+    // The skill-id cache is filled at init. If the `skills` rows vanish while
+    // this session is still running (a `skillt clear --all`, or a TUI delete),
+    // every subsequent insert fails its FK check and used to be swallowed —
+    // silently dropping all further usage for the session. Rescan and retry.
+    if (isForeignKeyError(e)) {
+      refreshSkillIdCache();
+      try {
+        await write();
+        debug(`recorded ${skillName} after skill-id rescan`);
+        return;
+      } catch (e2) {
+        log("err", "recordUsage retry: " + errMsg(e2));
+        return;
+      }
+    }
     log("err", "recordUsage: " + errMsg(e));
   }
 }
@@ -1342,7 +1406,7 @@ async function skillTrackerPlugin(input) {
       const name =
         c.kind === "skill" && args && typeof args.name === "string" ? args.name : null;
       debug(`before ${c.kind} callID=${hookInput.callID} name=${name || c.tool}`);
-      setCapped(callCtx, hookInput.callID, {
+      setCapped(callCtx, callKey(hookInput.sessionID, hookInput.callID), {
         sessionID: hookInput.sessionID,
         startMs: Date.now(),
         kind: c.kind,
@@ -1359,9 +1423,10 @@ async function skillTrackerPlugin(input) {
       if (!hookInput) return;
       const c = classify(hookInput.tool);
       if (!c) return;
-      const ctx = callCtx.get(hookInput.callID);
+      const key = callKey(hookInput.sessionID, hookInput.callID);
+      const ctx = callCtx.get(key);
       const duration = ctx && ctx.startMs ? Date.now() - ctx.startMs : null;
-      callCtx.delete(hookInput.callID);
+      callCtx.delete(key);
 
       if (c.kind === "mcp") {
         await recordMcpUsage({
@@ -1482,6 +1547,10 @@ async function skillTrackerPlugin(input) {
         sessionID: hookInput.sessionID,
         triggerType: "command_call",
         status: "unknown",
+        // NULL on purpose. SQLite treats NULLs as distinct in UNIQUE
+        // (session_id, call_id), so the upsert degrades to a plain INSERT and
+        // every invocation gets its own row — which is what "count how often
+        // this command ran" requires. A synthetic id here would collapse them.
         callID: null,
         durationMs: null,
         meta: { source: "command.execute.before" },
@@ -1522,8 +1591,9 @@ async function skillTrackerPlugin(input) {
             st.input && typeof st.input.name === "string" ? st.input.name : null;
 
           if (st.status === "pending" || st.status === "running") {
-            if (!callCtx.has(part.callID)) {
-              setCapped(callCtx, part.callID, {
+            const key = callKey(part.sessionID, part.callID);
+            if (!callCtx.has(key)) {
+              setCapped(callCtx, key, {
                 sessionID: part.sessionID,
                 startMs: st.time && st.time.start ? st.time.start : Date.now(),
                 kind: c.kind,
@@ -1539,6 +1609,9 @@ async function skillTrackerPlugin(input) {
           }
 
           if (st.status === "completed" || st.status === "error") {
+            // The pending/running branch above may have parked an entry; drop it
+            // here so a long session does not accumulate finished calls.
+            callCtx.delete(callKey(part.sessionID, part.callID));
             const duration =
               st.time && st.time.start && st.time.end ? st.time.end - st.time.start : null;
             const status = st.status === "completed" ? "success" : "error";
@@ -1596,6 +1669,7 @@ async function skillTrackerPlugin(input) {
           const raw = perm.pattern || (perm.metadata && perm.metadata.name) || "unknown";
           setCapped(pendingPerms, perm.id, {
             kind: c.kind,
+            itemKind: c.itemKind ?? "tool",
             name: String(Array.isArray(raw) ? raw[0] : raw),
             server: c.server ?? null,
             tool: c.tool ?? null,
@@ -1665,15 +1739,12 @@ async function skillTrackerPlugin(input) {
     }),
 
     // -- context only (never written directly) ------------------------------
-    "chat.message": safe("chat.message", async (hookInput, hookOutput) => {
+    // Captures agent/model for the session. The message text is deliberately
+    // not read at all: storing even a sanitized snippet of it would contradict
+    // the "no message bodies" contract the README makes.
+    "chat.message": safe("chat.message", async (hookInput) => {
       const sid = hookInput && hookInput.sessionID;
       if (!sid) return;
-      const parts = (hookOutput && hookOutput.parts) || [];
-      const text = parts
-        .filter((p) => p && p.type === "text" && typeof p.text === "string")
-        .map((p) => p.text)
-        .join(" ");
-      const summary = sanitize(text);
       const model = hookInput.model
         ? `${hookInput.model.providerID}/${hookInput.model.modelID}`
         : undefined;
@@ -1682,7 +1753,6 @@ async function skillTrackerPlugin(input) {
         ...prev,
         agent: hookInput.agent ?? prev.agent,
         model: model ?? prev.model,
-        summary: summary || prev.summary,
       });
     }),
 
@@ -1816,11 +1886,28 @@ export async function __selftest() {
   const s = sanitize("key ark-00000000-0000-0000-0000-000000000000 and sk-abcdefgh12345678");
   assert(s.includes("[REDACTED]") && !s.includes("ark-00000000") && s.length <= 120, "sanitize redacts");
 
+  // Common token formats that the original pattern list missed.
+  const s2 = sanitize(
+    [
+      "gho_" + "A".repeat(30), // GitHub OAuth token
+      "AIza" + "B".repeat(35), // Google API key
+      "xoxb-1234567890-abcdef", // Slack
+      "SECRET_KEY=hunter2", // .env-style
+      "AKIAIOSFODNN7EXAMPLE", // AWS access key id
+    ].join(" ")
+  );
+  assert(
+    !/gho_|AIza|xoxb-|hunter2|AKIA/.test(s2),
+    "sanitize covers GitHub/Google/Slack/.env/AWS token formats"
+  );
+
   const skillCount = db.query("SELECT COUNT(*) AS c FROM skills").get().c;
   assert(skillCount > 0, `skills scanned (${skillCount})`);
 
   const sid = "sess-test-1";
   const cid = "call-test-1";
+  // The text part is passed on purpose: the handler must ignore message
+  // content entirely, so nothing from it may reach the DB (asserted below).
   await plugin["chat.message"](
     { sessionID: sid, agent: "build", model: { providerID: "p", modelID: "m" } },
     { parts: [{ type: "text", text: "please use the ark-00000000-0000-0000-0000-000000000000 skill" }] }
@@ -1836,10 +1923,8 @@ export async function __selftest() {
   assert(rows[0].status === "success" && rows[0].trigger_type === "tool_call", "row is success/tool_call");
   assert(rows[0].duration_ms != null, "duration recorded");
   const meta = JSON.parse(rows[0].metadata);
-  assert(
-    meta.summary && meta.summary.includes("[REDACTED]") && !meta.summary.includes("ark-00000000"),
-    "summary sanitized in db"
-  );
+  assert(!("summary" in meta), "message body must never be stored in metadata");
+  assert(!rows[0].metadata.includes("ark-00000000"), "no message text may reach the DB");
   assert(meta.branch === "test-branch", "branch captured via git");
   assert(meta.agent === "build" && meta.model === "p/m", "agent+model captured");
 
@@ -1866,7 +1951,7 @@ export async function __selftest() {
       properties: {
         part: {
           id: "p2", sessionID: sid, messageID: "m2", type: "tool", callID: cid2, tool: "skill",
-          state: { status: "error", input: { name: "docker-env-normalization" }, error: "boom", time: { start: 2000, end: 2500 } },
+          state: { status: "error", input: { name: "docker-env-normalization" }, error: "boom sk-abcdefgh12345678", time: { start: 2000, end: 2500 } },
         },
       },
     },
@@ -1875,6 +1960,12 @@ export async function __selftest() {
   assert(
     r2 && r2.status === "error" && r2.trigger_type === "event_detected" && r2.duration_ms === 500,
     "event error path"
+  );
+  // Tool errors echo inputs, so they are sanitized before being stored.
+  const errMeta = JSON.parse(r2.metadata);
+  assert(
+    errMeta.error && errMeta.error.includes("[REDACTED]") && !errMeta.error.includes("sk-abcdefgh"),
+    "error text is sanitized before storage"
   );
 
   // Permission denial via hook.
