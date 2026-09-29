@@ -119,3 +119,63 @@ def test_legacy_top_limit_invalid_exit_1(db_path):
     assert r.returncode == 1
     assert "Traceback" not in r.stderr
     assert "--limit requires a number" in (r.stdout + r.stderr)
+
+
+# --- legacy write semantics (must match skill_db / the TUI) ----------------
+def _seed(db_path, with_mcp=True, with_plugin=True, skill=None):
+    conn = db.open_db(db_path, readonly=False)
+    if skill:
+        conn.execute(
+            "INSERT INTO skills (name, category, path, description) VALUES (?,?,?,?)",
+            (skill, "open-source-skills", f"/s/{skill}", "seeded"),
+        )
+    if with_mcp:
+        conn.execute(
+            "INSERT INTO mcp_usage (server_name, tool_name, session_id, trigger_type,"
+            " status, call_id) VALUES ('srv','tool','s1','tool_call','success','m1')"
+        )
+    if with_plugin:
+        conn.execute(
+            "INSERT INTO plugin_usage (plugin_name, kind, item_name, session_id,"
+            " trigger_type, status, call_id)"
+            " VALUES ('pl','tool','it','s1','tool_call','success','p1')"
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_legacy_delete_removes_a_never_used_skill(db_path):
+    """`skillt delete` must work for a skill with zero usage rows.
+
+    It used to return early on "No usage records", so exactly the skills the
+    health report tells you to prune could not be deleted at all.
+    """
+    _seed(db_path, with_mcp=False, with_plugin=False, skill="never-used")
+    r = run("delete", "never-used", "--yes", "--db", db_path)
+    assert r.returncode == 0, r.stderr
+    conn = db.open_db(db_path)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM skills WHERE name='never-used'"
+    ).fetchone()[0] == 0, "the skills row must be gone too"
+    conn.close()
+
+
+def test_legacy_clear_removes_mcp_and_plugin_rows(db_path):
+    """`skillt clear` must clear every usage table, like the TUI button does."""
+    _seed(db_path)
+    r = run("clear", "--all", "--yes", "--db", db_path)
+    assert r.returncode == 0, r.stderr
+    conn = db.open_db(db_path)
+    for table in ("skill_usage", "mcp_usage", "plugin_usage"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+    conn.close()
+
+
+def test_legacy_show_accepts_flags_before_the_name(db_path):
+    """`show --limit 5 NAME` must not treat "--limit" as the skill name."""
+    _seed(db_path, with_mcp=False, with_plugin=False, skill="myskill")
+    a = run("show", "--limit", "5", "myskill", "--db", db_path)
+    b = run("show", "myskill", "--limit", "5", "--db", db_path)
+    assert a.returncode == 0, a.stderr
+    assert "Traceback" not in a.stderr
+    assert a.stdout == b.stdout, (a.stdout, b.stdout)
