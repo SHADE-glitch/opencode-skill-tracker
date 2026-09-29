@@ -65,10 +65,17 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **Plugin inventory is init-time state.** A new/renamed plugin or surface needs
   an OpenCode restart to be discovered; `plugin_inventory` is retained when
   usage is cleared.
-- **The schema lives in three places and must not drift**: `TABLES_SQL` /
-  `VIEWS_SQL` in the plugin, `SCHEMA_SQL` in `skill_db.py`, and the fixtures in
-  `scripts/tests/conftest.py`. `test_plugin_and_python_schema_do_not_drift`
-  enforces plugin ↔ Python; update all copies together.
+- **The schema lives in two places and must not drift**: `TABLES_SQL` /
+  `VIEWS_SQL` in the plugin, and `SCHEMA_SQL` in `skill_db.py`. Nothing else
+  carries a copy — `skill-stats.py` imports `skill_db`, and the test fixtures
+  build their databases through `db.SCHEMA_SQL` / `db.ensure_schema()`.
+  `test_plugin_and_python_schema_do_not_drift` enforces plugin ↔ Python;
+  update both copies in the same commit.
+- **View changes need a version bump.** `CREATE VIEW IF NOT EXISTS` never
+  updates an existing view, so `ensure_schema()` drops and recreates the
+  views in `VIEW_NAMES` whenever `PRAGMA user_version` is below
+  `SCHEMA_VERSION`, then stamps it. Bump `SCHEMA_VERSION` whenever a view
+  definition changes, or existing databases keep the old view.
 - `__selftest()` requires `OPENCODE_SKILL_TRACKER_DB` to point somewhere other
   than the production database; it refuses to run otherwise.
 
