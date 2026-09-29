@@ -672,7 +672,7 @@ def _tui_classes() -> dict:
 
         def on_mount(self) -> None:
             table = self.query_one("#detail-history", DataTable)
-            table.add_columns("Time", "Project", "session", "Status", "Duration", "Model", "agent", "Branch", "Summary")
+            table.add_columns("Time", "Project", "Session", "Status", "Duration", "Model", "Agent", "Branch")
             for r in self.detail.get("history", []):
                 table.add_row(
                     db.fmt_time(r["timestamp"]),
@@ -683,11 +683,10 @@ def _tui_classes() -> dict:
                     r["model"] or "-",
                     r["agent"] or "-",
                     r["branch"] or "-",
-                    (r["summary"] or "")[:60],
                 )
             if self.detail.get("versions"):
                 vt = self.query_one("#detail-versions", DataTable)
-                vt.add_columns("Recorded", "hash", "Bytes")
+                vt.add_columns("Recorded", "Hash", "Bytes")
                 for v in self.detail["versions"]:
                     vt.add_row(db.fmt_time(v["recorded_at"]), (v["content_hash"] or "")[:16], str(v["size_bytes"] or "-"))
 
@@ -707,13 +706,18 @@ def _tui_classes() -> dict:
             with VerticalScroll(id="detail-body"):
                 yield Static(f"[b]{self.server}.{self.tool}[/b]", id="detail-title")
                 sr = db.success_rate(d.get("total"), d.get("success"))
+                # Keep `avg` out of the conditional: an inline `... if x else ...`
+                # here binds to the whole concatenated string, which silently
+                # dropped "last used" when avg was present and the entire stats
+                # block when it was absent.
+                avg = d.get("avg_ms")
+                avg_part = f"avg {round(avg)}ms   " if avg is not None else ""
                 yield Static(
                     f"[dim]server[/dim] {self.server}   [dim]tool[/dim] {self.tool}\n"
                     f"total {d.get('total', 0)}   success {d.get('success', 0)}   "
                     f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
                     f"success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
-                    f"avg {round(d['avg_ms'])}ms" if d.get("avg_ms") is not None else "" + "   "
-                    f"last used {db.fmt_time(d.get('last_used'))}",
+                    f"{avg_part}last used {db.fmt_time(d.get('last_used'))}",
                     id="detail-stats",
                 )
                 yield Label("Call history (Enter on the MCP tab opens this page)", id="detail-hist-label")
@@ -724,7 +728,7 @@ def _tui_classes() -> dict:
 
         def on_mount(self) -> None:
             table = self.query_one("#detail-history", DataTable)
-            table.add_columns("Time", "Project", "session", "Status", "Duration", "Trigger", "Args")
+            table.add_columns("Time", "Project", "Session", "Status", "Duration", "Trigger", "Args")
             for r in self.detail.get("history", []):
                 table.add_row(
                     db.fmt_time(r["timestamp"]),
@@ -769,7 +773,7 @@ def _tui_classes() -> dict:
 
         def on_mount(self) -> None:
             table = self.query_one("#detail-history", DataTable)
-            table.add_columns("Time", "Project", "session", "Status", "Duration", "Trigger")
+            table.add_columns("Time", "Project", "Session", "Status", "Duration", "Trigger")
             for r in self.detail.get("history", []):
                 table.add_row(
                     db.fmt_time(r["timestamp"]),
@@ -853,29 +857,34 @@ def _tui_classes() -> dict:
             yield Header(show_clock=True)
             with TabbedContent(initial="tab-dash"):
                 with TabPane("Dashboard", id="tab-dash"):
-                    with Horizontal(id="cards"):
-                        yield Static(id="card-skills", classes="card")
-                        yield Static(id="card-usage", classes="card")
-                        yield Static(id="card-mcp", classes="card")
-                        yield Static(id="card-plugin", classes="card")
-                        yield Static(id="card-today", classes="card")
-                        yield Static(id="card-rate", classes="card")
-                    yield Static(id="cards-legend")
-                    yield Label("Last 7 days", classes="section")
-                    with Horizontal(id="trend-row"):
-                        yield Static(id="trend-skills", classes="trend")
-                        yield Static(id="trend-mcp", classes="trend")
-                        yield Static(id="trend-plugins", classes="trend")
-                    yield Label("Top Skills", classes="section")
-                    t = DataTable(id="dash-top", zebra_stripes=True)
-                    t.cursor_type = "row"
-                    yield t
-                    yield Label("Top MCP tools", classes="section")
-                    t = DataTable(id="dash-mcp", zebra_stripes=True)
-                    yield t
-                    yield Label("Top Plugins", classes="section")
-                    t = DataTable(id="dash-plugins", zebra_stripes=True)
-                    yield t
+                    # The dashboard is taller than most terminals (cards + legend
+                    # + 3 charts + 3 top-10 tables). Without a scroll container
+                    # Textual renders the overflow *off-screen* and the last
+                    # sections become unreachable, so it must scroll.
+                    with VerticalScroll(id="dash-body"):
+                        with Horizontal(id="cards"):
+                            yield Static(id="card-skills", classes="card")
+                            yield Static(id="card-usage", classes="card")
+                            yield Static(id="card-mcp", classes="card")
+                            yield Static(id="card-plugin", classes="card")
+                            yield Static(id="card-today", classes="card")
+                            yield Static(id="card-rate", classes="card")
+                        yield Static(id="cards-legend")
+                        yield Label("Last 7 days", classes="section")
+                        with Horizontal(id="trend-row"):
+                            yield Static(id="trend-skills", classes="trend")
+                            yield Static(id="trend-mcp", classes="trend")
+                            yield Static(id="trend-plugins", classes="trend")
+                        yield Label("Top Skills", classes="section")
+                        t = DataTable(id="dash-top", zebra_stripes=True)
+                        t.cursor_type = "row"
+                        yield t
+                        yield Label("Top MCP tools", classes="section")
+                        t = DataTable(id="dash-mcp", zebra_stripes=True)
+                        yield t
+                        yield Label("Top Plugins", classes="section")
+                        t = DataTable(id="dash-plugins", zebra_stripes=True)
+                        yield t
                 with TabPane("Skills", id="tab-skills"):
                     yield Input(
                         placeholder="Filter (Esc clears)  ·  ctrl+s sort · ctrl+r refresh",
@@ -927,6 +936,7 @@ def _tui_classes() -> dict:
                         "Dangerous actions always ask for confirmation.",
                         id="data-help",
                     )
+                    yield Static(id="data-info")
                     with Horizontal(id="data-buttons"):
                         yield Button("Backup", id="btn-backup", variant="primary")
                         yield Button("Vacuum", id="btn-vacuum")
@@ -948,7 +958,25 @@ def _tui_classes() -> dict:
                     db.sync_versions(self.app.conn)
                 except Exception as e:  # noqa: BLE001
                     self.app.notify(f"sync failed: {e}", severity="warning")
+            self._layout_cards()
             self.refresh_data()
+
+        def on_resize(self, event) -> None:
+            self._layout_cards()
+
+        def _layout_cards(self) -> None:
+            """Six cards across on a wide terminal, 3x2 on a narrow one.
+
+            A single six-across row wraps every label below ~120 columns
+            ("Plugin calls" becomes "Plugin" / "calls"), which looks broken.
+            """
+            try:
+                cards = self.query_one("#cards")
+            except Exception:  # noqa: BLE001 - before compose in tests
+                return
+            wide = self.size.width >= 120
+            cards.styles.grid_size_columns = 6 if wide else 3
+            cards.styles.grid_size_rows = 1 if wide else 2
 
         # -- rendering ------------------------------------------------------
         def refresh_data(self) -> None:
@@ -973,13 +1001,13 @@ def _tui_classes() -> dict:
                 all_rows = db.stats_rows(conn)
                 tot = sum(r["total"] for r in all_rows)
                 ok = sum(r["success"] for r in all_rows)
-                sr_all = db.success_rate(tot, ok)
+                # The number carries the meaning (green/amber/red), so the card
+                # border stays neutral instead of being permanently amber.
                 self.query_one("#card-rate", Static).update(
-                    f"[b]{('%d%%' % round(sr_all * 100)) if sr_all is not None else '-'}[/b]\n[dim]Skill success[/dim]"
+                    f"[b]{rate_text(tot, ok)}[/b]\n[dim]Skill success[/dim]"
                 )
                 self.query_one("#cards-legend", Static).update(
-                    "[dim]Skill calls / MCP calls / Plugin calls = invocation counts  ·  "
-                    f"Today (all) = {s['today_usage']} skill + {s['today_mcp']} mcp"
+                    f"[dim]Today (all) = {s['today_usage']} skill + {s['today_mcp']} mcp"
                     f" + {s.get('today_plugin', 0)} plugin  ·  "
                     f"{s['personal']} personal / {s['open_source']} OSS skills  ·  "
                     f"observed {s['sample']['sessions']} session(s) over "
@@ -995,15 +1023,21 @@ def _tui_classes() -> dict:
                 # MCP and plugin volumes are usually an order of magnitude
                 # below skill calls, so a shared peak would flatten them
                 # invisible. Bars are narrow (10) so all three fit in 80 cols.
-                for wid, label, data in (
-                    ("#trend-skills", "skill calls", db.daily_activity(conn, 7)),
-                    ("#trend-mcp", "MCP calls", db.daily_mcp_activity(conn, 7)),
-                    ("#trend-plugins", "plugin calls", db.daily_plugin_activity(conn, 7)),
+                for wid, label, color, data in (
+                    ("#trend-skills", "skill calls", "cyan", db.daily_activity(conn, 7)),
+                    ("#trend-mcp", "MCP calls", "magenta", db.daily_mcp_activity(conn, 7)),
+                    ("#trend-plugins", "plugin calls", "yellow", db.daily_plugin_activity(conn, 7)),
                 ):
                     peak = max((d["count"] for d in data), default=0)
                     chart = [f"[b]{label}[/b]"]
                     for d in data:
-                        chart.append(f"{d['date'][5:]}  {bar(d['count'], peak, 10):<10} {d['count']}")
+                        # Pad *inside* the markup so the trailing gutter still
+                        # counts; without it the count runs into the next
+                        # chart's date at 80 columns.
+                        cells = f"{bar(d['count'], peak, 8):<8}"
+                        chart.append(
+                            f"{d['date'][5:]}  [{color}]{cells}[/{color}]  {d['count']}"
+                        )
                     self.query_one(wid, Static).update("\n".join(chart))
 
                 top = self.query_one("#dash-top", DataTable)
@@ -1050,14 +1084,60 @@ def _tui_classes() -> dict:
 
                 cats = self.query_one("#cats-table", DataTable)
                 cats.clear(columns=True)
-                cats.add_columns("Source", "category", "skills", "uses", "success", "errors", "denied")
+                cats.add_columns("Source", "Category", "Skills", "Uses", "Success", "Errors", "Denied")
                 for r in db.categories(conn):
                     cats.add_row(
                         r["source"], r["category"] or "-", str(r["skills"]), str(r["usage"]),
                         str(r["success"]), str(r["errors"]), str(r["denied"]),
                     )
+                self.query_one("#data-info", Static).update(self._data_info())
             except Exception as e:  # noqa: BLE001
                 self.app.notify(f"Refresh failed: {e}", severity="error")
+
+        def _data_info(self) -> str:
+            """DB path/size/row counts + last backup, shown on the Data page.
+
+            The page was mostly empty; this is the information you actually
+            want before pressing Backup / Vacuum / Clear.
+            """
+            conn = self.app.conn
+            path = self.app.db_path
+            try:
+                size_kib = os.path.getsize(path) / 1024
+            except OSError:
+                size_kib = 0.0
+
+            def count(table: str) -> int:
+                try:
+                    return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                except sqlite3.Error:
+                    return 0
+
+            latest = None
+            try:
+                if os.path.isdir(db.BACKUP_DIR):
+                    for n in os.listdir(db.BACKUP_DIR):
+                        p = os.path.join(db.BACKUP_DIR, n)
+                        if os.path.isfile(p) and db.BACKUP_RE.match(n):
+                            latest = max(latest or 0, os.path.getmtime(p))
+            except OSError:
+                pass
+            if latest:
+                stamp = datetime.fromtimestamp(latest, timezone.utc).astimezone().strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+            else:
+                stamp = "never"
+
+            return (
+                "[b]Database[/b]\n"
+                f"  [dim]path[/dim]  {db.short_path(path, 64)}\n"
+                f"  [dim]size[/dim]  {size_kib:.0f} KiB\n"
+                f"  [dim]rows[/dim]  {count('skills')} skills · "
+                f"{count('skill_usage')} skill calls · {count('mcp_usage')} MCP · "
+                f"{count('plugin_usage')} plugin · {count('skill_versions')} versions\n"
+                f"  [dim]last backup[/dim]  {stamp}"
+            )
 
         def render_skills(self) -> None:
             needle = self.query_one("#search", Input).value.strip().lower()
@@ -1085,7 +1165,8 @@ def _tui_classes() -> dict:
             hint = "" if self.app.has_usage else "   ·   no usage data yet, all orders coincide"
             self.query_one("#sort-label", Static).update(
                 f"[dim]Sort: {SORT_LABELS[self.app.sort_mode]}   ·   "
-                f"showing {len(rows)} / {len(self.app.all_rows)}{hint}[/dim]"
+                f"showing {len(rows)} / {len(self.app.all_rows)}   ·   "
+                f"Enter opens detail  ·  d deletes{hint}[/dim]"
             )
             # Columns are static, so a row-level clear is enough (and keeps the
             # column set stable across refreshes).
@@ -1461,7 +1542,7 @@ def _tui_classes() -> dict:
                 self._result(f"Backed up: {path}")
                 self.app.notify(f"Backup done: {os.path.basename(path)}")
             except Exception as e:  # noqa: BLE001
-                self._result(f"Backup failed: {e}")
+                self._result(f"Backup failed: {e}", ok=False)
                 self.app.notify(f"Backup failed: {e}", severity="error")
 
         def action_health(self) -> None:
@@ -1493,7 +1574,7 @@ def _tui_classes() -> dict:
                 self._result(f"Exported: {path}")
                 self.app.notify(f"Export done: {os.path.basename(path)}")
             except Exception as e:  # noqa: BLE001
-                self._result(f"Export failed: {e}")
+                self._result(f"Export failed: {e}", ok=False)
                 self.app.notify(f"Export failed: {e}", severity="error")
 
         def _do_clear(self) -> None:
@@ -1535,9 +1616,16 @@ def _tui_classes() -> dict:
             except Exception as e:  # noqa: BLE001
                 self.app.notify(f"Delete failed: {e}", severity="error")
 
-        def _result(self, msg: str) -> None:
+        def _result(self, msg: str, ok: bool = True) -> None:
+            """Report an action's outcome on the Data page.
+
+            The colour is set here rather than in CSS: failures used to be
+            written in the success colour, so a failed backup looked fine.
+            """
             try:
-                self.query_one("#data-result", Static).update(msg)
+                w = self.query_one("#data-result", Static)
+                w.styles.color = "green" if ok else "red"
+                w.update(msg)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1545,14 +1633,19 @@ def _tui_classes() -> dict:
     class SkillTUI(App):
         CSS = """
         Screen { layout: vertical; }
-        #cards { height: 5; }
+        #dash-body { padding: 0 1; }
+        /* Grid so the six cards keep their full labels instead of wrapping:
+           six columns on a wide terminal, three columns (two rows) on a
+           narrow one. on_resize switches grid-size-columns. */
+        #cards {
+            layout: grid; grid-size: 6 1; grid-rows: 5; grid-gutter: 0 1;
+            height: auto;
+        }
         .card {
-            width: 1fr; height: 5; margin: 0 1; padding: 0 1;
+            width: 1fr; height: 5; padding: 0 1;
             border: round $primary; content-align: center middle; text-align: center;
             background: $surface;
         }
-        #card-today { border: round $success; }
-        #card-rate { border: round $warning; }
         #cards-legend { height: auto; padding: 0 2; }
         #dash-top, #dash-mcp, #dash-plugins { height: auto; max-height: 13; }
         #recent-label { padding: 1 2 0 2; height: auto; }
@@ -1560,12 +1653,14 @@ def _tui_classes() -> dict:
         .trend { width: 1fr; height: auto; }
         .section { padding: 1 2 0 2; }
         #sort-label, #mcp-label, #plugins-label { padding: 0 2; height: auto; }
-        #search, #mcp-search, #plugins-search { margin: 1 2 0 2; }
+        #search, #mcp-search, #plugins-search { margin: 0 2; }
         DataTable { height: 1fr; margin: 0 1; }
         DataTable > .datatable--header { text-style: bold; }
         #data-help { padding: 1 2; }
+        #data-info { padding: 0 2 1 2; height: auto; }
         #data-buttons { height: 3; padding: 0 2; }
-        #data-result { padding: 1 2; color: $success; }
+        /* colour is set from _result() so failures are not shown in green */
+        #data-result { padding: 1 2; }
         #detail-body { padding: 1 2; }
         #detail-title { padding: 1 0; text-style: bold; }
         #detail-meta, #detail-stats { padding: 1 2; border: round $primary-muted; margin: 0 0 1 0; }

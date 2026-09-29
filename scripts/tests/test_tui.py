@@ -247,6 +247,11 @@ def test_tui_dashboard_cards_have_labels_and_height(seeded_db):
 
 
 def test_tui_dashboard_legend_present(seeded_db):
+    """The legend breaks down Today and the observation window.
+
+    It no longer spells out "Skill calls / MCP calls / Plugin calls =
+    invocation counts" — the card labels carry that now.
+    """
     from textual.widgets import Static
 
     async def _run_it():
@@ -254,7 +259,10 @@ def test_tui_dashboard_legend_present(seeded_db):
         async with app.run_test() as pilot:
             await pilot.pause()
             legend = str(app.screen.query_one("#cards-legend", Static).content)
-            assert "counts" in legend and "invocation" in legend, legend
+            assert "Today (all)" in legend, legend
+            for word in ("skill", "mcp", "plugin"):
+                assert word in legend, legend
+            assert "observed" in legend and "session(s)" in legend, legend
 
     _run(_run_it())
 
@@ -590,6 +598,46 @@ def test_unified_recent_rows_merges_all_kinds(tmp_path):
     conn.close()
 
 
+def test_unified_recent_rows_bounds_each_source(tmp_path):
+    """Bounding each source before merging still yields the global newest-N.
+
+    A source with many old rows must not starve a source with one new row: the
+    global top-N of a union equals the merge of each source's own top-N.
+    """
+    import sqlite3
+    import skill_db as db
+
+    path = str(tmp_path / "bounded.db")
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db.SCHEMA_SQL)
+    conn.execute(
+        "INSERT INTO skills (name, category, path, description) VALUES ('s','personal-skills','/s','d')"
+    )
+    # 4 old skill rows, each one day older than the last.
+    for days in (4, 5, 6, 7):
+        conn.execute(
+            "INSERT INTO skill_usage (skill_name, session_id, project_path,"
+            " trigger_type, status, timestamp, duration_ms) VALUES ('s','a','/p',"
+            " 'tool_call','success', strftime('%Y-%m-%dT%H:%M:%fZ','now', ?), 10)",
+            (f"-{days} days",),
+        )
+    # A single, much newer MCP row.
+    conn.execute(
+        "INSERT INTO mcp_usage (server_name, tool_name, session_id, project_path,"
+        " trigger_type, status, timestamp, duration_ms) VALUES ('srv','tool','b','/p',"
+        " 'tool_call','success', strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day'), 20)"
+    )
+    conn.commit()
+
+    assert [r["kind"] for r in db.unified_recent_rows(conn, 1)] == ["mcp"]
+    rows = db.unified_recent_rows(conn, 3)
+    conn.close()
+    # Newest is the MCP row, then the two most recent skill rows (-4d, -5d).
+    assert [r["kind"] for r in rows] == ["mcp", "skill", "skill"], rows
+    assert rows[1]["timestamp"] > rows[2]["timestamp"]
+
+
 def test_unified_recent_rows_skills_only_db(seeded_db):
     """A DB without MCP/plugin rows degrades to skill rows only."""
     import sqlite3
@@ -809,5 +857,66 @@ def test_tui_dashboard_tables_size_to_content(seeded_db):
             assert top.outer_size.height >= top.row_count + 1, (
                 f"dashboard table collapsed to height {top.outer_size.height}"
             )
+
+    _run(_run_it())
+
+
+def test_tui_dashboard_scrolls_to_last_section(seeded_plugin_db):
+    """The dashboard overflows an 80x30 terminal and must scroll to it.
+
+    Without a scroll container Textual rendered the overflow off-screen and
+    "Top Plugins" was unreachable at every terminal size (measured: its region
+    started at y=45 on a 45-row viewport even at 120x45).
+    """
+    from textual.containers import VerticalScroll
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            body = app.screen.query_one("#dash-body", VerticalScroll)
+            assert body.virtual_size.height > body.size.height, (
+                "precondition: dashboard content should exceed an 80x30 viewport"
+            )
+            plugins = app.screen.query_one("#dash-plugins", DataTable)
+            assert plugins.region.bottom > body.region.bottom, (
+                "precondition: Top Plugins should start out below the fold"
+            )
+            body.scroll_end(animate=False)
+            await pilot.pause()
+            assert plugins.region.bottom <= body.region.bottom, (
+                "Top Plugins must be reachable after scrolling the dashboard"
+            )
+
+    _run(_run_it())
+
+
+def test_mcp_detail_stats_always_include_last_used(seeded_mcp_db):
+    """The MCP stats panel must survive both branches of the avg check.
+
+    It used to read `f"...rate {..}   " f"avg {..}ms" if avg is not None else
+    "" + "   " f"last used {..}"`. Because an inline conditional binds to the
+    whole concatenated string, the avg-present branch dropped "last used" and
+    the avg-absent branch dropped every total.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            screen_cls = st._tui_classes()["McpDetailScreen"]
+            base = {
+                "total": 2, "success": 2, "errors": 0, "denied": 0,
+                "last_used": "2026-01-01T00:00:00.000Z", "history": [],
+            }
+            for avg in (123.0, None):
+                app.push_screen(screen_cls("srv", "tool", dict(base, avg_ms=avg)))
+                await pilot.pause()
+                text = static_text(app.screen.query_one("#detail-stats", Static))
+                assert "last used" in text, (avg, text)
+                assert "total 2" in text and "success rate" in text, (avg, text)
+                if avg is not None:
+                    assert "avg 123ms" in text, text
+                app.pop_screen()
+                await pilot.pause()
 
     _run(_run_it())
