@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 
 import skill_db as db
 
@@ -51,24 +50,34 @@ def test_migration_preserves_rows_and_schema(empty_db):
 
 
 def test_migration_on_real_db_copy(tmp_path):
-    """Migrating a copy of the production DB must keep every row."""
+    """Migrating a copy of the production DB must keep every row.
+
+    Two things make this hermetic. The snapshot is taken with `VACUUM INTO`
+    rather than `shutil.copy`, so a live WAL database is copied consistently.
+    And the row counts are read from the copy itself, before and after
+    migrating — the old version counted the *live* DB after copying it, so a
+    row the running plugin inserted in between made the test fail even though
+    the migration had preserved everything.
+    """
     real = db.DB_PATH
     if not os.path.exists(real):
         return  # nothing to copy in this environment
     copy = str(tmp_path / "real.db")
-    shutil.copy(real, copy)
-
     src = db.open_db(real, readonly=True)
-    n_skills = src.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
-    n_usage = src.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
-    src.close()
+    try:
+        src.execute("VACUUM INTO ?", (copy,))
+    finally:
+        src.close()
 
     conn = db.open_db(copy, readonly=False)
+    before_skills = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
+    before_usage = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
+
     db.ensure_schema(conn)
     db.ensure_schema(conn)
 
-    assert conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == n_skills
-    assert conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0] == n_usage
+    assert conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == before_skills
+    assert conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0] == before_usage
     conn.close()
 
 

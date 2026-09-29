@@ -6,12 +6,15 @@ Owns: schema, idempotent migration, queries, formatters, hashing/sync, insight,
 export, and the write helpers used by the TUI's data-management page.
 
 Safety contract:
-  * The OpenCode plugin `plugin/skill-tracker.js` owns the base schema and must
-    not be modified. We only ADD a column and a table, both idempotently.
+  * The OpenCode plugin `plugin/skill-tracker.js` owns the base schema. We only
+    ADD columns/tables idempotently, and rebuild views when `SCHEMA_VERSION`
+    changes.
   * The plugin's `skills` upsert writes only name/category/path/description, so
     `content_hash` survives every plugin scan.
-  * Never log or export secrets. `skill_usage.metadata.summary` is already
-    sanitized by the plugin; we pass it through untouched.
+  * Never log or export secrets. `skill_usage.metadata` is sanitized by the
+    plugin before it is written; we pass it through untouched. The views extract
+    only model/agent/branch — never the message body or title, which the plugin
+    no longer reads at all.
 """
 
 from __future__ import annotations
@@ -61,7 +64,10 @@ SOURCE_CASE_SQL = (
 )
 
 # Base DDL — verbatim copy of the plugin's schema, for fresh DBs and tests.
-SCHEMA_SQL = """
+# Tables and views are kept as separate blobs so the views can be rebuilt on a
+# version bump (see ensure_schema) and diffed against the plugin's copy by
+# tests/test_schema_sync.py.
+TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS skills (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   name        TEXT    NOT NULL,
@@ -151,7 +157,9 @@ CREATE TABLE IF NOT EXISTS plugin_inventory (
   first_seen  TEXT NOT NULL,
   last_seen   TEXT NOT NULL
 );
+"""
 
+VIEWS_SQL = """
 CREATE VIEW IF NOT EXISTS v_skill_totals AS
 SELECT skill_name,
        COUNT(*)              AS total,
@@ -227,6 +235,26 @@ SELECT u.id, u.plugin_name, u.kind, u.item_name, u.timestamp, u.project_path, u.
 FROM plugin_usage u
 ORDER BY u.timestamp DESC;
 """
+
+SCHEMA_SQL = TABLES_SQL + VIEWS_SQL  # one blob for fresh DBs and the test fixtures
+
+# Every view we own, so ensure_schema can drop and rebuild them on a bump.
+VIEW_NAMES = (
+    "v_skill_totals",
+    "v_skill_last30",
+    "v_skill_history",
+    "v_mcp_totals",
+    "v_mcp_last30",
+    "v_mcp_history",
+    "v_plugin_totals",
+    "v_plugin_last30",
+    "v_plugin_history",
+)
+
+# Bump when any DDL above changes. `CREATE VIEW IF NOT EXISTS` alone would keep
+# an old definition forever, so ensure_schema rebuilds the views whenever the
+# DB's recorded version is behind.
+SCHEMA_VERSION = 2
 
 # Migration-only DDL (new in this tool).
 VERSIONS_SQL = """
@@ -309,6 +337,27 @@ def success_rate(total, success) -> float | None:
     return round(float(success) / float(total), 3)
 
 
+def iso_utc(dt: datetime) -> str:
+    """Format like SQLite's strftime('%Y-%m-%dT%H:%M:%fZ', ...) — ms precision."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def local_day_bounds(days_back: int = 0) -> tuple[str, str]:
+    """UTC ISO [start, end) of a local calendar day, `days_back` days ago.
+
+    Timestamps are stored as UTC strings, so "today" for a local calendar means
+    a UTC instant range. Expressing the filter as a range on `timestamp` lets
+    SQLite use idx_usage_ts; the old `date(timestamp,'localtime') = ...`
+    comparison forced a full scan of every usage table.
+    """
+    midnight = (
+        datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+        - timedelta(days=days_back)
+    )
+    start = midnight.astimezone(timezone.utc)
+    return iso_utc(start), iso_utc(start + timedelta(days=1))
+
+
 # ---------------------------------------------------------------------------
 # Schema + idempotent migration
 # ---------------------------------------------------------------------------
@@ -335,21 +384,25 @@ def ensure_schema(conn) -> dict:
         "created_versions": False,
         "created_mcp": False,
         "created_plugin": False,
+        "rebuilt_views": False,
     }
-    for pragma in ("PRAGMA journal_mode = WAL",
-                   f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
+    # busy_timeout first: switching journal_mode needs a lock, and with no
+    # timeout set the switch fails immediately on a busy DB — silently leaving
+    # the file in rollback-journal mode for the rest of the session.
+    for pragma in (f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
+                   "PRAGMA journal_mode = WAL",
                    "PRAGMA synchronous = NORMAL"):
         try:
             conn.execute(pragma)
         except sqlite3.Error:
             pass
 
-    # Sampled before SCHEMA_SQL runs, which is what actually creates these
+    # Sampled before the DDL runs, which is what actually creates these
     # objects. Unlike `created_versions` these are truthful signals.
     mcp_existed = _table_exists(conn, "mcp_usage")
     plugin_existed = _table_exists(conn, "plugin_usage")
 
-    conn.executescript(SCHEMA_SQL)
+    conn.executescript(TABLES_SQL)
     result["created_mcp"] = not mcp_existed
     result["created_plugin"] = not plugin_existed
 
@@ -371,16 +424,24 @@ def ensure_schema(conn) -> dict:
     except sqlite3.OperationalError:
         pass
 
+    # Views are versioned. `CREATE VIEW IF NOT EXISTS` on its own would keep an
+    # old definition forever, so a changed view (or a column added to one) could
+    # never reach an existing DB. Drop and rebuild whenever the recorded
+    # version is behind; the plugin never reads the views, so this is safe to do
+    # while it is running.
+    try:
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+    except sqlite3.Error:
+        current = 0
+    if current < SCHEMA_VERSION:
+        for name in VIEW_NAMES:
+            conn.execute(f"DROP VIEW IF EXISTS {name}")
+        result["rebuilt_views"] = True
+    conn.executescript(VIEWS_SQL)
+    conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+
     conn.commit()
     return result
-
-
-def h(conn, column: str) -> str:
-    """Return `column` if it exists on skills, else a NULL placeholder.
-
-    Lets read-only callers keep working on a DB that has not been migrated.
-    """
-    return column if has_content_hash(conn) else f"NULL AS {column}"
 
 
 # ---------------------------------------------------------------------------
@@ -574,9 +635,13 @@ def sample_size(conn) -> dict:
 def dashboard_summary(conn) -> dict:
     total_skills = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
     total_usage = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
+
+    # Range predicate instead of date(timestamp,'localtime') = ... so the
+    # timestamp index can be used.
+    today_start, today_end = local_day_bounds()
     today = conn.execute(
-        "SELECT COUNT(*) FROM skill_usage "
-        "WHERE date(timestamp,'localtime') = date('now','localtime')"
+        "SELECT COUNT(*) FROM skill_usage WHERE timestamp >= ? AND timestamp < ?",
+        (today_start, today_end),
     ).fetchone()[0]
 
     # MCP counters are kept separate from the skill ones — `total_usage` and
@@ -585,8 +650,8 @@ def dashboard_summary(conn) -> dict:
     if _mcp_available(conn):
         total_mcp = conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0]
         today_mcp = conn.execute(
-            "SELECT COUNT(*) FROM mcp_usage "
-            "WHERE date(timestamp,'localtime') = date('now','localtime')"
+            "SELECT COUNT(*) FROM mcp_usage WHERE timestamp >= ? AND timestamp < ?",
+            (today_start, today_end),
         ).fetchone()[0]
 
     # Plugin counters are kept separate, same contract as the MCP ones above.
@@ -594,8 +659,8 @@ def dashboard_summary(conn) -> dict:
     if _plugin_available(conn):
         total_plugin = conn.execute("SELECT COUNT(*) FROM plugin_usage").fetchone()[0]
         today_plugin = conn.execute(
-            "SELECT COUNT(*) FROM plugin_usage "
-            "WHERE date(timestamp,'localtime') = date('now','localtime')"
+            "SELECT COUNT(*) FROM plugin_usage WHERE timestamp >= ? AND timestamp < ?",
+            (today_start, today_end),
         ).fetchone()[0]
 
     by_source = {
@@ -620,26 +685,41 @@ def dashboard_summary(conn) -> dict:
     }
 
 
-def _zero_filled_days(conn, rows: dict, days: int) -> list[dict]:
-    """Zip a {date: count} map onto the last `days` days, zero-filled."""
-    out = []
-    for i in range(days - 1, -1, -1):
-        d = conn.execute("SELECT date('now','localtime', ?)", (f"-{i} days",)).fetchone()[0]
-        out.append({"date": d, "count": rows.get(d, 0)})
-    return out
+def _zero_filled_days(rows: dict, days: int) -> list[dict]:
+    """Zip a {date: count} map onto the last `days` local days, zero-filled.
+
+    The dates are computed in Python rather than with one `SELECT date(...)`
+    per day — that was `days` extra round-trips on every refresh.
+    """
+    today = datetime.now().astimezone().date()
+    return [
+        {"date": (d := (today - timedelta(days=i)).isoformat()), "count": rows.get(d, 0)}
+        for i in range(days - 1, -1, -1)
+    ]
+
+
+def _daily_counts(conn, table: str, days: int) -> list[dict]:
+    """Shared body of the three daily_* helpers.
+
+    The WHERE clause is a range on `timestamp` so idx_*_ts can be used; the
+    GROUP BY still buckets by local calendar day, but only over the rows the
+    index already narrowed down.
+    """
+    start, _ = local_day_bounds(days - 1)
+    rows = {
+        r["d"]: r["n"]
+        for r in conn.execute(
+            f"SELECT date(timestamp,'localtime') AS d, COUNT(*) n FROM {table} "
+            "WHERE timestamp >= ? GROUP BY d",
+            (start,),
+        )
+    }
+    return _zero_filled_days(rows, days)
 
 
 def daily_activity(conn, days: int = 7) -> list[dict]:
     """[{date, count}] for the last `days` days, zero-filled."""
-    rows = {
-        r["d"]: r["n"]
-        for r in conn.execute(
-            "SELECT date(timestamp,'localtime') AS d, COUNT(*) n FROM skill_usage "
-            "WHERE date(timestamp,'localtime') >= date('now','localtime', ?) GROUP BY d",
-            (f"-{days - 1} days",),
-        )
-    }
-    return _zero_filled_days(conn, rows, days)
+    return _daily_counts(conn, "skill_usage", days)
 
 
 def daily_mcp_activity(conn, days: int = 7) -> list[dict]:
@@ -649,16 +729,8 @@ def daily_mcp_activity(conn, days: int = 7) -> list[dict]:
     raising — same degrade contract as the other MCP reads.
     """
     if not _mcp_available(conn):
-        return _zero_filled_days(conn, {}, days)
-    rows = {
-        r["d"]: r["n"]
-        for r in conn.execute(
-            "SELECT date(timestamp,'localtime') AS d, COUNT(*) n FROM mcp_usage "
-            "WHERE date(timestamp,'localtime') >= date('now','localtime', ?) GROUP BY d",
-            (f"-{days - 1} days",),
-        )
-    }
-    return _zero_filled_days(conn, rows, days)
+        return _zero_filled_days({}, days)
+    return _daily_counts(conn, "mcp_usage", days)
 
 
 def daily_plugin_activity(conn, days: int = 7) -> list[dict]:
@@ -667,16 +739,8 @@ def daily_plugin_activity(conn, days: int = 7) -> list[dict]:
     Same pre-migration degrade contract as daily_mcp_activity.
     """
     if not _plugin_available(conn):
-        return _zero_filled_days(conn, {}, days)
-    rows = {
-        r["d"]: r["n"]
-        for r in conn.execute(
-            "SELECT date(timestamp,'localtime') AS d, COUNT(*) n FROM plugin_usage "
-            "WHERE date(timestamp,'localtime') >= date('now','localtime', ?) GROUP BY d",
-            (f"-{days - 1} days",),
-        )
-    }
-    return _zero_filled_days(conn, rows, days)
+        return _zero_filled_days({}, days)
+    return _daily_counts(conn, "plugin_usage", days)
 
 
 def stats_rows(conn) -> list[dict]:
@@ -741,29 +805,43 @@ def unified_recent_rows(conn, limit: int = 100) -> list[dict]:
     status, duration_ms, trigger_type}. `kind` is one of
     "skill" / "mcp" / "plugin". Tables that do not exist yet (unmigrated DB)
     are skipped, so a skills-only DB simply returns skill rows.
+
+    Each source is bounded to `limit` rows *before* merging, so SQLite can walk
+    the per-table `timestamp` index instead of sorting every row of every table.
+    The merged set is at most 3 * limit rows. Errors are *not* swallowed: a
+    source that fails to read raises rather than silently dropping to skills
+    only (which would misreport the timeline as complete).
     """
-    parts: list[str] = [
+    sources: list[str] = [
         "SELECT timestamp, 'skill' AS kind, skill_name AS name, project_path,"
         "       session_id, status, duration_ms, trigger_type FROM skill_usage"
+        " ORDER BY timestamp DESC LIMIT ?"
     ]
+    params: list[int] = [limit]
     if _mcp_available(conn):
-        parts.append(
+        sources.append(
             "SELECT timestamp, 'mcp' AS kind,"
             "       server_name || '.' || tool_name AS name, project_path,"
             "       session_id, status, duration_ms, trigger_type FROM mcp_usage"
+            " ORDER BY timestamp DESC LIMIT ?"
         )
+        params.append(limit)
     if _plugin_available(conn):
-        parts.append(
+        sources.append(
             "SELECT timestamp, 'plugin' AS kind,"
             "       plugin_name || '/' || kind || '/' || item_name AS name,"
             "       project_path, session_id, status, duration_ms,"
             "       trigger_type FROM plugin_usage"
+            " ORDER BY timestamp DESC LIMIT ?"
         )
-    sql = " UNION ALL ".join(parts) + " ORDER BY timestamp DESC LIMIT ?"
-    try:
-        return rows_to_dicts(conn.execute(sql, (limit,)))
-    except sqlite3.Error:
-        return recent_rows(conn, limit)
+        params.append(limit)
+
+    merged: list[dict] = []
+    for sql, bound in zip(sources, params):
+        merged.extend(rows_to_dicts(conn.execute(sql, (bound,))))
+    # ISO-8601 UTC strings of fixed width sort correctly as plain text.
+    merged.sort(key=lambda r: r["timestamp"] or "", reverse=True)
+    return merged[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -1047,15 +1125,21 @@ def insight_fastest_growing(conn, days: int = 30, min_uses: int = 3,
         AND timestamp <  strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
       GROUP BY skill_name),
     j AS (
+      -- Both branches must be kept for every skill: summing them per skill is
+      -- what yields prev > 0 for a skill that is used in both windows. An
+      -- earlier `WHERE skill_name NOT IN (SELECT .. FROM recent)` on the prev
+      -- branch zeroed prev for exactly the skills that had recent usage, so
+      -- every row reported prev=0 and "fastest growing" degenerated into
+      -- "most used recently" (a skill going 10 -> 5 was shown as +5 growth).
       SELECT skill_name, c AS r, 0 AS p FROM recent
       UNION ALL
-      SELECT skill_name, 0, c FROM prev
-      WHERE skill_name NOT IN (SELECT skill_name FROM recent))
+      SELECT skill_name, 0 AS r, c AS p FROM prev
+    )
     SELECT skill_name, SUM(r) AS recent, SUM(p) AS prev,
            SUM(r) - SUM(p) AS delta
     FROM j GROUP BY skill_name
-    HAVING recent >= ?
-    ORDER BY (recent + 1.0) / (prev + 1.0) DESC, delta DESC, recent DESC
+    HAVING SUM(r) >= ?
+    ORDER BY (SUM(r) + 1.0) / (SUM(p) + 1.0) DESC, delta DESC, recent DESC
     LIMIT ?
     """
     args = (f"-{days} days", f"-{2 * days} days", f"-{days} days", min_uses, limit)

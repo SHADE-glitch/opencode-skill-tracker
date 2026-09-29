@@ -159,3 +159,46 @@ def test_today_usage_uses_local_calendar(seeded_db):
     days = db.daily_activity(conn, 7)
     assert days[-1]["count"] >= 1, "a row dated now must fall in the last (today) bucket"
     conn.close()
+
+
+def test_fastest_growing_counts_the_prior_window(seeded_db):
+    """`prev` must come from the previous window, not be pinned to zero.
+
+    The prev branch used to exclude every skill that also had recent usage
+    (`WHERE skill_name NOT IN (SELECT .. FROM recent)`), so `prev` was 0 for
+    every output row. The ranking then degenerated into "most used recently"
+    and a *declining* skill was reported as growth: `decline` (5 uses in the
+    prior window, 1 now) came out as prev=0, delta=+1.
+    """
+    conn = db.open_db(seeded_db)
+    rows = {
+        r["skill_name"]: r
+        for r in db.insight_fastest_growing(conn, days=30, min_uses=1, limit=10)
+    }
+
+    # flat: 2 uses in [-30d, now) and 2 in [-60d, -30d)
+    assert rows["flat"]["recent"] == 2, rows["flat"]
+    assert rows["flat"]["prev"] == 2, rows["flat"]
+    assert rows["flat"]["delta"] == 0, rows["flat"]
+
+    # decline: 1 recent vs 5 older -> shrinking, must not look like growth
+    assert rows["decline"]["recent"] == 1, rows["decline"]
+    assert rows["decline"]["prev"] == 5, rows["decline"]
+    assert rows["decline"]["delta"] == -4, rows["decline"]
+
+    # a genuinely new skill still has nothing in the prior window
+    assert rows["grow"]["prev"] == 0, rows["grow"]
+    assert rows["grow"]["delta"] == 5, rows["grow"]
+    conn.close()
+
+
+def test_fastest_growing_orders_shrinking_last(seeded_db):
+    """Growth ratio, not raw volume: a shrinking skill sorts below a growing one."""
+    conn = db.open_db(seeded_db)
+    names = [
+        r["skill_name"]
+        for r in db.insight_fastest_growing(conn, days=30, min_uses=1, limit=10)
+    ]
+    assert names[0] == "grow", names
+    assert names[-1] == "decline", names
+    conn.close()
