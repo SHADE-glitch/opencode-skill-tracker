@@ -144,7 +144,7 @@ def test_tui_data_page_backup_and_export(seeded_db, tmp_path):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(4):          # Dashboard -> Skills -> Recent -> Categories -> Data
+            for _ in range(6):          # Dashboard -> Skills -> MCP -> Plugins -> Recent -> Cats -> Data
                 await pilot.press("tab")
                 await pilot.pause()
 
@@ -214,16 +214,17 @@ def test_delete_requires_skills_tab(seeded_db):
 
 
 # ---------------------------------------------------------------------------
-# A2 regression: the five Dashboard cards must be labelled and tall enough to
+# A2 regression: the Dashboard cards must be labelled and tall enough to
 # show both the number and the label. Before the fix, `padding: 1` left only one
 # content row, so the labels were silently clipped.
 # ---------------------------------------------------------------------------
 CARD_LABELS = {
     "#card-skills": "Skills",
-    "#card-usage": "Uses",
+    "#card-usage": "Skill calls",
+    "#card-mcp": "MCP calls",
+    "#card-plugin": "Plugin calls",
     "#card-today": "Today",
-    "#card-personal": "Personal",
-    "#card-oss": "OSS",
+    "#card-rate": "Skill success",
 }
 
 
@@ -378,7 +379,7 @@ def test_tui_data_page_has_no_delete_button(seeded_db):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(4):                # -> Data tab
+            for _ in range(6):                # -> Data tab
                 await pilot.press("tab")
                 await pilot.pause()
             assert not app.screen.query("#btn-delete"), "the Data page delete button must be gone"
@@ -399,7 +400,7 @@ def test_tui_backup_and_export_twice_are_unique(seeded_db):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(4):
+            for _ in range(6):
                 await pilot.press("tab")
                 await pilot.pause()
             await pilot.press("escape")
@@ -450,11 +451,10 @@ def test_duplicate_skill_names_do_not_crash(tmp_path):
 
 
 def test_tui_tab_order_is_pinned(seeded_db):
-    """The tab contract: MCP is appended LAST.
+    """The tab contract: Data stays LAST; skills-adjacent tabs group together.
 
-    Three tests reach the Data page by pressing `tab` four times. Inserting a
-    new tab anywhere earlier would silently move them onto a different pane, so
-    the order is pinned here rather than inferred from those tests passing.
+    New order: Dashboard, Skills, MCP, Plugins, Recent, Categories, Data.
+    Six `tab` presses from Dashboard land on Data.
     """
     from textual.widgets import TabPane
 
@@ -464,18 +464,25 @@ def test_tui_tab_order_is_pinned(seeded_db):
             await pilot.pause()
             ids = [p.id for p in app.screen.query(TabPane)]
             assert ids == [
-                "tab-dash", "tab-skills", "tab-recent", "tab-cats", "tab-data", "tab-mcp",
+                "tab-dash", "tab-skills", "tab-mcp", "tab-plugins",
+                "tab-recent", "tab-cats", "tab-data",
             ], ids
 
-            # Four presses still land on Data, which is what the other tests rely on.
-            for _ in range(4):
+            # Two presses land on MCP, three on Plugins (grouped after Skills).
+            for _ in range(2):
                 await pilot.press("tab")
                 await pilot.pause()
-            assert app.screen.query_one("TabbedContent").active == "tab-data"
+            assert app.screen.query_one("TabbedContent").active == "tab-mcp"
 
             await pilot.press("tab")
             await pilot.pause()
-            assert app.screen.query_one("TabbedContent").active == "tab-mcp"
+            assert app.screen.query_one("TabbedContent").active == "tab-plugins"
+
+            # Three more land on Data, which is what the Data tests rely on.
+            for _ in range(3):
+                await pilot.press("tab")
+                await pilot.pause()
+            assert app.screen.query_one("TabbedContent").active == "tab-data"
 
     _run(_run_it())
 
@@ -486,15 +493,14 @@ def test_tui_mcp_tab_renders_rows(seeded_mcp_db):
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            summary = app.screen.query_one("#mcp-summary", Static)
-            text = static_text(summary)
-            assert "8" in text, f"MCP call count missing from the summary: {text!r}"
+            dash_mcp = app.screen.query_one("#dash-mcp", DataTable)
+            assert dash_mcp.row_count == 5, "dashboard Top MCP mirrors the tab"
 
             table = app.screen.query_one("#mcp-table", DataTable)
             assert table.row_count == 5, "one row per (server, tool) pair"
 
             # The table is reachable by tabbing and supports sorting.
-            for _ in range(5):
+            for _ in range(2):
                 await pilot.press("tab")
                 await pilot.pause()
             assert app.screen.query_one("TabbedContent").active == "tab-mcp"
@@ -506,31 +512,302 @@ def test_tui_mcp_tab_renders_rows(seeded_mcp_db):
 
 
 def test_tui_mcp_tab_is_empty_without_mcp_data(seeded_db):
-    """A skills-only DB must render an empty MCP tab, not an error."""
+    """A skills-only DB must render empty MCP tables, not an error."""
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
             table = app.screen.query_one("#mcp-table", DataTable)
             assert table.row_count == 0
-            text = static_text(app.screen.query_one("#mcp-summary", Static))
-            # The summary carries markup, so assert on fragments that markup
-            # does not split.
-            assert "MCP:" in text and "0 tool(s)" in text, text
+            dash_mcp = app.screen.query_one("#dash-mcp", DataTable)
+            assert dash_mcp.row_count == 0, "dashboard Top MCP stays empty too"
+            assert dash_mcp.columns, "headers render even with no rows"
 
     _run(_run_it())
 
 
 def test_tui_dashboard_has_an_mcp_card(seeded_mcp_db):
-    """MCP sits in the same card row as Skills/Uses, not only in the summary."""
+    """MCP sits in the same card row as Skills/Uses, plus a Top-MCP table."""
     async def _run_it():
         app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
             text = static_text(app.screen.query_one("#card-mcp", Static))
             assert "8" in text, f"MCP count missing from the card: {text!r}"
-            # The summary line stays: it carries servers/tools/today, which the
-            # card has no room for.
-            assert "MCP:" in static_text(app.screen.query_one("#mcp-summary", Static))
+            # The per-tool detail lives in the dashboard table now (the old
+            # one-line summary was removed as redundant with the cards).
+            assert not app.screen.query("#mcp-summary"), "the summary line is gone"
+            assert app.screen.query_one("#dash-mcp", DataTable).row_count == 5
+
+    _run(_run_it())
+
+
+# ---------------------------------------------------------------------------
+# New-feature coverage: unified timeline, MCP/Plugin detail pages, independent
+# per-table sort/filter, dashboard plugin card, status/rate helpers.
+# ---------------------------------------------------------------------------
+def test_unified_recent_rows_merges_all_kinds(tmp_path):
+    """One skill + one MCP + one plugin row merge newest-first."""
+    import sqlite3
+    import skill_db as db
+
+    path = str(tmp_path / "unified.db")
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db.SCHEMA_SQL)
+    conn.execute(
+        "INSERT INTO skills (name, category, path, description) VALUES ('s','personal-skills','/s','d')"
+    )
+    conn.execute(
+        "INSERT INTO skill_usage (skill_name, session_id, project_path, trigger_type,"
+        " status, timestamp, duration_ms) VALUES ('s','a','/p','tool_call','success',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now','-3 days'), 10)"
+    )
+    conn.execute(
+        "INSERT INTO mcp_usage (server_name, tool_name, session_id, project_path,"
+        " trigger_type, status, timestamp, duration_ms) VALUES ('srv','tool','b','/p',"
+        " 'tool_call','error', strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day'), 20)"
+    )
+    conn.execute(
+        "INSERT INTO plugin_usage (plugin_name, kind, item_name, session_id,"
+        " project_path, trigger_type, status, timestamp, duration_ms)"
+        " VALUES ('plug','tool','it','c','/p','tool_call','denied',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now','-2 days'), 30)"
+    )
+    conn.commit()
+
+    rows = db.unified_recent_rows(conn, 100)
+    conn.close()
+    assert [r["kind"] for r in rows] == ["mcp", "plugin", "skill"], rows
+    assert rows[1]["status"] == "denied"
+    assert rows[0]["name"] == "srv.tool"
+    assert rows[2]["name"] == "s"
+
+    # limit is honoured
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    assert len(db.unified_recent_rows(conn, 2)) == 2
+    conn.close()
+
+
+def test_unified_recent_rows_skills_only_db(seeded_db):
+    """A DB without MCP/plugin rows degrades to skill rows only."""
+    import sqlite3
+    import skill_db as db
+
+    conn = sqlite3.connect(seeded_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = db.unified_recent_rows(conn, 100)
+    finally:
+        conn.close()
+    assert rows, "seeded skills must produce timeline rows"
+    assert {r["kind"] for r in rows} == {"skill"}
+
+
+def test_status_cell_and_rate_text_helpers():
+    assert "success" in st.status_cell("success")
+    assert "error" in st.status_cell("error")
+    assert st.rate_text(0, 0) == "-"
+    assert "90%" in st.rate_text(10, 9)
+    assert "100%" in st.rate_text(3, 3)
+
+
+def test_tui_recent_tab_shows_unified_kinds(seeded_db, seeded_mcp_db):
+    """Recent tab renders the unified timeline (kind column, newest first)."""
+    from textual.widgets import TabbedContent
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            kinds = {r["kind"] for r in app.recent_rows_cache}
+            assert kinds == {"skill"}, kinds
+            table = app.screen.query_one("#recent-table", DataTable)
+            assert table.row_count == len(app.recent_rows_cache) >= 1
+            assert table.columns, "the Kind column must exist"
+
+        app2 = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app2.run_test() as pilot:
+            await pilot.pause()
+            assert app2.recent_rows_cache, "MCP rows must reach the timeline"
+            assert {r["kind"] for r in app2.recent_rows_cache} == {"mcp"}
+            assert app2.screen.query_one("#recent-table", DataTable).row_count == 8
+
+    _run(_run_it())
+
+
+def test_tui_mcp_detail_screen_opens(seeded_mcp_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for _ in range(2):                # Dashboard -> Skills -> MCP
+                await pilot.press("tab")
+                await pilot.pause()
+            await pilot.press("j")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.screen.query("#detail-history"), "MCP detail must open"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen.query("#mcp-table")
+
+    _run(_run_it())
+
+
+def test_tui_plugin_detail_screen_opens(seeded_plugin_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for _ in range(3):                # Dashboard -> Skills -> MCP -> Plugins
+                await pilot.press("tab")
+                await pilot.pause()
+            table = app.screen.query_one("#plugins-table", DataTable)
+            assert table.row_count == 4, "one row per (plugin, kind, item)"
+            await pilot.press("j")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.screen.query("#detail-history"), "plugin detail must open"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen.query("#plugins-table")
+
+    _run(_run_it())
+
+
+def test_tui_sort_modes_are_independent_per_table(seeded_mcp_db):
+    """Cycling sort on MCP must not reshuffle the Skills table mode."""
+    from textual.widgets import TabbedContent
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert (app.sort_mode, app.mcp_sort_mode) == ("count", "count")
+            for _ in range(2):
+                await pilot.press("tab")
+                await pilot.pause()
+            assert app.screen.query_one(TabbedContent).active == "tab-mcp"
+            await pilot.press("s")
+            await pilot.pause()
+            assert app.mcp_sort_mode == "last_used", app.mcp_sort_mode
+            assert app.sort_mode == "count", "Skills sort mode must be untouched"
+
+    _run(_run_it())
+
+
+def test_tui_mcp_search_narrows_rows(seeded_mcp_db):
+    from textual.widgets import Input
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.query_one("#mcp-table", DataTable).row_count == 5
+            app.screen.query_one("#mcp-search", Input).value = "read_note"
+            app.screen.render_mcp()
+            await pilot.pause()
+            assert app.screen.query_one("#mcp-table", DataTable).row_count == 1
+            app.screen.query_one("#mcp-search", Input).value = ""
+            app.screen.render_mcp()
+            await pilot.pause()
+            assert app.screen.query_one("#mcp-table", DataTable).row_count == 5
+
+    _run(_run_it())
+
+
+def test_tui_plugins_search_narrows_rows(seeded_plugin_db):
+    from textual.widgets import Input
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.query_one("#plugins-table", DataTable).row_count == 4
+            app.screen.query_one("#plugins-search", Input).value = "compress"
+            app.screen.render_plugins()
+            await pilot.pause()
+            assert app.screen.query_one("#plugins-table", DataTable).row_count == 1
+            app.screen.query_one("#plugins-search", Input).value = ""
+            app.screen.render_plugins()
+            await pilot.pause()
+            assert app.screen.query_one("#plugins-table", DataTable).row_count == 4
+
+    _run(_run_it())
+
+
+def test_tui_dashboard_plugin_card_shows_count(seeded_plugin_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            text = static_text(app.screen.query_one("#card-plugin", Static))
+            assert "Plugin calls" in text, text
+            assert "7" in text, f"plugin call count missing from the card: {text!r}"
+
+    _run(_run_it())
+
+
+def test_tui_dashboard_top_mcp_and_plugins_tables(seeded_plugin_db, seeded_mcp_db):
+    """Dashboard carries Top-10 MCP/plugin tables mirroring their tabs."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            plugins = app.screen.query_one("#dash-plugins", DataTable)
+            assert plugins.row_count == 4, "one row per (plugin, kind, item)"
+            assert app.screen.query_one("#dash-mcp", DataTable).row_count == 0
+
+        app2 = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app2.run_test() as pilot:
+            await pilot.pause()
+            mcp = app2.screen.query_one("#dash-mcp", DataTable)
+            assert mcp.row_count == 5
+            # pre-sorted by total DESC: the busiest tool is on top
+            first = [str(c) for c in mcp.get_row_at(0)]
+            assert first[1] == "basic-memory" and first[2] == "read_note", first
+
+    _run(_run_it())
+
+
+def test_tui_dashboard_trend_has_all_three_charts(seeded_mcp_db):
+    """The trend row charts skill + MCP + plugin calls side by side."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for wid, label in (
+                ("#trend-skills", "skill calls"),
+                ("#trend-mcp", "MCP calls"),
+                ("#trend-plugins", "plugin calls"),
+            ):
+                text = static_text(app.screen.query_one(wid, Static))
+                assert label in text, f"{wid} missing {label!r}: {text!r}"
+                # 7 day-rows under the title
+                assert len(text.strip().splitlines()) == 8, text
+
+    _run(_run_it())
+
+
+def test_tui_dashboard_tables_size_to_content(seeded_db):
+    """Dashboard tables must show all their rows, not collapse to headers.
+
+    #dash-top used `height: 1fr`; once the dashboard grew taller than the
+    viewport (trend x3 + two more tables) the fraction resolved to ~0 and
+    Top Skills rendered as a header-only strip on short terminals.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            top = app.screen.query_one("#dash-top", DataTable)
+            assert top.row_count == 5
+            assert top.outer_size.height >= top.row_count + 1, (
+                f"dashboard table collapsed to height {top.outer_size.height}"
+            )
 
     _run(_run_it())

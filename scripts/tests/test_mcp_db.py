@@ -235,3 +235,24 @@ def test_cleanup_selftest_tolerates_a_legacy_db(legacy_db):
     res = db.cleanup_selftest(conn, dry_run=False)
     assert res["mcp_matched"] == 0
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Daily activity
+# ---------------------------------------------------------------------------
+def test_daily_mcp_activity_counts_last_7_days(seeded_mcp_db):
+    conn = db.open_db(seeded_mcp_db)
+    days = db.daily_mcp_activity(conn, 7)
+    conn.close()
+    assert len(days) == 7
+    assert [d["date"] for d in days] == sorted(d["date"] for d in days)
+    # 8 fixture rows, but the playwright one is 45 days old and out of window.
+    assert sum(d["count"] for d in days) == 7
+
+
+def test_daily_mcp_activity_is_zero_filled_on_a_legacy_db(legacy_db):
+    conn = db.open_db(legacy_db)
+    days = db.daily_mcp_activity(conn, 7)
+    conn.close()
+    assert len(days) == 7
+    assert all(d["count"] == 0 for d in days), days

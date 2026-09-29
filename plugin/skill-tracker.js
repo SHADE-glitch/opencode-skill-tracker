@@ -52,6 +52,8 @@ const DISABLED = process.env.OPENCODE_SKILL_TRACKER_DISABLE === "1";
 const DEBUG = process.env.OPENCODE_SKILL_TRACKER_DEBUG === "1";
 // MCP recording has its own kill switch so the skill side can stay on.
 const MCP_DISABLED = process.env.OPENCODE_SKILL_TRACKER_MCP_DISABLE === "1";
+// Plugin-provided tool/command recording has a third one, for the same reason.
+const PLUGIN_DISABLED = process.env.OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE === "1";
 
 const SUMMARY_MAX = 120;
 const BUSY_TIMEOUT_MS = 5000;
@@ -61,6 +63,26 @@ const MCP_STATUS_TIMEOUT_MS = 1500; // plugin init must never hang on MCP
 const MCP_SERVER_CAP = 256;
 const MCP_ARG_MAX = 32; // argument names recorded per call
 const MCP_ARG_NAME_MAX = 64; // characters per argument name
+const PLUGIN_NAME_MAX = 120;
+const PLUGIN_ITEM_MAX = 120;
+const PLUGIN_SCAN_BLOCK_MAX = 600; // chars read inside a `tool: {` block
+// The plugin name used when a tool is provably not builtin and not MCP, but no
+// installed plugin could be matched to it. Never a guess at a specific plugin.
+const UNKNOWN_PLUGIN = "(unknown)";
+// Builtin tool ids, verified against OpenCode 1.18.33 with
+// `curl /experimental/tool/ids`. Anything outside this set that is not the
+// skill tool and not an MCP tool is treated as plugin-provided. Refresh this
+// list on an OpenCode upgrade, or override it with
+// OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS (comma-separated).
+const DEFAULT_BUILTIN_TOOLS =
+  "invalid,question,bash,read,glob,grep,edit,write,task,webfetch,todowrite,websearch,skill,apply_patch";
+// Infrastructure plugins we do not measure. The tracker excludes *itself* by
+// path (see loadPlugins), never by name, so renaming this file is safe.
+const PLUGIN_EXCLUDE_DEFAULT = ["opencode-notifier"];
+const PLUGIN_EXCLUDE_EXTRA = (process.env.OPENCODE_SKILL_TRACKER_PLUGIN_EXCLUDE || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // ---------------------------------------------------------------------------
 // Logging — never logs payloads, messages, args or metadata (privacy).
@@ -136,6 +158,40 @@ CREATE INDEX IF NOT EXISTS idx_mcp_tool    ON mcp_usage(tool_name);
 CREATE INDEX IF NOT EXISTS idx_mcp_ts      ON mcp_usage(timestamp);
 CREATE INDEX IF NOT EXISTS idx_mcp_session ON mcp_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_trigger ON mcp_usage(trigger_type);
+
+CREATE TABLE IF NOT EXISTS plugin_usage (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_name  TEXT    NOT NULL,
+  kind         TEXT    NOT NULL CHECK (kind IN ('tool','command')),
+  item_name    TEXT    NOT NULL,
+  session_id   TEXT,
+  project_path TEXT,
+  trigger_type TEXT    NOT NULL
+               CHECK (trigger_type IN ('tool_call','command_call','event_detected','permission_denied','manual')),
+  status       TEXT    NOT NULL DEFAULT 'unknown'
+               CHECK (status IN ('success','error','denied','ask','unknown')),
+  timestamp    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  duration_ms  INTEGER,
+  call_id      TEXT,
+  metadata     TEXT,
+  UNIQUE (session_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_plugin_name    ON plugin_usage(plugin_name);
+CREATE INDEX IF NOT EXISTS idx_plugin_item    ON plugin_usage(item_name);
+CREATE INDEX IF NOT EXISTS idx_plugin_ts      ON plugin_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_plugin_session ON plugin_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_trigger ON plugin_usage(trigger_type);
+
+CREATE TABLE IF NOT EXISTS plugin_inventory (
+  plugin_name TEXT PRIMARY KEY,
+  version     TEXT,
+  source      TEXT,
+  skipped     INTEGER NOT NULL DEFAULT 0,
+  tools       TEXT,
+  commands    TEXT,
+  first_seen  TEXT NOT NULL,
+  last_seen   TEXT NOT NULL
+);
 `;
 
 // Views use json_extract (JSON1). Wrapped separately so a missing JSON1 build
@@ -190,6 +246,33 @@ SELECT u.id, u.server_name, u.tool_name, u.timestamp, u.project_path, u.session_
        json_extract(u.metadata,'$.branch')  AS branch,
        json_extract(u.metadata,'$.summary') AS summary
 FROM mcp_usage u
+ORDER BY u.timestamp DESC;
+
+CREATE VIEW IF NOT EXISTS v_plugin_totals AS
+SELECT plugin_name,
+       kind,
+       item_name,
+       COUNT(*)              AS total,
+       SUM(status='success') AS success,
+       SUM(status='error')   AS errors,
+       SUM(status='denied')  AS denied,
+       MAX(timestamp)        AS last_used
+FROM plugin_usage GROUP BY plugin_name, kind, item_name;
+
+CREATE VIEW IF NOT EXISTS v_plugin_last30 AS
+SELECT plugin_name, kind, item_name, COUNT(*) AS uses_30d, MAX(timestamp) AS last_used_30d
+FROM plugin_usage
+WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')
+GROUP BY plugin_name, kind, item_name;
+
+CREATE VIEW IF NOT EXISTS v_plugin_history AS
+SELECT u.id, u.plugin_name, u.kind, u.item_name, u.timestamp, u.project_path, u.session_id,
+       u.status, u.duration_ms, u.trigger_type,
+       json_extract(u.metadata,'$.model')   AS model,
+       json_extract(u.metadata,'$.agent')   AS agent,
+       json_extract(u.metadata,'$.branch')  AS branch,
+       json_extract(u.metadata,'$.summary') AS summary
+FROM plugin_usage u
 ORDER BY u.timestamp DESC;
 `;
 
@@ -251,6 +334,53 @@ WHERE mcp_usage.duration_ms IS NULL
    OR (excluded.status = 'error' AND mcp_usage.status = 'success')
 `;
 
+// Sibling of UPSERT_MCP_SQL for the plugin table. A plugin tool whose owner
+// could not be resolved is written as UNKNOWN_PLUGIN; a later observation that
+// does resolve it upgrades the row, mirroring the MCP '*' sentinel upgrade.
+// The sentinel is interpolated so there is exactly one definition of it.
+const UPSERT_PLUGIN_SQL = `
+INSERT INTO plugin_usage
+  (plugin_name, kind, item_name, session_id, project_path, trigger_type, status,
+   timestamp, duration_ms, call_id, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, ?, ?)
+ON CONFLICT(session_id, call_id) DO UPDATE SET
+  plugin_name  = CASE
+                   WHEN plugin_usage.plugin_name = '${UNKNOWN_PLUGIN}'
+                        AND excluded.plugin_name <> '${UNKNOWN_PLUGIN}'
+                     THEN excluded.plugin_name
+                   ELSE plugin_usage.plugin_name END,
+  duration_ms  = COALESCE(plugin_usage.duration_ms, excluded.duration_ms),
+  status       = CASE
+                   -- Same rule as the other two tables: an error may correct an
+                   -- optimistic success, never the other way round.
+                   WHEN excluded.status = 'error' AND plugin_usage.status = 'success'
+                     THEN 'error'
+                   WHEN plugin_usage.status IN ('success','error','denied')
+                     THEN plugin_usage.status
+                   ELSE excluded.status END,
+  metadata     = COALESCE(plugin_usage.metadata, excluded.metadata),
+  project_path = COALESCE(plugin_usage.project_path, excluded.project_path)
+WHERE plugin_usage.duration_ms IS NULL
+   OR plugin_usage.status IN ('unknown','ask')
+   OR (excluded.status = 'error' AND plugin_usage.status = 'success')
+`;
+
+// One row per plugin seen at init. first_seen is deliberately never updated,
+// so the inventory doubles as a record of when each plugin first appeared.
+const UPSERT_PLUGIN_INVENTORY_SQL = `
+INSERT INTO plugin_inventory
+  (plugin_name, version, source, skipped, tools, commands, first_seen, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+ON CONFLICT(plugin_name) DO UPDATE SET
+  version   = excluded.version,
+  source    = excluded.source,
+  skipped   = excluded.skipped,
+  tools     = excluded.tools,
+  commands  = excluded.commands,
+  last_seen = excluded.last_seen
+`;
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
@@ -264,6 +394,10 @@ let pluginClient = null; // PluginInput.client, used once for MCP server discove
 
 let skillIdByName = new Map(); // skill name -> skills.id
 let mcpServers = new Set(); // configured MCP server names (lowercased never)
+let pluginSurface = new Map(); // plugin name -> { tools: Set, commands: Set }
+let toolToPlugin = new Map(); // plugin tool id  -> plugin name
+let commandToPlugin = new Map(); // plugin command id -> plugin name
+let builtinTools = null; // lazily built; null means "not read yet"
 const sessionCtx = new Map(); // sessionID -> { directory, model, agent, summary, title }
 const callCtx = new Map(); // callID    -> { sessionID, startMs, kind, skillName, server, tool, argNames }
 const branchByDir = new Map(); // dir       -> branch | null
@@ -319,30 +453,53 @@ function serverFromNamespace(value) {
   return m && m[1] ? m[1] : null;
 }
 
-function classify(toolId) {
+function classify(toolId, opts) {
   if (typeof toolId !== "string" || !toolId) return null;
   if (toolId === SKILL_TOOL) return { kind: "skill" };
-  if (MCP_DISABLED) return null;
-  const ns = serverFromNamespace(toolId);
-  if (ns) return { kind: "mcp", server: ns, tool: null };
-  // Fail closed: with no known servers we cannot tell an MCP tool from a
-  // builtin one, so we record nothing rather than guessing.
-  if (mcpServers.size === 0) return null;
-  let best = null;
-  for (const s of mcpServers) {
-    if (toolId.length > s.length + 1 && toolId.startsWith(s + "_")) {
-      if (!best || s.length > best.length) best = s;
+
+  // MCP first: its namespace is explicit, and the configured server set is the
+  // authority for the ambiguous `{server}_{tool}` ids. Still fail closed —
+  // an id we cannot positively place is never guessed to be MCP.
+  if (!MCP_DISABLED) {
+    const ns = serverFromNamespace(toolId);
+    if (ns) return { kind: "mcp", server: ns, tool: null };
+    if (mcpServers.size) {
+      let best = null;
+      for (const s of mcpServers) {
+        if (toolId.length > s.length + 1 && toolId.startsWith(s + "_")) {
+          if (!best || s.length > best.length) best = s;
+        }
+      }
+      if (best) {
+        return { kind: "mcp", server: best, tool: toolId.slice(best.length + 1) || null };
+      }
     }
   }
-  if (!best) return null;
-  return { kind: "mcp", server: best, tool: toolId.slice(best.length + 1) || null };
+
+  // Plugin-provided tools fail *open*: the builtin allowlist is the only thing
+  // separating them from the rest of the registry, so anything outside it that
+  // is neither skill nor MCP is attributed to a plugin — by name when the init
+  // scan resolved it, otherwise to UNKNOWN_PLUGIN.
+  if (PLUGIN_DISABLED) return null;
+  if (builtinToolSet().has(toolId)) return null;
+  const owner = toolToPlugin.get(toolId) || null;
+  // Permission payloads carry permission *kinds* ("mcp", "read", ...) that are
+  // not tool ids at all, so that path accepts only a positively resolved tool
+  // and never the UNKNOWN_PLUGIN fallback.
+  if (!owner && opts && opts.strict) return null;
+  return {
+    kind: "plugin",
+    itemKind: "tool",
+    item: toolId.slice(0, PLUGIN_ITEM_MAX),
+    plugin: owner || UNKNOWN_PLUGIN,
+  };
 }
 
 // Permission payloads are not uniform: some carry the tool id in
 // type/action, others only a `mcp:<server>:*` pattern. Accept both shapes.
 function classifyPermission(perm) {
   if (!perm) return null;
-  const direct = classify(perm.type || perm.action);
+  const direct = classify(perm.type || perm.action, { strict: true });
   if (direct) return direct;
   const patterns = Array.isArray(perm.pattern) ? perm.pattern : [perm.pattern];
   for (const p of [perm.type, perm.action, ...patterns]) {
@@ -372,23 +529,51 @@ function withTimeout(promise, ms) {
   });
 }
 
-function readMcpKeysFromConfig(file) {
+// Reads an OpenCode config file, tolerating JSONC comments. Returns null when
+// the file is missing or unparsable; callers treat that as "nothing here".
+function readJsonConfig(file) {
   try {
-    if (!fs.existsSync(file)) return [];
-    let text = fs.readFileSync(file, "utf8");
-    let json;
+    if (!fs.existsSync(file)) return null;
+    const text = fs.readFileSync(file, "utf8");
     try {
-      json = JSON.parse(text);
+      return JSON.parse(text);
     } catch {
       // Tolerate JSONC: strip block then line comments, then retry once.
-      text = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-      json = JSON.parse(text);
+      return JSON.parse(
+        text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1")
+      );
     }
-    const mcp = json && json.mcp;
-    return mcp && typeof mcp === "object" && !Array.isArray(mcp) ? Object.keys(mcp) : [];
   } catch {
-    return [];
+    return null;
   }
+}
+
+// Global config first, then the project-level files. Shared by MCP and plugin
+// discovery so the two never drift apart.
+function configFiles() {
+  const files = [
+    path.join(CFG_DIR, "opencode.json"),
+    path.join(CFG_DIR, "opencode.jsonc"),
+  ];
+  if (pluginDir) {
+    files.push(
+      path.join(pluginDir, "opencode.json"),
+      path.join(pluginDir, ".opencode/opencode.json")
+    );
+  }
+  return files;
+}
+
+function readMcpKeysFromConfig(file) {
+  const json = readJsonConfig(file);
+  const mcp = json && json.mcp;
+  return mcp && typeof mcp === "object" && !Array.isArray(mcp) ? Object.keys(mcp) : [];
+}
+
+function readPluginSpecsFromConfig(file) {
+  const json = readJsonConfig(file);
+  const list = json && json.plugin;
+  return Array.isArray(list) ? list.filter((s) => typeof s === "string" && s) : [];
 }
 
 async function fetchMcpServersFromClient(client) {
@@ -442,18 +627,8 @@ async function loadMcpServers(client) {
   }
 
   // 3. Configuration files.
-  const files = [
-    path.join(CFG_DIR, "opencode.json"),
-    path.join(CFG_DIR, "opencode.jsonc"),
-  ];
-  if (pluginDir) {
-    files.push(
-      path.join(pluginDir, "opencode.json"),
-      path.join(pluginDir, ".opencode/opencode.json")
-    );
-  }
   const found = new Set();
-  for (const f of files) {
+  for (const f of configFiles()) {
     for (const k of readMcpKeysFromConfig(f)) found.add(k);
   }
   mcpServers = found;
@@ -462,6 +637,254 @@ async function loadMcpServers(client) {
   } else {
     log("info", "mcp servers: none detected (mcp recording disabled)");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin discovery — also runs once at init, never in the hot path.
+//
+// OpenCode exposes no API that says which plugin registered a tool (the tool
+// list carries only id/description/parameters), so attribution is best effort:
+// each installed plugin's bundle is scanned for the tools and commands it
+// registers. A plugin whose registration shape we cannot parse is simply not
+// attributed — the observed tool then falls back to UNKNOWN_PLUGIN rather than
+// being credited to the wrong plugin.
+// ---------------------------------------------------------------------------
+const PACKAGES_DIR =
+  process.env.OPENCODE_SKILL_TRACKER_PACKAGES_DIR ||
+  path.join(HOME, ".cache/opencode/packages");
+
+// Keys that occur inside tool definitions but are never tool ids. Without this
+// the scanner would list `description`/`parameters` as tools, which is
+// harmless for attribution (only observed ids are ever looked up) but
+// misleading in the inventory.
+const SCAN_KEY_DENYLIST = new Set([
+  "description", "parameters", "execute", "args", "inputSchema", "schema",
+  "title", "metadata", "type", "required", "properties", "tool",
+]);
+
+function builtinToolSet() {
+  if (!builtinTools) {
+    const raw = process.env.OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS || DEFAULT_BUILTIN_TOOLS;
+    builtinTools = new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    );
+  }
+  return builtinTools;
+}
+
+// "@scope/name@1.2.3" -> { base: "@scope/name", version: "1.2.3" }
+// "name@1.2.3"        -> { base: "name",         version: "1.2.3" }
+// "name"              -> { base: "name",         version: null }
+function pluginSpecParts(spec) {
+  const at = spec.indexOf("@", 1); // index 1: a leading @ is part of the scope
+  return at === -1
+    ? { base: spec, version: null }
+    : { base: spec.slice(0, at), version: spec.slice(at + 1) || null };
+}
+
+function readPackageMain(dir) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    return typeof pkg.main === "string" && pkg.main ? pkg.main : null;
+  } catch {
+    return null;
+  }
+}
+
+// Resolves a config `plugin` entry to its package directory and entry file.
+// Returns null when nothing usable is found — the caller then records the
+// plugin without a surface rather than guessing.
+function resolvePluginEntry(spec) {
+  if (spec.startsWith("file://") || spec.startsWith("/") || spec.startsWith(".")) {
+    const file = spec.startsWith("file://") ? spec.slice("file://".length) : spec;
+    return fs.existsSync(file)
+      ? { dir: path.dirname(file), entry: file, name: file, version: null, source: "local" }
+      : null;
+  }
+
+  const { base, version } = pluginSpecParts(spec);
+  const inner = path.join(base, "package.json");
+  const candidates = [];
+  // Prefer the exact pinned version; only then fall back to whatever is cached.
+  if (version) {
+    candidates.push(path.join(PACKAGES_DIR, `${base}@${version}`, "node_modules", inner));
+  }
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(PACKAGES_DIR);
+  } catch {
+    return null;
+  }
+  for (const d of dirs.sort()) {
+    if (d !== base && !d.startsWith(`${base}@`)) continue;
+    candidates.push(path.join(PACKAGES_DIR, d, "node_modules", inner));
+  }
+
+  for (const pj of candidates) {
+    if (!fs.existsSync(pj)) continue;
+    const dir = path.dirname(pj);
+    const main = readPackageMain(dir);
+    const entry = main ? path.join(dir, main) : path.join(dir, "dist/index.js");
+    return {
+      dir,
+      entry: fs.existsSync(entry) ? entry : null,
+      name: version ? `${base}@${version}` : base,
+      version,
+      source: "npm",
+    };
+  }
+  return null;
+}
+
+const TOOL_BLOCK_RE = /tool\s*:\s*\{([^}]*)\}/gs;
+const TOOL_KEY_RE = /([A-Za-z_][\w]*)\s*:/g;
+const CMD_TEMPLATE_RE = /"([A-Za-z][\w:.-]+)"\s*:\s*\{\s*template\s*:/gs;
+const CMD_BRACKET_RE = /command\s*\[\s*"([^"]+)"\s*\]\s*=/gs;
+
+// Best-effort static scan for a plugin's registered surface. Verified against
+// the three plugins installed on 2026-09-28: DCP yields tool `compress` and
+// command `dcp-compress`, conductor yields its six `conductor:*` commands, and
+// the notifier yields nothing. An unparsable shape yields nothing.
+function scanPluginSurface(entry) {
+  const tools = new Set();
+  const commands = new Set();
+  if (!entry) return { tools, commands };
+  let src;
+  try {
+    src = fs.readFileSync(entry, "utf8");
+  } catch {
+    return { tools, commands };
+  }
+
+  for (const block of src.matchAll(TOOL_BLOCK_RE)) {
+    const body = block[1].slice(0, PLUGIN_SCAN_BLOCK_MAX);
+    for (const k of body.matchAll(TOOL_KEY_RE)) {
+      if (!SCAN_KEY_DENYLIST.has(k[1])) tools.add(k[1]);
+    }
+  }
+  for (const m of src.matchAll(CMD_TEMPLATE_RE)) commands.add(m[1]);
+  for (const m of src.matchAll(CMD_BRACKET_RE)) commands.add(m[1]);
+  // Keep only namespaced command ids: the `template` shape alone also matches
+  // unrelated objects that happen to carry a template key.
+  for (const c of [...commands]) {
+    if (!c.includes(":") && !c.includes("-")) commands.delete(c);
+  }
+  return { tools, commands };
+}
+
+// The local plugin directory is not in the config `plugin` array; OpenCode
+// loads it implicitly, so it has to be enumerated here.
+function localPluginSpecs() {
+  try {
+    return fs
+      .readdirSync(path.join(CFG_DIR, "plugin"))
+      .filter((f) => f.endsWith(".js") || f.endsWith(".mjs") || f.endsWith(".ts"))
+      .sort()
+      .map((f) => `file://${path.join(CFG_DIR, "plugin", f)}`);
+  } catch {
+    return [];
+  }
+}
+
+// This module's own path, so the tracker can exclude itself structurally rather
+// than by filename (renaming the file must not make it start recording itself).
+const SELF_PATH =
+  typeof import.meta.path === "string" && import.meta.path
+    ? import.meta.path
+    : import.meta.url && import.meta.url.startsWith("file://")
+      ? import.meta.url.slice("file://".length)
+      : "";
+
+// Compares two paths through symlinks: the installed plugin directory is a
+// symlink farm back to this repo, so a plain path comparison would miss the
+// tracker's own file and it would start recording itself.
+function samePath(a, b) {
+  if (!a || !b) return false;
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    try {
+      return path.resolve(a) === path.resolve(b);
+    } catch {
+      return false;
+    }
+  }
+}
+
+function isSkippedPlugin(spec, resolved, exclusions) {
+  const target = (resolved && resolved.entry) || spec;
+  if (SELF_PATH && target && samePath(target, SELF_PATH)) return true;
+  const hay = `${spec} ${(resolved && resolved.name) || ""}`;
+  return exclusions.some((e) => e && hay.includes(e));
+}
+
+function upsertInventory(name, resolved, skipped, surface) {
+  if (!db) return;
+  try {
+    db.query(UPSERT_PLUGIN_INVENTORY_SQL).run(
+      String(name).slice(0, PLUGIN_NAME_MAX),
+      resolved && resolved.version ? resolved.version : null,
+      resolved ? resolved.source : null,
+      skipped ? 1 : 0,
+      JSON.stringify([...surface.tools].sort()),
+      JSON.stringify([...surface.commands].sort())
+    );
+  } catch (e) {
+    log("err", "upsertInventory: " + errMsg(e));
+  }
+}
+
+async function loadPlugins() {
+  if (PLUGIN_DISABLED) {
+    log("info", "plugin recording disabled via OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE");
+    return;
+  }
+
+  // 1. An explicit override always wins — even when empty — so tests never
+  //    read the developer's real configuration. Read at call time (not at
+  //    module load) so __selftest can set it before the factory runs.
+  const envSpecs = process.env.OPENCODE_SKILL_TRACKER_PLUGINS;
+  let specs;
+  if (envSpecs !== undefined) {
+    specs = envSpecs
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } else {
+    specs = [];
+    for (const f of configFiles()) specs.push(...readPluginSpecsFromConfig(f));
+    specs.push(...localPluginSpecs());
+  }
+
+  const exclusions = [...PLUGIN_EXCLUDE_DEFAULT, ...PLUGIN_EXCLUDE_EXTRA];
+  pluginSurface = new Map();
+  toolToPlugin = new Map();
+  commandToPlugin = new Map();
+
+  let skippedCount = 0;
+  for (const spec of [...new Set(specs)]) {
+    const resolved = resolvePluginEntry(spec);
+    const name = (resolved && resolved.name) || spec;
+    if (isSkippedPlugin(spec, resolved, exclusions)) {
+      skippedCount++;
+      upsertInventory(name, resolved, 1, { tools: new Set(), commands: new Set() });
+      continue;
+    }
+    const surface = scanPluginSurface(resolved && resolved.entry);
+    for (const t of surface.tools) if (!toolToPlugin.has(t)) toolToPlugin.set(t, name);
+    for (const c of surface.commands) if (!commandToPlugin.has(c)) commandToPlugin.set(c, name);
+    pluginSurface.set(name, surface);
+    upsertInventory(name, resolved, 0, surface);
+  }
+
+  log(
+    "info",
+    `plugins: ${pluginSurface.size} monitored, ${skippedCount} excluded, ` +
+      `${toolToPlugin.size} tool(s), ${commandToPlugin.size} command(s)`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -693,10 +1116,17 @@ async function doInit() {
     log("err", "loadMcpServers: " + errMsg(e));
   }
 
+  try {
+    await loadPlugins();
+  } catch (e) {
+    log("err", "loadPlugins: " + errMsg(e));
+  }
+
   initDone = true;
   log(
     "info",
-    `initialized (db=${DB_PATH}, tool="${SKILL_TOOL}", mcp_servers=${mcpServers.size})`
+    `initialized (db=${DB_PATH}, tool="${SKILL_TOOL}", mcp_servers=${mcpServers.size}, ` +
+      `plugins=${pluginSurface.size})`
   );
 }
 
@@ -827,6 +1257,45 @@ async function recordMcpUsage(
   }
 }
 
+// Sibling of recordMcpUsage for the plugin table. `plugin` is always set by
+// classify(): either a resolved plugin name or UNKNOWN_PLUGIN, never null.
+async function recordPluginUsage(
+  { plugin, kind, item, sessionID, projectPath, triggerType, status, callID, durationMs, meta }
+) {
+  if (!db || PLUGIN_DISABLED || !item) return;
+  try {
+    const { ctx, dir, branch } = await resolveWriteContext(sessionID, projectPath);
+    const pluginName = String(plugin || UNKNOWN_PLUGIN).slice(0, PLUGIN_NAME_MAX);
+    const itemName = String(item).slice(0, PLUGIN_ITEM_MAX);
+    const metadata = buildMetadata(
+      ctx,
+      branch,
+      callID,
+      (meta && meta.source) || triggerType,
+      `${pluginName}/${itemName}`,
+      meta
+    );
+
+    db.query(UPSERT_PLUGIN_SQL).run(
+      pluginName,
+      kind,
+      itemName,
+      sessionID ?? null,
+      dir,
+      triggerType,
+      status,
+      durationMs ?? null,
+      callID ?? null,
+      JSON.stringify(metadata)
+    );
+    debug(
+      `recorded plugin ${pluginName}/${itemName} (${triggerType}/${status}) session=${sessionID} call=${callID}`
+    );
+  } catch (e) {
+    log("err", "recordPluginUsage: " + errMsg(e));
+  }
+}
+
 function errMsg(e) {
   return e && e.message ? e.message : String(e);
 }
@@ -883,6 +1352,8 @@ async function skillTrackerPlugin(input) {
         skillName: name,
         server: c.server ?? null,
         tool: c.tool ?? null,
+        item: c.item ?? null,
+        plugin: c.plugin ?? null,
         argNames: c.kind === "mcp" ? mcpArgNames(args) : null,
       });
     }),
@@ -905,6 +1376,21 @@ async function skillTrackerPlugin(input) {
           callID: hookInput.callID,
           durationMs: duration,
           argNames: (ctx && ctx.argNames) || mcpArgNames(hookInput.args),
+          meta: { source: "hook" },
+        });
+        return;
+      }
+
+      if (c.kind === "plugin") {
+        await recordPluginUsage({
+          plugin: c.plugin,
+          kind: c.itemKind,
+          item: c.item,
+          sessionID: hookInput.sessionID,
+          triggerType: "tool_call",
+          status: "success",
+          callID: hookInput.callID,
+          durationMs: duration,
           meta: { source: "hook" },
         });
         return;
@@ -951,6 +1437,21 @@ async function skillTrackerPlugin(input) {
         return;
       }
 
+      if (c.kind === "plugin") {
+        await recordPluginUsage({
+          plugin: c.plugin,
+          kind: c.itemKind,
+          item: c.item,
+          sessionID: hookInput.sessionID,
+          triggerType: "permission_denied",
+          status: "denied",
+          callID: hookInput.callID ?? null,
+          durationMs: null,
+          meta: { source: "permission.ask", title: hookInput.title },
+        });
+        return;
+      }
+
       const raw = hookInput.pattern || (hookInput.metadata && hookInput.metadata.name) || "unknown";
       const name = Array.isArray(raw) ? raw[0] : raw;
       await recordUsage(
@@ -964,6 +1465,30 @@ async function skillTrackerPlugin(input) {
           meta: { source: "permission.ask", title: hookInput.title },
         }
       );
+    }),
+
+    // Plugin-provided commands are namespaced by the plugin that registers them
+    // (conductor:status, dcp-compress). There is no command.execute.after, so a
+    // command can only ever be recorded as 'unknown' status — and only when the
+    // init scan positively resolved its owner, which is what keeps OpenCode's
+    // own builtin commands out of the table.
+    "command.execute.before": safe("command.execute.before", async (hookInput) => {
+      if (!hookInput) return;
+      const cmd = hookInput.command;
+      if (typeof cmd !== "string" || !cmd) return;
+      const plugin = commandToPlugin.get(cmd);
+      if (!plugin) return;
+      await recordPluginUsage({
+        plugin,
+        kind: "command",
+        item: cmd.slice(0, PLUGIN_ITEM_MAX),
+        sessionID: hookInput.sessionID,
+        triggerType: "command_call",
+        status: "unknown",
+        callID: null,
+        durationMs: null,
+        meta: { source: "command.execute.before" },
+      });
     }),
 
     // -- fallback + context -------------------------------------------------
@@ -1008,6 +1533,8 @@ async function skillTrackerPlugin(input) {
                 skillName: inputName,
                 server: c.server ?? null,
                 tool: c.tool ?? null,
+                item: c.item ?? null,
+                plugin: c.plugin ?? null,
                 argNames: c.kind === "mcp" ? mcpArgNames(st.input) : null,
               });
             }
@@ -1030,6 +1557,21 @@ async function skillTrackerPlugin(input) {
                 callID: part.callID,
                 durationMs: duration,
                 argNames: mcpArgNames(st.input),
+                meta: { source: "event", error },
+              });
+              return;
+            }
+
+            if (c.kind === "plugin") {
+              await recordPluginUsage({
+                plugin: c.plugin,
+                kind: c.itemKind,
+                item: c.item,
+                sessionID: part.sessionID,
+                triggerType: "event_detected",
+                status,
+                callID: part.callID,
+                durationMs: duration,
                 meta: { source: "event", error },
               });
               return;
@@ -1060,6 +1602,8 @@ async function skillTrackerPlugin(input) {
             name: String(Array.isArray(raw) ? raw[0] : raw),
             server: c.server ?? null,
             tool: c.tool ?? null,
+            item: c.item ?? null,
+            plugin: c.plugin ?? null,
             callID: perm.callID ?? null,
           });
           return;
@@ -1085,6 +1629,20 @@ async function skillTrackerPlugin(input) {
                 callID: perm.callID,
                 durationMs: null,
                 argNames: null,
+                meta: { source: "permission.replied" },
+              });
+              return;
+            }
+            if (perm.kind === "plugin") {
+              await recordPluginUsage({
+                plugin: perm.plugin,
+                kind: perm.itemKind || "tool",
+                item: perm.item,
+                sessionID: props.sessionID,
+                triggerType: "permission_denied",
+                status: "denied",
+                callID: perm.callID,
+                durationMs: null,
                 meta: { source: "permission.replied" },
               });
               return;
@@ -1146,6 +1704,10 @@ async function skillTrackerPlugin(input) {
       branchByDir.clear();
       pendingPerms.clear();
       mcpServers = new Set();
+      pluginSurface = new Map();
+      toolToPlugin = new Map();
+      commandToPlugin = new Map();
+      builtinTools = null;
       try {
         if (db) db.close();
       } catch {
@@ -1195,6 +1757,22 @@ export async function __selftest() {
   // longest-prefix match.
   process.env.OPENCODE_SKILL_TRACKER_MCP_SERVERS = "test-server,test-server-extra";
 
+  // Pin the plugin set to a throwaway local plugin so the init scan is
+  // exercised hermetically — never the developer's real plugins, and never
+  // their real `plugin` config array. The file is removed at the end.
+  const selftestPluginPath = path.join(
+    process.env.TMPDIR || "/tmp",
+    `skill-tracker-selftest-${process.pid}.js`
+  );
+  fs.writeFileSync(
+    selftestPluginPath,
+    'export const SelftestPlugin = async () => ({\n' +
+      '  tool: { selftest_tool: { description: "x", parameters: {}, execute: async () => {} } },\n' +
+      '  command: { "selftest:run": { template: "run" } },\n' +
+      '});\n'
+  );
+  process.env.OPENCODE_SKILL_TRACKER_PLUGINS = `file://${selftestPluginPath}`;
+
   // Stub git: never spawn a subprocess, always report a branch.
   const prevSpawnGit = spawnGit;
   spawnGit = () => ({
@@ -1213,6 +1791,11 @@ export async function __selftest() {
     // Bail before any db.query() so a failed init reports cleanly instead of
     // throwing out of the selftest.
     spawnGit = prevSpawnGit;
+    try {
+      fs.unlinkSync(selftestPluginPath);
+    } catch {
+      /* ignore */
+    }
     console.log("FATAL: no database available; selftest aborted");
     return false;
   }
@@ -1224,6 +1807,10 @@ export async function __selftest() {
   assert(
     tables.includes("skills") && tables.includes("skill_usage") && tables.includes("mcp_usage"),
     "tables exist"
+  );
+  assert(
+    tables.includes("plugin_usage") && tables.includes("plugin_inventory"),
+    "plugin tables exist"
   );
 
   const fm = parseFrontmatter("---\nname: foo\ndescription: bar: baz\n---\nbody");
@@ -1428,6 +2015,132 @@ export async function __selftest() {
     .get().c;
   assert(overlap === 0, "skill and mcp rows stay separate");
 
+  // --- Plugins -----------------------------------------------------------
+  const pSid = "sess-test-plugin";
+
+  // The init scan resolved `selftest_tool` to the throwaway plugin, so a
+  // before+after pair must be attributed to it by name.
+  await plugin["tool.execute.before"](
+    { tool: "selftest_tool", sessionID: pSid, callID: "call-plugin-1" },
+    { args: { secret: "PLUGINVALUE" } }
+  );
+  await plugin["tool.execute.after"](
+    {
+      tool: "selftest_tool",
+      sessionID: pSid,
+      callID: "call-plugin-1",
+      args: { secret: "PLUGINVALUE" },
+    },
+    {}
+  );
+  const p1 = db.query("SELECT * FROM plugin_usage WHERE call_id=?").get("call-plugin-1");
+  assert(p1 != null, "plugin tool before+after => 1 row");
+  assert(
+    p1 && p1.plugin_name === selftestPluginPath && p1.kind === "tool",
+    "plugin tool attributed by the init scan"
+  );
+  assert(
+    p1 && p1.status === "success" && p1.trigger_type === "tool_call",
+    "plugin tool row is success/tool_call"
+  );
+  assert(
+    !JSON.stringify(p1 || {}).includes("PLUGINVALUE"),
+    "plugin never stores arg values"
+  );
+
+  // The inventory records the scanned surface, and the plugin is not skipped.
+  const pInv = db
+    .query("SELECT * FROM plugin_inventory WHERE plugin_name=?")
+    .get(selftestPluginPath);
+  assert(pInv != null && pInv.skipped === 0, "plugin inventory row written");
+  assert(
+    pInv && pInv.tools === '["selftest_tool"]' && pInv.commands === '["selftest:run"]',
+    "plugin inventory surface parsed"
+  );
+
+  // A builtin tool is not a plugin tool.
+  await plugin["tool.execute.before"](
+    { tool: "bash", sessionID: pSid, callID: "call-plugin-builtin" },
+    { args: { command: "echo hi" } }
+  );
+  await plugin["tool.execute.after"](
+    { tool: "bash", sessionID: pSid, callID: "call-plugin-builtin", args: { command: "echo hi" } },
+    {}
+  );
+  assert(
+    db
+      .query("SELECT COUNT(*) AS c FROM plugin_usage WHERE call_id=?")
+      .get("call-plugin-builtin").c === 0,
+    "builtin tools are not recorded as plugins"
+  );
+
+  // An unattributed tool fails OPEN: recorded as (unknown), never dropped —
+  // otherwise plugin usage would be silently lost.
+  await plugin["tool.execute.before"](
+    { tool: "mystery_tool", sessionID: pSid, callID: "call-plugin-unknown" },
+    { args: {} }
+  );
+  await plugin["tool.execute.after"](
+    { tool: "mystery_tool", sessionID: pSid, callID: "call-plugin-unknown", args: {} },
+    {}
+  );
+  const pUnknown = db
+    .query("SELECT * FROM plugin_usage WHERE call_id=?")
+    .get("call-plugin-unknown");
+  assert(pUnknown && pUnknown.plugin_name === "(unknown)", "unattributed tool => (unknown)");
+
+  // A later resolved write must upgrade the sentinel without resurrecting a
+  // denied call. Driven through the real SQL because the scan is deterministic.
+  db.query(UPSERT_PLUGIN_SQL).run(
+    "(unknown)", "tool", "upgrade_probe", "sess-probe", null, "tool_call", "denied", null,
+    "call-probe-upgrade", null
+  );
+  db.query(UPSERT_PLUGIN_SQL).run(
+    "real-plugin", "tool", "upgrade_probe", "sess-probe", null, "tool_call", "success", 12,
+    "call-probe-upgrade", null
+  );
+  const pUp = db
+    .query("SELECT plugin_name, status FROM plugin_usage WHERE call_id=?")
+    .get("call-probe-upgrade");
+  assert(
+    pUp && pUp.plugin_name === "real-plugin" && pUp.status === "denied",
+    "(unknown) upgrades to the resolved owner"
+  );
+
+  // A scanned command is recorded from `command.execute.before`, with status
+  // "unknown": OpenCode exposes no command completion hook.
+  await plugin["command.execute.before"]({
+    command: "selftest:run",
+    sessionID: pSid,
+    arguments: [],
+  });
+  const pCmd = db.query("SELECT * FROM plugin_usage WHERE item_name=?").get("selftest:run");
+  assert(pCmd != null, "scanned command is recorded");
+  assert(
+    pCmd &&
+      pCmd.kind === "command" &&
+      pCmd.trigger_type === "command_call" &&
+      pCmd.status === "unknown",
+    "command row is command/command_call/unknown"
+  );
+
+  // An unattributed command fails CLOSED: there is no builtin-command
+  // allowlist, so fail-open would flood the table with /init and friends.
+  await plugin["command.execute.before"]({ command: "init", sessionID: pSid, arguments: [] });
+  assert(
+    db.query("SELECT COUNT(*) AS c FROM plugin_usage WHERE item_name=?").get("init").c === 0,
+    "unattributed commands are not recorded"
+  );
+
+  // Plugin rows must not collide with the other two streams.
+  const crossPlugin = db
+    .query(
+      `SELECT COUNT(*) AS c FROM skill_usage s
+       JOIN plugin_usage p ON p.call_id = s.call_id AND p.session_id = s.session_id`
+    )
+    .get().c;
+  assert(crossPlugin === 0, "skill and plugin rows stay separate");
+
   // Views must be queryable.
   for (const view of [
     "v_skill_totals",
@@ -1436,6 +2149,9 @@ export async function __selftest() {
     "v_mcp_totals",
     "v_mcp_last30",
     "v_mcp_history",
+    "v_plugin_totals",
+    "v_plugin_last30",
+    "v_plugin_history",
   ]) {
     try {
       db.query(`SELECT * FROM ${view} LIMIT 1`).all();
@@ -1446,6 +2162,11 @@ export async function __selftest() {
   }
 
   spawnGit = prevSpawnGit;
+  try {
+    fs.unlinkSync(selftestPluginPath);
+  } catch {
+    /* ignore */
+  }
   const failed = results.filter((r) => !r.ok);
   for (const r of results) console.log(`${r.ok ? "PASS" : "FAIL"}  ${r.label}`);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);

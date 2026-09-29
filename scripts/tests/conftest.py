@@ -157,10 +157,76 @@ def seeded_mcp_db(tmp_path):
 
 
 @pytest.fixture
-def legacy_db(tmp_path):
-    """A DB as an older version of the tool left it: no MCP objects at all.
+def seeded_plugin_db(tmp_path):
+    """A migrated DB with crafted plugin rows and an inventory.
 
-    Derived by dropping the MCP objects from the current base schema, so it
+    Separate from `seeded_db` and `seeded_mcp_db` for the same reason: every
+    count in those fixtures is asserted exactly.
+    """
+    path = str(tmp_path / "seeded-plugin.db")
+    conn = _make_db(path)
+
+    def add(plugin, kind, item, status, ago_days, duration=100, session=None,
+            project="/proj", trigger="tool_call"):
+        conn.execute(
+            "INSERT INTO plugin_usage (plugin_name, kind, item_name, session_id,"
+            " project_path, trigger_type, status, timestamp, duration_ms, call_id, metadata) "
+            "VALUES (?,?,?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ','now',?),?,?,?)",
+            (
+                plugin,
+                kind,
+                item,
+                session or f"s-{plugin}-{item}-{ago_days}",
+                project,
+                trigger,
+                status,
+                f"-{ago_days} days",
+                duration,
+                f"c-{plugin}-{kind}-{item}-{ago_days}",
+                '{"model":"p/m","agent":"build","branch":"main"}',
+            ),
+        )
+
+    dcp = "@tarquinen/opencode-dcp@3.2.0"
+    conductor = "opencode-conductor-plugin"
+
+    # DCP: a busy tool plus one error, so success rate is not 100%.
+    for d in range(1, 4):
+        add(dcp, "tool", "compress", "success", d, duration=10)
+    add(dcp, "tool", "compress", "error", 4, duration=900)
+    # conductor: commands only, and only ever 'unknown' status (no after-hook).
+    add(conductor, "command", "conductor:status", "unknown", 2, duration=None,
+        trigger="command_call")
+    # An unresolved tool lands in the unknown bucket.
+    add("(unknown)", "tool", "mystery_tool", "success", 3)
+    # Older than the 30-day window.
+    add(dcp, "tool", "expand", "success", 45, duration=2000)
+
+    inventory = [
+        (dcp, "3.2.0", "npm", 0, '["compress","expand"]', '["dcp-compress"]'),
+        (conductor, None, "npm", 0, "[]", '["conductor:status"]'),
+        ("/cfg/plugin/skill-tracker.js", None, "local", 1, "[]", "[]"),
+        ("@mohak34/opencode-notifier@0.4.0", "0.4.0", "npm", 1, "[]", "[]"),
+    ]
+    for name, version, source, skipped, tools, commands in inventory:
+        conn.execute(
+            "INSERT INTO plugin_inventory (plugin_name, version, source, skipped, tools,"
+            " commands, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 days'),"
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            (name, version, source, skipped, tools, commands),
+        )
+
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture
+def legacy_db(tmp_path):
+    """A DB as an older version of the tool left it: no MCP or plugin objects.
+
+    Derived by dropping those objects from the current base schema, so it
     keeps tracking SCHEMA_SQL instead of duplicating an old copy of the DDL.
     """
     path = str(tmp_path / "legacy.db")
@@ -169,7 +235,12 @@ def legacy_db(tmp_path):
         "DROP VIEW IF EXISTS v_mcp_totals;"
         "DROP VIEW IF EXISTS v_mcp_last30;"
         "DROP VIEW IF EXISTS v_mcp_history;"
+        "DROP VIEW IF EXISTS v_plugin_totals;"
+        "DROP VIEW IF EXISTS v_plugin_last30;"
+        "DROP VIEW IF EXISTS v_plugin_history;"
         "DROP TABLE IF EXISTS mcp_usage;"
+        "DROP TABLE IF EXISTS plugin_usage;"
+        "DROP TABLE IF EXISTS plugin_inventory;"
     )
     conn.commit()
     conn.close()

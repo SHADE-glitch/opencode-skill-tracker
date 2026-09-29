@@ -4,7 +4,7 @@
 #   skillt                      launch the interactive TUI
 #   skillt stats|top|show|recent|delete|clear|backup|vacuum
 #                               delegate to the legacy CLI (skill-stats.py)
-#   skillt insight|export|sync|cleanup-selftest|health|mcp|auto-backup|doctor
+#   skillt insight|export|sync|cleanup-selftest|health|mcp|plugins|auto-backup|doctor
 #                               headless mode of skill-tui.py (no textual needed)
 #   skillt help                 show the legacy CLI help
 #
@@ -76,7 +76,7 @@ done
 # subcommands below always pass --cli through to skill-tui.py.
 if [ "$cli" -eq 1 ] && [ -z "$cmd" ]; then
   echo "skillt: --cli requires a subcommand" >&2
-  echo "  insight|export|sync|cleanup-selftest|health|mcp|auto-backup|doctor" >&2
+  echo "  insight|export|sync|cleanup-selftest|health|mcp|plugins|auto-backup|doctor" >&2
   exit 2
 fi
 
@@ -93,7 +93,7 @@ case "$cmd" in
       echo "  or manually, from the repo root:" >&2
       echo "    uv venv --python 3.13 .venv && uv pip install -r requirements.txt" >&2
       echo "  or point at an existing venv:  export SKILLT_VENV=/path/to/venv" >&2
-      echo "  or use the headless CLI:  skillt insight | skillt health | skillt mcp" >&2
+      echo "  or use the headless CLI:  skillt insight | skillt health | skillt mcp | skillt plugins" >&2
       exit 1
     fi
     exec "$VENV_PY" "$SCRIPTS/skill-tui.py" "${rest[@]+"${rest[@]}"}"
@@ -103,7 +103,7 @@ case "$cmd" in
     exec "$SYS_PY" "$SCRIPTS/skill-stats.py" "$cmd" "${rest[@]+"${rest[@]}"}"
     ;;
 
-  insight|export|sync|cleanup-selftest|health|mcp|auto-backup|doctor)
+  insight|export|sync|cleanup-selftest|health|mcp|plugins|auto-backup|doctor)
     py="$SYS_PY"
     [ -x "$VENV_PY" ] && py="$VENV_PY"
     exec "$py" "$SCRIPTS/skill-tui.py" --cli "$cmd" "${rest[@]+"${rest[@]}"}"
@@ -115,7 +115,7 @@ case "$cmd" in
 
   *)
     echo "skillt: unknown command '$cmd'" >&2
-    echo "  try: skillt | skillt stats | skillt insight | skillt health | skillt mcp" >&2
+    echo "  try: skillt | skillt stats | skillt insight | skillt health | skillt mcp | skillt plugins" >&2
     echo "       skillt export | skillt sync | skillt auto-backup | skillt help" >&2
     exit 2
     ;;

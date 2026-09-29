@@ -6,7 +6,7 @@ Two modes in one file:
   * TUI   (default)      requires `textual` (installed in the skillt venv)
   * --cli <subcommand>   stdlib only; works on the system python3
                          subcommands: insight | export | sync | cleanup-selftest
-                                      | health | mcp | auto-backup | doctor
+                                      | health | mcp | plugins | auto-backup | doctor
 
 `textual` is imported lazily so the --cli path never depends on the venv.
 
@@ -61,6 +61,38 @@ def sort_rows(rows, mode, name_key="skill_name"):
 def _neg_str(s):
     # Descending sort on an ISO timestamp string without reversing the list.
     return "".join(chr(255 - ord(c)) if ord(c) < 255 else c for c in (s or ""))
+
+
+KIND_LABELS = {"skill": "skill", "mcp": "mcp", "plugin": "plugin"}
+
+STATUS_MARKUP = {
+    "success": "[green]● success[/]",
+    "error": "[red]● error[/]",
+    "denied": "[yellow]● denied[/]",
+}
+
+
+def status_cell(status: str | None) -> str:
+    """Rich-markup status dot. Plain fallback keeps headless tests stable."""
+    if status in STATUS_MARKUP:
+        return STATUS_MARKUP[status]
+    return f"[dim]● {status or '-'}[/]"
+
+
+def rate_text(total, success) -> str:
+    sr = db.success_rate(total, success)
+    if sr is None:
+        return "-"
+    pct = round(sr * 100)
+    if pct >= 90:
+        return f"[green]{pct}%[/]"
+    if pct >= 70:
+        return f"[yellow]{pct}%[/]"
+    return f"[red]{pct}%[/]"
+
+
+def uses_bar(value, peak, width=16):
+    return bar(value, peak, width)
 
 
 def bar(value, peak, width=24):
@@ -256,6 +288,63 @@ def _cli_mcp(conn, args) -> int:
     return 0
 
 
+def _plugin_label(row) -> str:
+    """Plugin name for display. npm specs already carry their version in the
+    name (`@scope/name@1.2.3`), so only append it when it is not already there."""
+    name = row["plugin_name"]
+    version = row.get("version")
+    if version and not name.endswith(f"@{version}"):
+        return f"{name}@{version}"
+    return name
+
+
+def _cli_plugins(conn, args) -> int:
+    inventory = db.plugin_inventory_rows(conn)
+    items = db.plugin_stats_rows(conn)
+
+    if args.json:
+        print(json.dumps({"inventory": inventory, "items": items}, ensure_ascii=False, indent=2))
+        return 0
+
+    print("Plugin tool/command usage (read-only)")
+    print("-" * 56)
+    if not inventory and not items:
+        print("  no plugins recorded yet")
+        print("  (the plugin records its inventory when OpenCode starts)")
+        return 0
+
+    if inventory:
+        print("Installed plugins")
+        print("-" * 56)
+        for p in inventory:
+            label = _plugin_label(p)
+            surface = []
+            if p["tools"]:
+                surface.append(f"{len(p['tools'])} tool(s)")
+            if p["commands"]:
+                surface.append(f"{len(p['commands'])} command(s)")
+            detail = ", ".join(surface) if surface else "no surface detected"
+            if p["skipped"]:
+                print(f"  {label:<44} excluded")
+            else:
+                print(f"  {label:<44} {detail}, {p['total']} call(s)")
+
+    shown = min(args.limit, len(items))
+    print()
+    print(f"Top items (showing {shown} of {len(items)})")
+    print("-" * 56)
+    for it in items[: args.limit]:
+        sr = db.success_rate(it["total"], it["success"])
+        rate = f"{round(sr * 100)}%" if sr is not None else "-"
+        print(
+            f"  {it['item_id']:<44} {it['total']:>4}  ok {rate:<5} "
+            f"last {db.fmt_time(it['last_used'])}"
+        )
+    if len(items) > args.limit:
+        print(f"  ... {len(items) - args.limit} more (use --limit N)")
+    return 0
+
+
 def _cli_auto_backup(conn, args) -> int:
     try:
         res = db.auto_backup(conn, dry_run=args.dry_run)
@@ -290,6 +379,8 @@ PLUGIN_MARKERS = ("tool.execute.before", "tool.execute.after", "permission.ask",
 # Markers of MCP capture. An older plugin records skills only, so a missing
 # marker is a WARN (MCP data stays empty), never a FAIL.
 PLUGIN_MCP_MARKERS = ("mcp_usage", "function classify(", "recordMcpUsage")
+# Same for plugin tool/command capture.
+PLUGIN_PLUGIN_MARKERS = ("plugin_usage", "recordPluginUsage", "command.execute.before")
 
 
 def _doctor_checks(conn, args) -> list:
@@ -362,9 +453,15 @@ def _doctor_checks(conn, args) -> list:
                 "MCP capture present" if not miss_mcp
                 else f"missing: {', '.join(miss_mcp)} (MCP calls will not be recorded)",
                 warn=True)
+            miss_plugin = [m for m in PLUGIN_PLUGIN_MARKERS if m not in src]
+            add("plugin.plugin_hooks", not miss_plugin,
+                "plugin capture present" if not miss_plugin
+                else f"missing: {', '.join(miss_plugin)} (plugin calls will not be recorded)",
+                warn=True)
         except OSError as e:
             add("plugin.hooks", False, f"read failed: {e}")
             add("plugin.mcp_hooks", False, f"read failed: {e}", warn=True)
+            add("plugin.plugin_hooks", False, f"read failed: {e}", warn=True)
 
     # --- Environment ----------------------------------------------------
     add("env.python", sys.version_info >= (3, 10), sys.version.split()[0], warn=True)
@@ -429,10 +526,13 @@ def cli_main(args) -> int:
         print(f"skillt: --db must be a file, not a directory: {args.db}", file=sys.stderr)
         return 2
 
-    # sync / cleanup-selftest / doctor need write access (migration); health and
-    # mcp are pure reads and open read-only so they can never alter the DB.
+    # sync / cleanup-selftest / doctor need write access (migration); health,
+    # mcp and plugins are pure reads and open read-only so they can never alter
+    # the DB.
     try:
-        conn = db.open_db(args.db, readonly=(args.command in ("health", "mcp")))
+        conn = db.open_db(
+            args.db, readonly=(args.command in ("health", "mcp", "plugins"))
+        )
     except sqlite3.Error as e:
         print(f"skillt: cannot open database {args.db}: {e}", file=sys.stderr)
         return 1
@@ -453,6 +553,8 @@ def cli_main(args) -> int:
             return _cli_health(conn, args)
         if args.command == "mcp":
             return _cli_mcp(conn, args)
+        if args.command == "plugins":
+            return _cli_plugins(conn, args)
         if args.command == "auto-backup":
             return _cli_auto_backup(conn, args)
         if args.command == "cleanup-selftest":
@@ -589,6 +691,95 @@ def _tui_classes() -> dict:
                 for v in self.detail["versions"]:
                     vt.add_row(db.fmt_time(v["recorded_at"]), (v["content_hash"] or "")[:16], str(v["size_bytes"] or "-"))
 
+    # ---- mcp / plugin detail screens ------------------------------------
+    class McpDetailScreen(Screen):
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+
+        def __init__(self, server: str, tool: str, detail: dict):
+            super().__init__()
+            self.server = server
+            self.tool = tool
+            self.detail = detail
+
+        def compose(self) -> ComposeResult:
+            d = self.detail
+            yield Header(show_clock=True)
+            with VerticalScroll(id="detail-body"):
+                yield Static(f"[b]{self.server}.{self.tool}[/b]", id="detail-title")
+                sr = db.success_rate(d.get("total"), d.get("success"))
+                yield Static(
+                    f"[dim]server[/dim] {self.server}   [dim]tool[/dim] {self.tool}\n"
+                    f"total {d.get('total', 0)}   success {d.get('success', 0)}   "
+                    f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
+                    f"success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
+                    f"avg {round(d['avg_ms'])}ms" if d.get("avg_ms") is not None else "" + "   "
+                    f"last used {db.fmt_time(d.get('last_used'))}",
+                    id="detail-stats",
+                )
+                yield Label("Call history (Enter on the MCP tab opens this page)", id="detail-hist-label")
+                table = DataTable(id="detail-history", zebra_stripes=True)
+                table.cursor_type = "row"
+                yield table
+            yield Footer()
+
+        def on_mount(self) -> None:
+            table = self.query_one("#detail-history", DataTable)
+            table.add_columns("Time", "Project", "session", "Status", "Duration", "Trigger", "Args")
+            for r in self.detail.get("history", []):
+                table.add_row(
+                    db.fmt_time(r["timestamp"]),
+                    db.short_path(r["project_path"], 28),
+                    db.short_session(r["session_id"]),
+                    r["status"],
+                    f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "-",
+                    r.get("trigger_type") or "-",
+                    (r.get("arg_names") or "")[:50],
+                )
+
+    class PluginDetailScreen(Screen):
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+
+        def __init__(self, plugin: str, kind: str, item: str, detail: dict):
+            super().__init__()
+            self.plugin = plugin
+            self.kind = kind
+            self.item = item
+            self.detail = detail
+
+        def compose(self) -> ComposeResult:
+            d = self.detail
+            yield Header(show_clock=True)
+            with VerticalScroll(id="detail-body"):
+                yield Static(
+                    f"[b]{self.plugin} / {self.kind} / {self.item}[/b]", id="detail-title"
+                )
+                sr = db.success_rate(d.get("total"), d.get("success"))
+                yield Static(
+                    f"total {d.get('total', 0)}   success {d.get('success', 0)}   "
+                    f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
+                    f"success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
+                    f"last used {db.fmt_time(d.get('last_used'))}",
+                    id="detail-stats",
+                )
+                yield Label("Call history (Enter on the Plugins tab opens this page)", id="detail-hist-label")
+                table = DataTable(id="detail-history", zebra_stripes=True)
+                table.cursor_type = "row"
+                yield table
+            yield Footer()
+
+        def on_mount(self) -> None:
+            table = self.query_one("#detail-history", DataTable)
+            table.add_columns("Time", "Project", "session", "Status", "Duration", "Trigger")
+            for r in self.detail.get("history", []):
+                table.add_row(
+                    db.fmt_time(r["timestamp"]),
+                    db.short_path(r["project_path"], 28),
+                    db.short_session(r["session_id"]),
+                    r["status"],
+                    f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "-",
+                    r.get("trigger_type") or "-",
+                )
+
     # ---- health screen (read-only) ----------------------------------------
     class HealthScreen(Screen):
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
@@ -665,16 +856,25 @@ def _tui_classes() -> dict:
                     with Horizontal(id="cards"):
                         yield Static(id="card-skills", classes="card")
                         yield Static(id="card-usage", classes="card")
-                        yield Static(id="card-today", classes="card")
-                        yield Static(id="card-personal", classes="card")
-                        yield Static(id="card-oss", classes="card")
                         yield Static(id="card-mcp", classes="card")
+                        yield Static(id="card-plugin", classes="card")
+                        yield Static(id="card-today", classes="card")
+                        yield Static(id="card-rate", classes="card")
                     yield Static(id="cards-legend")
-                    yield Static(id="mcp-summary")
-                    yield Static(id="trend")
+                    yield Label("Last 7 days", classes="section")
+                    with Horizontal(id="trend-row"):
+                        yield Static(id="trend-skills", classes="trend")
+                        yield Static(id="trend-mcp", classes="trend")
+                        yield Static(id="trend-plugins", classes="trend")
                     yield Label("Top Skills", classes="section")
                     t = DataTable(id="dash-top", zebra_stripes=True)
                     t.cursor_type = "row"
+                    yield t
+                    yield Label("Top MCP tools", classes="section")
+                    t = DataTable(id="dash-mcp", zebra_stripes=True)
+                    yield t
+                    yield Label("Top Plugins", classes="section")
+                    t = DataTable(id="dash-plugins", zebra_stripes=True)
                     yield t
                 with TabPane("Skills", id="tab-skills"):
                     yield Input(
@@ -685,7 +885,30 @@ def _tui_classes() -> dict:
                     t = DataTable(id="skills-table", zebra_stripes=True)
                     t.cursor_type = "row"
                     yield t
+                with TabPane("MCP", id="tab-mcp"):
+                    yield Input(
+                        placeholder="Filter server/tool (Esc clears)  ·  s sort · Enter detail",
+                        id="mcp-search",
+                    )
+                    yield Static(id="mcp-label")
+                    t = DataTable(id="mcp-table", zebra_stripes=True)
+                    t.cursor_type = "row"
+                    yield t
+                with TabPane("Plugins", id="tab-plugins"):
+                    yield Input(
+                        placeholder="Filter plugin/item (Esc clears)  ·  s sort · Enter detail",
+                        id="plugins-search",
+                    )
+                    yield Static(id="plugins-label")
+                    t = DataTable(id="plugins-table", zebra_stripes=True)
+                    t.cursor_type = "row"
+                    yield t
                 with TabPane("Recent", id="tab-recent"):
+                    yield Static(
+                        "[dim]Skills + MCP + plugins in one timeline  ·  "
+                        "Enter opens the row's detail page[/dim]",
+                        id="recent-label",
+                    )
                     t = DataTable(id="recent-table", zebra_stripes=True)
                     t.cursor_type = "row"
                     yield t
@@ -711,14 +934,6 @@ def _tui_classes() -> dict:
                         yield Button("Health", id="btn-health")
                         yield Button("Clear usage", id="btn-clear", variant="warning")
                     yield Static(id="data-result")
-                # Appended last on purpose: three tests reach the Data tab by
-                # pressing `tab` four times, so inserting earlier would shift
-                # them onto a different pane.
-                with TabPane("MCP", id="tab-mcp"):
-                    yield Static(id="mcp-label")
-                    t = DataTable(id="mcp-table", zebra_stripes=True)
-                    t.cursor_type = "row"
-                    yield t
             yield Footer()
 
         # -- lifecycle ------------------------------------------------------
@@ -744,71 +959,94 @@ def _tui_classes() -> dict:
                     f"[b]{s['total_skills']}[/b]\n[dim]Skills[/dim]"
                 )
                 self.query_one("#card-usage", Static).update(
-                    f"[b]{s['total_usage']}[/b]\n[dim]Uses[/dim]"
-                )
-                self.query_one("#card-today", Static).update(
-                    f"[b]{s['today_usage']}[/b]\n[dim]Today[/dim]"
-                )
-                self.query_one("#card-personal", Static).update(
-                    f"[b]{s['personal']}[/b]\n[dim]Personal[/dim]"
-                )
-                self.query_one("#card-oss", Static).update(
-                    f"[b]{s['open_source']}[/b]\n[dim]OSS[/dim]"
+                    f"[b]{s['total_usage']}[/b]\n[dim]Skill calls[/dim]"
                 )
                 self.query_one("#card-mcp", Static).update(
-                    f"[b]{s['total_mcp']}[/b]\n[dim]MCP[/dim]"
+                    f"[b]{s['total_mcp']}[/b]\n[dim]MCP calls[/dim]"
+                )
+                self.query_one("#card-plugin", Static).update(
+                    f"[b]{s.get('total_plugin', 0)}[/b]\n[dim]Plugin calls[/dim]"
+                )
+                self.query_one("#card-today", Static).update(
+                    f"[b]{s.get('today_all', s['today_usage'])}[/b]\n[dim]Today (all)[/dim]"
+                )
+                all_rows = db.stats_rows(conn)
+                tot = sum(r["total"] for r in all_rows)
+                ok = sum(r["success"] for r in all_rows)
+                sr_all = db.success_rate(tot, ok)
+                self.query_one("#card-rate", Static).update(
+                    f"[b]{('%d%%' % round(sr_all * 100)) if sr_all is not None else '-'}[/b]\n[dim]Skill success[/dim]"
                 )
                 self.query_one("#cards-legend", Static).update(
-                    "[dim]Skills / Personal / OSS = skill counts  ·  "
-                    "Uses / Today = skill invocation counts  ·  "
-                    "MCP = MCP calls  ·  "
+                    "[dim]Skill calls / MCP calls / Plugin calls = invocation counts  ·  "
+                    f"Today (all) = {s['today_usage']} skill + {s['today_mcp']} mcp"
+                    f" + {s.get('today_plugin', 0)} plugin  ·  "
+                    f"{s['personal']} personal / {s['open_source']} OSS skills  ·  "
                     f"observed {s['sample']['sessions']} session(s) over "
                     f"{s['sample']['days_observed']} day(s)[/dim]"
                 )
 
                 mcp_rows = db.mcp_stats_rows(conn)
-                mcp_servers = {r["server_name"] for r in mcp_rows}
-                self.query_one("#mcp-summary", Static).update(
-                    "[dim]MCP: "
-                    f"[b]{s['total_mcp']}[/b] call(s) · "
-                    f"{len(mcp_servers)} server(s) · {len(mcp_rows)} tool(s) · "
-                    f"{s['today_mcp']} today[/dim]"
-                )
+                plugin_rows = db.plugin_stats_rows(conn)
                 self.render_mcp(mcp_rows)
+                self.render_plugins(plugin_rows)
 
-                days = db.daily_activity(conn, 7)
-                peak = max((d["count"] for d in days), default=0)
-                lines = ["[b]Last 7 days[/b]"]
-                for d in days:
-                    lines.append(f"  {d['date'][5:]}  {bar(d['count'], peak):<24} {d['count']}")
-                self.query_one("#trend", Static).update("\n".join(lines))
+                # Three 7-day charts side by side, each scaled to its own peak:
+                # MCP and plugin volumes are usually an order of magnitude
+                # below skill calls, so a shared peak would flatten them
+                # invisible. Bars are narrow (10) so all three fit in 80 cols.
+                for wid, label, data in (
+                    ("#trend-skills", "skill calls", db.daily_activity(conn, 7)),
+                    ("#trend-mcp", "MCP calls", db.daily_mcp_activity(conn, 7)),
+                    ("#trend-plugins", "plugin calls", db.daily_plugin_activity(conn, 7)),
+                ):
+                    peak = max((d["count"] for d in data), default=0)
+                    chart = [f"[b]{label}[/b]"]
+                    for d in data:
+                        chart.append(f"{d['date'][5:]}  {bar(d['count'], peak, 10):<10} {d['count']}")
+                    self.query_one(wid, Static).update("\n".join(chart))
 
                 top = self.query_one("#dash-top", DataTable)
                 top.clear(columns=True)
                 top.add_columns("#", "Skill", "Uses", "Success rate", "Last used")
                 for i, r in enumerate(db.top_rows(conn, 10), 1):
-                    sr = db.success_rate(r["total"], r["success"])
                     top.add_row(
                         str(i), r["skill_name"], str(r["total"]),
-                        f"{round(sr*100)}%" if sr is not None else "-",
+                        rate_text(r["total"], r["success"]),
                         db.fmt_time(r["last_used"]),
                     )
 
-                self.app.all_rows = db.stats_rows(conn)
+                # Top-10 companions to the Skills table above. `mcp_rows` /
+                # `plugin_rows` arrive pre-sorted by total DESC, so slicing is
+                # the whole ranking. Empty states keep headers only, mirroring
+                # the MCP/Plugins tabs on a skills-only DB.
+                dm = self.query_one("#dash-mcp", DataTable)
+                dm.clear(columns=True)
+                dm.add_columns("#", "Server", "Tool", "Calls", "Success rate", "Last used")
+                for i, r in enumerate(mcp_rows[:10], 1):
+                    dm.add_row(
+                        str(i), r["server_name"], r["tool_name"], str(r["total"]),
+                        rate_text(r["total"], r["success"]),
+                        db.fmt_time(r["last_used"]),
+                    )
+
+                dp = self.query_one("#dash-plugins", DataTable)
+                dp.clear(columns=True)
+                dp.add_columns("#", "Plugin", "Kind", "Item", "Calls", "Success rate", "Last used")
+                for i, r in enumerate(plugin_rows[:10], 1):
+                    dp.add_row(
+                        str(i), r["plugin_name"], r["kind"], r["item_name"],
+                        str(r["total"]),
+                        rate_text(r["total"], r["success"]),
+                        db.fmt_time(r["last_used"]),
+                    )
+
+                self.app.all_rows = all_rows
                 # With no usage rows every sort mode collapses to the same
                 # order; the Skills tab says so instead of looking broken.
                 self.app.has_usage = any(r["total"] for r in self.app.all_rows)
                 self.render_skills()
-
-                rec = self.query_one("#recent-table", DataTable)
-                rec.clear(columns=True)
-                rec.add_columns("Time", "Skill", "Project", "session", "Status", "Duration")
-                for r in db.recent_rows(conn, 100):
-                    rec.add_row(
-                        db.fmt_time(r["timestamp"]), r["skill_name"],
-                        db.short_path(r["project_path"], 30), db.short_session(r["session_id"]),
-                        r["status"], f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "-",
-                    )
+                self.render_recent()
 
                 cats = self.query_one("#cats-table", DataTable)
                 cats.clear(columns=True)
@@ -852,19 +1090,19 @@ def _tui_classes() -> dict:
             # Columns are static, so a row-level clear is enough (and keeps the
             # column set stable across refreshes).
             if not table.columns:
-                table.add_columns("Name", "Source", "Uses", "Last Used", "Success Rate")
+                table.add_columns("Name", "Source", "Uses", "30d", "Sessions", "Last Used", "Success Rate")
             table.clear()
             self.app.path_to_name = {}
             for r in rows:
-                sr = db.success_rate(r["total"], r["success"])
                 # Rows are keyed by `path` (the only UNIQUE column). Two SKILL.md
                 # files sharing a frontmatter name would otherwise raise
                 # DuplicateKey and break the whole table.
                 self.app.path_to_name[r["path"]] = r["skill_name"]
                 table.add_row(
                     r["skill_name"], r["source"], str(r["total"]),
+                    str(r.get("uses_30d", 0)), str(r.get("sessions", 0)),
                     db.fmt_time(r["last_used"]),
-                    f"{round(sr*100)}%" if sr is not None else "-",
+                    rate_text(r["total"], r["success"]),
                     key=r["path"],
                 )
             if selected is not None:
@@ -873,10 +1111,39 @@ def _tui_classes() -> dict:
                 except Exception:  # noqa: BLE001 - filtered out or table empty
                     pass
 
+        def render_recent(self) -> None:
+            rows = db.unified_recent_rows(self.app.conn, 100)
+            self.app.recent_rows_cache = rows
+            table = self.query_one("#recent-table", DataTable)
+            if not table.columns:
+                table.add_columns("Time", "Kind", "Name", "Project", "Status", "Duration")
+            table.clear(columns=False)
+            for r in rows:
+                kind = r.get("kind") or "-"
+                table.add_row(
+                    db.fmt_time(r["timestamp"]),
+                    KIND_LABELS.get(kind, kind),
+                    (r.get("name") or "")[:60],
+                    db.short_path(r["project_path"], 28),
+                    status_cell(r.get("status")),
+                    f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "-",
+                    key=f"{r.get('kind')}:{r.get('name')}:{r['timestamp']}",
+                )
+
         def render_mcp(self, rows=None) -> None:
             if rows is None:
                 rows = db.mcp_stats_rows(self.app.conn)
-            rows = sort_rows(rows, self.app.sort_mode, name_key="tool_id")
+            try:
+                needle = self.query_one("#mcp-search", Input).value.strip().lower()
+            except Exception:  # noqa: BLE001 - before mount in tests
+                needle = ""
+            if needle:
+                rows = [
+                    r for r in rows
+                    if needle in r["server_name"].lower()
+                    or needle in r["tool_name"].lower()
+                ]
+            rows = sort_rows(rows, self.app.mcp_sort_mode, name_key="tool_id")
 
             table = self.query_one("#mcp-table", DataTable)
             selected = None
@@ -887,21 +1154,21 @@ def _tui_classes() -> dict:
                     selected = None
 
             self.query_one("#mcp-label", Static).update(
-                f"[dim]Sort: {SORT_LABELS[self.app.sort_mode]}   ·   "
-                f"showing {len(rows)} tool(s)[/dim]"
+                f"[dim]Sort: {SORT_LABELS[self.app.mcp_sort_mode]}   ·   "
+                f"showing {len(rows)} tool(s)  ·  Enter opens detail[/dim]"
             )
             if not table.columns:
                 table.add_columns(
-                    "Server", "Tool", "Calls", "Success Rate", "Avg", "Last Used"
+                    "Server", "Tool", "Calls", "30d", "Sessions", "Success Rate", "Avg", "Last Used"
                 )
             table.clear()
             for r in rows:
-                sr = db.success_rate(r["total"], r["success"])
                 avg = r.get("avg_ms")
                 # Keyed by the full tool id, which is unique per row.
                 table.add_row(
                     r["server_name"], r["tool_name"], str(r["total"]),
-                    f"{round(sr*100)}%" if sr is not None else "-",
+                    str(r.get("uses_30d", 0)), str(r.get("sessions", 0)),
+                    rate_text(r["total"], r["success"]),
                     f"{round(avg)}ms" if avg is not None else "-",
                     db.fmt_time(r["last_used"]),
                     key=r["tool_id"],
@@ -912,6 +1179,81 @@ def _tui_classes() -> dict:
                 except Exception:  # noqa: BLE001 - table empty
                     pass
 
+        def render_plugins(self, rows=None) -> None:
+            if rows is None:
+                rows = db.plugin_stats_rows(self.app.conn)
+            try:
+                needle = self.query_one("#plugins-search", Input).value.strip().lower()
+            except Exception:  # noqa: BLE001 - before mount in tests
+                needle = ""
+            if needle:
+                rows = [
+                    r for r in rows
+                    if needle in r["plugin_name"].lower()
+                    or needle in r["item_name"].lower()
+                    or needle in r["kind"].lower()
+                ]
+            rows = sort_rows(rows, self.app.plugin_sort_mode, name_key="item_id")
+
+            table = self.query_one("#plugins-table", DataTable)
+            selected = None
+            if table.row_count:
+                try:
+                    selected = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+                except Exception:  # noqa: BLE001
+                    selected = None
+
+            # The inventory goes in the label rather than a second table: it is
+            # a handful of rows, and keeping one table means sorting stays
+            # unambiguous.
+            loaded, excluded = [], []
+            for r in db.plugin_inventory_rows(self.app.conn):
+                counts = []
+                if r["tools"]:
+                    counts.append(f"{len(r['tools'])} tool(s)")
+                if r["commands"]:
+                    counts.append(f"{len(r['commands'])} command(s)")
+                entry = r["plugin_name"]
+                if counts:
+                    entry += f" ({', '.join(counts)})"
+                (excluded if r["skipped"] else loaded).append(entry)
+
+            lines = [
+                f"[dim]Sort: {SORT_LABELS[self.app.plugin_sort_mode]}   ·   "
+                f"showing {len(rows)} item(s)  ·  Enter opens detail[/dim]"
+            ]
+            if loaded:
+                lines.append("[b]Loaded[/b]  " + " · ".join(loaded))
+            else:
+                lines.append(
+                    "[dim]No inventory yet — the plugin records it when OpenCode "
+                    "starts.[/dim]"
+                )
+            if excluded:
+                lines.append("[dim]Excluded: " + " · ".join(excluded) + "[/dim]")
+            self.query_one("#plugins-label", Static).update("\n".join(lines))
+
+            if not table.columns:
+                table.add_columns(
+                    "Plugin", "Kind", "Item", "Calls", "30d", "Sessions", "Success Rate", "Avg", "Last Used"
+                )
+            table.clear()
+            for r in rows:
+                avg = r.get("avg_ms")
+                # Keyed by the full item id, which is unique per row.
+                table.add_row(
+                    r["plugin_name"], r["kind"], r["item_name"], str(r["total"]),
+                    str(r.get("uses_30d", 0)), str(r.get("sessions", 0)),
+                    rate_text(r["total"], r["success"]),
+                    f"{round(avg)}ms" if avg is not None else "-",
+                    db.fmt_time(r["last_used"]),
+                    key=r["item_id"],
+                )
+            if selected is not None:
+                try:
+                    table.move_cursor(row=table.get_row_index(selected))
+                except Exception:  # noqa: BLE001 - table empty
+                    pass
         def _selected_skill(self) -> str | None:
             """The skill name explicitly selected on the Skills tab, else None.
 
@@ -935,32 +1277,102 @@ def _tui_classes() -> dict:
         # -- events ---------------------------------------------------------
         def key_escape(self) -> None:
             """Esc clears the search filter and releases focus."""
-            inp = self.query_one("#search", Input)
-            if inp.value:
-                inp.value = ""
-                self.render_skills()
-            inp.blur()
+            for wid, renderer in (
+                ("#search", self.render_skills),
+                ("#mcp-search", self.render_mcp),
+                ("#plugins-search", self.render_plugins),
+            ):
+                try:
+                    inp = self.query_one(wid, Input)
+                except Exception:  # noqa: BLE001
+                    continue
+                if inp.value:
+                    inp.value = ""
+                    renderer()
+                inp.blur()
 
         def on_input_changed(self, event: Input.Changed) -> None:
             if event.input.id == "search":
                 self.render_skills()
+            elif event.input.id == "mcp-search":
+                self.render_mcp()
+            elif event.input.id == "plugins-search":
+                self.render_plugins()
 
-        def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-            # Only the Skills table is keyed by path; other tables use positional
-            # keys, so ignore their selection events here.
-            if event.data_table.id != "skills-table":
+        def _open_mcp_detail(self, tool_id: str | None) -> None:
+            if not tool_id or "_" not in tool_id:
                 return
-            path = event.row_key.value
-            name = self.app.path_to_name.get(path)
-            if not name:
-                return
+            # tool_id is f"{server}_{tool}"; the tool part may itself contain
+            # underscores, so split on the first one only (mirrors the DB view).
+            server, tool = tool_id.split("_", 1)
             try:
-                detail = db.skill_detail(self.app.conn, name)
+                detail = db.mcp_tool_detail(self.app.conn, server, tool)
             except Exception as e:  # noqa: BLE001
-                self.app.notify(f"Could not read detail: {e}", severity="error")
+                self.app.notify(f"Could not read MCP detail: {e}", severity="error")
                 return
             if detail:
-                self.app.push_screen(SkillDetailScreen(name, detail))
+                self.app.push_screen(McpDetailScreen(server, tool, detail))
+            else:
+                self.app.notify(f"No MCP history for {server}.{tool}", severity="warning")
+
+        def _open_plugin_detail(self, item_id: str | None) -> None:
+            if not item_id or item_id.count("/") != 2:
+                return
+            plugin, kind, item = item_id.split("/", 2)
+            try:
+                detail = db.plugin_item_detail(self.app.conn, plugin, kind, item)
+            except Exception as e:  # noqa: BLE001
+                self.app.notify(f"Could not read plugin detail: {e}", severity="error")
+                return
+            if detail:
+                self.app.push_screen(PluginDetailScreen(plugin, kind, item, detail))
+            else:
+                self.app.notify(f"No plugin history for {item_id}", severity="warning")
+
+        def _open_recent_detail(self, row_key: str | None) -> None:
+            """Route a unified-timeline row to its skill/MCP/plugin page."""
+            if not row_key or ":" not in row_key:
+                return
+            kind, rest, _ts = row_key.split(":", 2)
+            try:
+                if kind == "skill":
+                    detail = db.skill_detail(self.app.conn, rest)
+                    if detail:
+                        self.app.push_screen(SkillDetailScreen(rest, detail))
+                elif kind == "mcp":
+                    # Unified names are "server.tool" (first dot separates).
+                    if "." in rest:
+                        server, tool = rest.split(".", 1)
+                        detail = db.mcp_tool_detail(self.app.conn, server, tool)
+                        if detail:
+                            self.app.push_screen(McpDetailScreen(server, tool, detail))
+                    else:
+                        self.app.notify(f"No MCP history for {rest}", severity="warning")
+                elif kind == "plugin":
+                    self._open_plugin_detail(rest)
+            except Exception as e:  # noqa: BLE001
+                self.app.notify(f"Could not open detail: {e}", severity="error")
+
+        def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+            tid = event.data_table.id
+            key = event.row_key.value
+            if tid == "skills-table":
+                name = self.app.path_to_name.get(key)
+                if not name:
+                    return
+                try:
+                    detail = db.skill_detail(self.app.conn, name)
+                except Exception as e:  # noqa: BLE001
+                    self.app.notify(f"Could not read detail: {e}", severity="error")
+                    return
+                if detail:
+                    self.app.push_screen(SkillDetailScreen(name, detail))
+            elif tid == "mcp-table":
+                self._open_mcp_detail(key)
+            elif tid == "plugins-table":
+                self._open_plugin_detail(key)
+            elif tid == "recent-table":
+                self._open_recent_detail(key)
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             bid = event.button.id
@@ -973,7 +1385,11 @@ def _tui_classes() -> dict:
             elif bid == "btn-health":
                 self.action_health()
             elif bid == "btn-clear":
-                self._confirm("Clear ALL usage records (skills + MCP)? The skills table is kept.", self._do_clear)
+                self._confirm(
+                    "Clear ALL usage records (skills + MCP + plugins)? "
+                    "The skills table is kept.",
+                    self._do_clear,
+                )
 
         # -- actions --------------------------------------------------------
         def action_refresh_data(self) -> None:
@@ -985,12 +1401,24 @@ def _tui_classes() -> dict:
             self.query_one("#search", Input).focus()
 
         def action_cycle_sort(self) -> None:
-            i = SORT_MODES.index(self.app.sort_mode)
-            self.app.sort_mode = SORT_MODES[(i + 1) % len(SORT_MODES)]
-            # `s` sorts whichever table the user is looking at.
-            if self.query_one(TabbedContent).active == "tab-mcp":
+            # Each table keeps its own sort mode so cycling on MCP does not
+            # reshuffle Skills. `app.sort_mode` stays as the Skills mode for
+            # backward compatibility (tests + shared helper default).
+            active = self.query_one(TabbedContent).active
+            if active == "tab-mcp":
+                self.app.mcp_sort_mode = SORT_MODES[
+                    (SORT_MODES.index(self.app.mcp_sort_mode) + 1) % len(SORT_MODES)
+                ]
                 self.render_mcp()
+            elif active == "tab-plugins":
+                self.app.plugin_sort_mode = SORT_MODES[
+                    (SORT_MODES.index(self.app.plugin_sort_mode) + 1) % len(SORT_MODES)
+                ]
+                self.render_plugins()
             else:
+                self.app.sort_mode = SORT_MODES[
+                    (SORT_MODES.index(self.app.sort_mode) + 1) % len(SORT_MODES)
+                ]
                 self.render_skills()
 
         def action_next_tab(self) -> None:
@@ -1007,6 +1435,7 @@ def _tui_classes() -> dict:
                 "tab-recent": "#recent-table",
                 "tab-cats": "#cats-table",
                 "tab-mcp": "#mcp-table",
+                "tab-plugins": "#plugins-table",
             }
             sel = mapping.get(tc.active)
             return self.query_one(sel, DataTable) if sel else None
@@ -1071,8 +1500,16 @@ def _tui_classes() -> dict:
             try:
                 res = db.clear_usage(self.app.conn, also_skills=False)
                 self.refresh_data()
-                self._result(f"Cleared {res['usage_deleted']} usage record(s)")
-                self.app.notify(f"Cleared {res['usage_deleted']} record(s)")
+                # Report every stream. The toast used to name only the skill
+                # count, silently hiding the MCP and plugin rows it had just
+                # deleted.
+                total = res["usage_deleted"] + res["mcp_deleted"] + res["plugin_deleted"]
+                detail = (
+                    f"{res['usage_deleted']} skill, {res['mcp_deleted']} MCP, "
+                    f"{res['plugin_deleted']} plugin"
+                )
+                self._result(f"Cleared {total} usage record(s): {detail}")
+                self.app.notify(f"Cleared {total} record(s)")
             except Exception as e:  # noqa: BLE001
                 self.app.notify(f"Clear failed: {e}", severity="error")
 
@@ -1112,20 +1549,27 @@ def _tui_classes() -> dict:
         .card {
             width: 1fr; height: 5; margin: 0 1; padding: 0 1;
             border: round $primary; content-align: center middle; text-align: center;
+            background: $surface;
         }
-        #cards-legend { height: 1; padding: 0 2; }
-        #trend { height: auto; padding: 1 2; }
+        #card-today { border: round $success; }
+        #card-rate { border: round $warning; }
+        #cards-legend { height: auto; padding: 0 2; }
+        #dash-top, #dash-mcp, #dash-plugins { height: auto; max-height: 13; }
+        #recent-label { padding: 1 2 0 2; height: auto; }
+        #trend-row { height: auto; border: round $primary-muted; margin: 0 2; padding: 0 1; }
+        .trend { width: 1fr; height: auto; }
         .section { padding: 1 2 0 2; }
-        #sort-label { padding: 0 2; height: 1; }
-        #search { margin: 1 2; }
+        #sort-label, #mcp-label, #plugins-label { padding: 0 2; height: auto; }
+        #search, #mcp-search, #plugins-search { margin: 1 2 0 2; }
         DataTable { height: 1fr; margin: 0 1; }
+        DataTable > .datatable--header { text-style: bold; }
         #data-help { padding: 1 2; }
         #data-buttons { height: 3; padding: 0 2; }
         #data-result { padding: 1 2; color: $success; }
         #detail-body { padding: 1 2; }
-        #detail-title { padding: 1 0; }
-        #detail-meta, #detail-stats { padding: 1 0; }
-        #detail-hist-label, #detail-ver-label { padding: 1 0 0 0; }
+        #detail-title { padding: 1 0; text-style: bold; }
+        #detail-meta, #detail-stats { padding: 1 2; border: round $primary-muted; margin: 0 0 1 0; }
+        #detail-hist-label, #detail-ver-label { padding: 1 0 0 0; text-style: bold; }
         #detail-history { height: auto; max-height: 18; }
         #detail-versions { height: auto; max-height: 12; }
         #health-body { padding: 1 2; }
@@ -1152,9 +1596,12 @@ def _tui_classes() -> dict:
             self.no_sync = no_sync
             self.conn = None
             self.all_rows: list[dict] = []
+            self.recent_rows_cache: list[dict] = []
             self.path_to_name: dict = {}
             self.has_usage = True
             self.sort_mode = "count"
+            self.mcp_sort_mode = "count"
+            self.plugin_sort_mode = "count"
 
         def on_mount(self) -> None:
             self.push_screen(MainScreen())
@@ -1170,6 +1617,8 @@ def _tui_classes() -> dict:
         {
             "ConfirmScreen": ConfirmScreen,
             "SkillDetailScreen": SkillDetailScreen,
+            "McpDetailScreen": McpDetailScreen,
+            "PluginDetailScreen": PluginDetailScreen,
             "HealthScreen": HealthScreen,
             "MainScreen": MainScreen,
             "SkillTUI": SkillTUI,
@@ -1193,7 +1642,7 @@ def tui_main(args) -> int:
             "  ./install.sh\n"
             "or manually:\n"
             "  uv venv --python 3.13 .venv && uv pip install -r requirements.txt\n"
-            "Or use the headless CLI:  skillt insight | export | sync | mcp",
+            "Or use the headless CLI:  skillt insight | export | sync | mcp | plugins",
             file=sys.stderr,
         )
         return 3
@@ -1218,7 +1667,8 @@ class Args:
 
 
 CLI_COMMANDS = {
-    "insight", "export", "sync", "cleanup-selftest", "health", "mcp", "auto-backup", "doctor",
+    "insight", "export", "sync", "cleanup-selftest", "health", "mcp", "plugins",
+    "auto-backup", "doctor",
 }
 
 
@@ -1325,7 +1775,7 @@ def main(argv):
         if not args.command:
             raise SystemExit(
                 "--cli requires a subcommand: "
-                "insight|export|sync|cleanup-selftest|health|mcp|auto-backup|doctor"
+                "insight|export|sync|cleanup-selftest|health|mcp|plugins|auto-backup|doctor"
             )
         return cli_main(args)
 
@@ -1336,7 +1786,7 @@ def main(argv):
         print(
             "skillt: not an interactive terminal (stdin/stdout/stderr must all be TTYs); "
             "cannot start the TUI.\n"
-            "Try instead: skillt insight | skillt export | skillt sync | skillt mcp\n"
+            "Try instead: skillt insight | skillt export | skillt sync | skillt mcp | skillt plugins\n"
             "Or:          skillt --cli insight",
             file=sys.stderr,
         )

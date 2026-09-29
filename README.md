@@ -1,9 +1,9 @@
-# OpenCode Skill + MCP Tracker (`skillt`)
+# OpenCode Skill + MCP + Plugin Tracker (`skillt`)
 
-Record and query how every skill **and every MCP tool** in
-[OpenCode](https://opencode.ai) is actually used: what ran, when, whether it
-succeeded, how long it took, and in which project. Everything lands in a single
-local SQLite file — no network, no upload, no conversation content.
+Record and query how every skill, **every MCP tool** and **every plugin tool /
+command** in [OpenCode](https://opencode.ai) is actually used: what ran, when,
+whether it succeeded, how long it took, and in which project. Everything lands in
+a single local SQLite file — no network, no upload, no conversation content.
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -18,10 +18,14 @@ indirectly, through the generic tool hooks:
 - MCP tools are exposed as `{server}_{tool}` (e.g. `basic-memory_read_note`)
   and go through the **same** generic tool wrapper, so they are observed
   through the same hooks;
+- plugin-provided tools go through that wrapper too, and plugin commands fire
+  `command.execute.before`;
 - the plugin `skill-tracker.js` listens on `tool.execute.before` /
-  `tool.execute.after` / `permission.ask` / `event` / `chat.message`;
+  `tool.execute.after` / `permission.ask` / `command.execute.before` / `event` /
+  `chat.message`;
 - when the tool is `skill` the call is written to `skill_usage`; when it belongs
-  to a known MCP server it is written to `mcp_usage`;
+  to a known MCP server it is written to `mcp_usage`; anything else that is
+  neither skill nor builtin is written to `plugin_usage`;
 - `skillt` queries, reports, exports, backs up and health-checks that data.
 
 Design constraints, deliberately kept:
@@ -45,9 +49,9 @@ Design constraints, deliberately kept:
 | `uv` | optional but recommended for creating the venv; plain `python3 -m venv` also works |
 
 The headless subcommands (`insight`, `health`, `doctor`, `export`, `sync`,
-`mcp`, `auto-backup`) need **only the Python standard library**. The interactive
-TUI needs [Textual](https://textual.textualize.io/) (`textual>=8.2,<9`),
-installed into a venv by `install.sh`.
+`mcp`, `plugins`, `auto-backup`) need **only the Python standard library**. The
+interactive TUI needs [Textual](https://textual.textualize.io/)
+(`textual>=8.2,<9`), installed into a venv by `install.sh`.
 
 ---
 
@@ -140,32 +144,41 @@ skillt
 ```
 
 Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs, and `TERM` neither
-empty nor `dumb`). Pages: **Dashboard / Skills / Recent / Categories / Data /
-MCP**.
+empty nor `dumb`). Pages: **Dashboard / Skills / MCP / Plugins / Recent /
+Categories / Data** (Data is always last).
 
-The five Dashboard cards, each labelled above its number:
+The six Dashboard cards, each labelled below its number:
 
 | Card | Meaning |
 |---|---|
 | `Skills` | total skills known (rows in `skills`) |
-| `Uses` | total recorded skill uses (rows in `skill_usage`) |
-| `Today` | skill uses today (local calendar day) |
-| `Personal` | locally authored skills (`category = personal`) |
-| `OSS` | skills synced from an open-source upstream (`category = open-source`) |
+| `Skill calls` | total recorded skill invocations (rows in `skill_usage`) |
+| `MCP calls` | total recorded MCP tool calls (rows in `mcp_usage`) |
+| `Plugin calls` | total recorded plugin calls (rows in `plugin_usage`) |
+| `Today (all)` | skill + MCP + plugin calls today (local calendar day) |
+| `Skill success` | overall skill success rate |
 
-Below the cards a single line summarises MCP activity — `MCP: N call(s) · S
-server(s) · T tool(s) · D today`. The counters are kept separate from the skill
-ones, so `Uses` never silently includes MCP traffic.
+Below the cards a legend line breaks `Today (all)` down by kind and shows the
+observed sample (sessions and days). The three counters are kept separate, so
+`Skill calls` never silently includes MCP or plugin traffic.
+
+`Last 7 days` shows three side-by-side charts — skill, MCP and plugin calls —
+each scaled to its own peak (MCP/plugin volumes are usually an order of
+magnitude smaller). Below them, top-10 tables mirror the three kinds: **Top
+Skills**, **Top MCP tools** and **Top Plugins**.
 
 The **MCP** page lists one row per `(server, tool)` pair with call count,
-success rate, average duration and last use. It shares the `s` / `ctrl+s` sort
-cycling with the Skills page.
+30-day calls, sessions, success rate, average duration and last use. Each of
+the Skills / MCP / Plugins tables has its own sort mode and filter box — `s`
+cycles the sort of whichever page is active, and `Enter` opens the row's
+detail page. The **Recent** page merges all three kinds into one timeline;
+`Enter` routes each row to its skill/MCP/plugin detail page.
 
 | Key | Action |
 |---|---|
 | `Tab` | switch page |
 | `↑` `↓` / `j` `k` | move cursor |
-| `Enter` | open the selected skill's detail |
+| `Enter` | open the selected row's detail page |
 | `/` | jump to the Skills page and focus search |
 | `s` / `ctrl+s` | cycle sort (uses ↓ / recently used ↓ / success rate ↓ / name ↑) |
 | `Esc` | clear search and unfocus |

@@ -14,7 +14,7 @@ import skill_db as db
 def test_export_document_shape(seeded_db):
     conn = db.open_db(seeded_db)
     doc = db.export_document(conn)
-    assert doc["schema_version"] == 2
+    assert doc["schema_version"] == 3
     assert doc["generated_at"].endswith("Z")
     assert len(doc["skills"]) == 6
     assert len(doc["usage"]) == 21
@@ -70,15 +70,17 @@ def test_export_includes_mcp_usage(seeded_mcp_db):
 
 
 def test_export_mcp_key_exists_on_an_unmigrated_db(empty_db):
-    """`export` never migrates, so it must tolerate a DB without mcp_usage.
+    """`export` never migrates, so it must tolerate a DB without the new tables.
 
-    The key is still present (an empty list) so consumers can rely on its
-    shape regardless of which layer last touched the database.
+    The keys are still present (empty lists) so consumers can rely on the shape
+    regardless of which layer last touched the database.
     """
     conn = db.open_db(empty_db)
     doc = db.export_document(conn)
     assert doc["mcp_usage"] == []
-    assert doc["schema_version"] == 2
+    assert doc["plugin_usage"] == []
+    assert doc["plugin_inventory"] == []
+    assert doc["schema_version"] == 3
     conn.close()
 
 
@@ -97,7 +99,7 @@ def test_write_private_json_permissions_and_guard(tmp_path, seeded_db):
 
     # force allows overwrite
     db.write_private_json(str(out), doc, force=True)
-    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 2
+    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 3
     conn.close()
 
 

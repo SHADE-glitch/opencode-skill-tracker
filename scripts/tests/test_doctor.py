@@ -44,7 +44,10 @@ def _healthy_setup(tmp_path, monkeypatch):
 
     plugin = tmp_path / "skill-tracker.js"
     plugin.write_text(
-        "tool.execute.before tool.execute.after permission.ask event:\n", encoding="utf-8"
+        "tool.execute.before tool.execute.after permission.ask event:\n"
+        "mcp_usage function classify( recordMcpUsage\n"
+        "plugin_usage recordPluginUsage command.execute.before\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(st, "PLUGIN_PATH", str(plugin))
 
@@ -74,7 +77,7 @@ def test_doctor_json_is_structured(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert doc["summary"]["fail"] == 0
     names = {c["name"] for c in doc["checks"]}
-    assert {"db.quick_check", "plugin.hooks", "plugin.mcp_hooks",
+    assert {"db.quick_check", "plugin.hooks", "plugin.mcp_hooks", "plugin.plugin_hooks",
             "skills.frontmatter_names"} <= names
     conn.close()
 

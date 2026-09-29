@@ -118,6 +118,40 @@ CREATE INDEX IF NOT EXISTS idx_mcp_ts      ON mcp_usage(timestamp);
 CREATE INDEX IF NOT EXISTS idx_mcp_session ON mcp_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_trigger ON mcp_usage(trigger_type);
 
+CREATE TABLE IF NOT EXISTS plugin_usage (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_name  TEXT    NOT NULL,
+  kind         TEXT    NOT NULL CHECK (kind IN ('tool','command')),
+  item_name    TEXT    NOT NULL,
+  session_id   TEXT,
+  project_path TEXT,
+  trigger_type TEXT    NOT NULL
+               CHECK (trigger_type IN ('tool_call','command_call','event_detected','permission_denied','manual')),
+  status       TEXT    NOT NULL DEFAULT 'unknown'
+               CHECK (status IN ('success','error','denied','ask','unknown')),
+  timestamp    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  duration_ms  INTEGER,
+  call_id      TEXT,
+  metadata     TEXT,
+  UNIQUE (session_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_plugin_name    ON plugin_usage(plugin_name);
+CREATE INDEX IF NOT EXISTS idx_plugin_item    ON plugin_usage(item_name);
+CREATE INDEX IF NOT EXISTS idx_plugin_ts      ON plugin_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_plugin_session ON plugin_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_trigger ON plugin_usage(trigger_type);
+
+CREATE TABLE IF NOT EXISTS plugin_inventory (
+  plugin_name TEXT PRIMARY KEY,
+  version     TEXT,
+  source      TEXT,
+  skipped     INTEGER NOT NULL DEFAULT 0,
+  tools       TEXT,
+  commands    TEXT,
+  first_seen  TEXT NOT NULL,
+  last_seen   TEXT NOT NULL
+);
+
 CREATE VIEW IF NOT EXISTS v_skill_totals AS
 SELECT skill_name,
        COUNT(*)              AS total,
@@ -167,6 +201,33 @@ SELECT u.id, u.server_name, u.tool_name, u.timestamp, u.project_path, u.session_
        json_extract(u.metadata,'$.branch')  AS branch,
        json_extract(u.metadata,'$.summary') AS summary
 FROM mcp_usage u
+ORDER BY u.timestamp DESC;
+
+CREATE VIEW IF NOT EXISTS v_plugin_totals AS
+SELECT plugin_name,
+       kind,
+       item_name,
+       COUNT(*)              AS total,
+       SUM(status='success') AS success,
+       SUM(status='error')   AS errors,
+       SUM(status='denied')  AS denied,
+       MAX(timestamp)        AS last_used
+FROM plugin_usage GROUP BY plugin_name, kind, item_name;
+
+CREATE VIEW IF NOT EXISTS v_plugin_last30 AS
+SELECT plugin_name, kind, item_name, COUNT(*) AS uses_30d, MAX(timestamp) AS last_used_30d
+FROM plugin_usage
+WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')
+GROUP BY plugin_name, kind, item_name;
+
+CREATE VIEW IF NOT EXISTS v_plugin_history AS
+SELECT u.id, u.plugin_name, u.kind, u.item_name, u.timestamp, u.project_path, u.session_id,
+       u.status, u.duration_ms, u.trigger_type,
+       json_extract(u.metadata,'$.model')   AS model,
+       json_extract(u.metadata,'$.agent')   AS agent,
+       json_extract(u.metadata,'$.branch')  AS branch,
+       json_extract(u.metadata,'$.summary') AS summary
+FROM plugin_usage u
 ORDER BY u.timestamp DESC;
 """
 
@@ -276,6 +337,7 @@ def ensure_schema(conn) -> dict:
         "added_content_hash": False,
         "created_versions": False,
         "created_mcp": False,
+        "created_plugin": False,
     }
     for pragma in ("PRAGMA journal_mode = WAL",
                    f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
@@ -285,12 +347,14 @@ def ensure_schema(conn) -> dict:
         except sqlite3.Error:
             pass
 
-    # Sampled before SCHEMA_SQL runs, which is what actually creates the MCP
-    # objects. Unlike `created_versions` this is a truthful signal.
+    # Sampled before SCHEMA_SQL runs, which is what actually creates these
+    # objects. Unlike `created_versions` these are truthful signals.
     mcp_existed = _table_exists(conn, "mcp_usage")
+    plugin_existed = _table_exists(conn, "plugin_usage")
 
     conn.executescript(SCHEMA_SQL)
     result["created_mcp"] = not mcp_existed
+    result["created_plugin"] = not plugin_existed
 
     if not _column_exists(conn, "skills", "content_hash"):
         try:
@@ -528,6 +592,15 @@ def dashboard_summary(conn) -> dict:
             "WHERE date(timestamp,'localtime') = date('now','localtime')"
         ).fetchone()[0]
 
+    # Plugin counters are kept separate, same contract as the MCP ones above.
+    total_plugin = today_plugin = 0
+    if _plugin_available(conn):
+        total_plugin = conn.execute("SELECT COUNT(*) FROM plugin_usage").fetchone()[0]
+        today_plugin = conn.execute(
+            "SELECT COUNT(*) FROM plugin_usage "
+            "WHERE date(timestamp,'localtime') = date('now','localtime')"
+        ).fetchone()[0]
+
     by_source = {
         r["src"]: r["n"]
         for r in conn.execute(
@@ -542,8 +615,21 @@ def dashboard_summary(conn) -> dict:
         "open_source": by_source.get("open-source", 0),
         "total_mcp": total_mcp,
         "today_mcp": today_mcp,
+        "total_plugin": total_plugin,
+        "today_plugin": today_plugin,
+        "today_all": today + today_mcp + today_plugin,
+        "total_calls_all": total_usage + total_mcp + total_plugin,
         "sample": sample_size(conn),
     }
+
+
+def _zero_filled_days(conn, rows: dict, days: int) -> list[dict]:
+    """Zip a {date: count} map onto the last `days` days, zero-filled."""
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = conn.execute("SELECT date('now','localtime', ?)", (f"-{i} days",)).fetchone()[0]
+        out.append({"date": d, "count": rows.get(d, 0)})
+    return out
 
 
 def daily_activity(conn, days: int = 7) -> list[dict]:
@@ -556,11 +642,44 @@ def daily_activity(conn, days: int = 7) -> list[dict]:
             (f"-{days - 1} days",),
         )
     }
-    out = []
-    for i in range(days - 1, -1, -1):
-        d = conn.execute("SELECT date('now','localtime', ?)", (f"-{i} days",)).fetchone()[0]
-        out.append({"date": d, "count": rows.get(d, 0)})
-    return out
+    return _zero_filled_days(conn, rows, days)
+
+
+def daily_mcp_activity(conn, days: int = 7) -> list[dict]:
+    """[{date, count}] of MCP calls for the last `days` days, zero-filled.
+
+    A DB that predates the mcp_usage table reports all zeros instead of
+    raising — same degrade contract as the other MCP reads.
+    """
+    if not _mcp_available(conn):
+        return _zero_filled_days(conn, {}, days)
+    rows = {
+        r["d"]: r["n"]
+        for r in conn.execute(
+            "SELECT date(timestamp,'localtime') AS d, COUNT(*) n FROM mcp_usage "
+            "WHERE date(timestamp,'localtime') >= date('now','localtime', ?) GROUP BY d",
+            (f"-{days - 1} days",),
+        )
+    }
+    return _zero_filled_days(conn, rows, days)
+
+
+def daily_plugin_activity(conn, days: int = 7) -> list[dict]:
+    """[{date, count}] of plugin calls for the last `days` days, zero-filled.
+
+    Same pre-migration degrade contract as daily_mcp_activity.
+    """
+    if not _plugin_available(conn):
+        return _zero_filled_days(conn, {}, days)
+    rows = {
+        r["d"]: r["n"]
+        for r in conn.execute(
+            "SELECT date(timestamp,'localtime') AS d, COUNT(*) n FROM plugin_usage "
+            "WHERE date(timestamp,'localtime') >= date('now','localtime', ?) GROUP BY d",
+            (f"-{days - 1} days",),
+        )
+    }
+    return _zero_filled_days(conn, rows, days)
 
 
 def stats_rows(conn) -> list[dict]:
@@ -616,6 +735,38 @@ def recent_rows(conn, limit: int = 50) -> list[dict]:
             (limit,),
         )
     )
+
+
+def unified_recent_rows(conn, limit: int = 100) -> list[dict]:
+    """One timeline across skills + MCP + plugins, newest first.
+
+    Read-only. Each row: {timestamp, kind, name, project_path, session_id,
+    status, duration_ms, trigger_type}. `kind` is one of
+    "skill" / "mcp" / "plugin". Tables that do not exist yet (unmigrated DB)
+    are skipped, so a skills-only DB simply returns skill rows.
+    """
+    parts: list[str] = [
+        "SELECT timestamp, 'skill' AS kind, skill_name AS name, project_path,"
+        "       session_id, status, duration_ms, trigger_type FROM skill_usage"
+    ]
+    if _mcp_available(conn):
+        parts.append(
+            "SELECT timestamp, 'mcp' AS kind,"
+            "       server_name || '.' || tool_name AS name, project_path,"
+            "       session_id, status, duration_ms, trigger_type FROM mcp_usage"
+        )
+    if _plugin_available(conn):
+        parts.append(
+            "SELECT timestamp, 'plugin' AS kind,"
+            "       plugin_name || '/' || kind || '/' || item_name AS name,"
+            "       project_path, session_id, status, duration_ms,"
+            "       trigger_type FROM plugin_usage"
+        )
+    sql = " UNION ALL ".join(parts) + " ORDER BY timestamp DESC LIMIT ?"
+    try:
+        return rows_to_dicts(conn.execute(sql, (limit,)))
+    except sqlite3.Error:
+        return recent_rows(conn, limit)
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +860,127 @@ def mcp_tool_detail(conn, server: str, tool: str, limit: int = 200) -> dict | No
             "       trigger_type, arg_names FROM mcp_usage "
             "WHERE server_name=? AND tool_name=? ORDER BY timestamp DESC LIMIT ?",
             (server, tool, limit),
+        )
+    )
+    return detail
+
+
+# ---------------------------------------------------------------------------
+# Plugin reads
+#
+# Same contract as the MCP reads above: `health`, `insight` and `export` never
+# migrate, so they can meet a DB that predates these tables and must degrade to
+# an empty result instead of raising.
+# ---------------------------------------------------------------------------
+def _plugin_available(conn) -> bool:
+    return _table_exists(conn, "plugin_usage")
+
+
+def _plugin_inventory_available(conn) -> bool:
+    return _table_exists(conn, "plugin_inventory")
+
+
+def _load_json_list(raw) -> list:
+    """Parse a JSON array column; anything unparsable degrades to []."""
+    try:
+        value = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def plugin_stats_rows(conn) -> list[dict]:
+    """Every observed (plugin, kind, item) triple with totals. [] when unmigrated."""
+    if not _plugin_available(conn):
+        return []
+    sql = """
+    SELECT t.plugin_name, t.kind, t.item_name,
+           t.plugin_name || '/' || t.kind || '/' || t.item_name AS item_id,
+           t.total, t.success, t.errors, t.denied, t.last_used,
+           COALESCE(l.uses_30d, 0)  AS uses_30d,
+           COALESCE(sc.sessions, 0) AS sessions,
+           COALESCE(sc.projects, 0) AS projects,
+           sc.avg_ms                AS avg_ms
+    FROM v_plugin_totals t
+    LEFT JOIN v_plugin_last30 l
+           ON l.plugin_name = t.plugin_name AND l.kind = t.kind AND l.item_name = t.item_name
+    LEFT JOIN (
+        SELECT plugin_name, kind, item_name,
+               COUNT(DISTINCT session_id)   AS sessions,
+               COUNT(DISTINCT project_path) AS projects,
+               AVG(duration_ms)             AS avg_ms
+        FROM plugin_usage GROUP BY plugin_name, kind, item_name
+    ) sc ON sc.plugin_name = t.plugin_name AND sc.kind = t.kind
+        AND sc.item_name = t.item_name
+    ORDER BY t.total DESC, t.plugin_name ASC, t.kind ASC, t.item_name ASC
+    """
+    return rows_to_dicts(conn.execute(sql))
+
+
+def plugin_inventory_rows(conn) -> list[dict]:
+    """One row per plugin seen at init, joined with its usage totals.
+
+    Includes skipped (excluded) plugins, so the page can show what was seen and
+    deliberately not measured. [] when the inventory table is absent.
+    """
+    if not _plugin_inventory_available(conn):
+        return []
+    sql = """
+    SELECT i.plugin_name, i.version, i.source, i.skipped, i.tools, i.commands,
+           i.first_seen, i.last_seen,
+           COALESCE(u.total, 0)  AS total,
+           COALESCE(u.errors, 0) AS errors,
+           u.last_used           AS last_used
+    FROM plugin_inventory i
+    LEFT JOIN (
+        SELECT plugin_name, COUNT(*) AS total,
+               SUM(status='error') AS errors, MAX(timestamp) AS last_used
+        FROM plugin_usage GROUP BY plugin_name
+    ) u ON u.plugin_name = i.plugin_name
+    ORDER BY i.skipped ASC, total DESC, i.plugin_name ASC
+    """
+    rows = rows_to_dicts(conn.execute(sql))
+    for r in rows:
+        r["tools"] = _load_json_list(r.get("tools"))
+        r["commands"] = _load_json_list(r.get("commands"))
+    return rows
+
+
+def plugin_recent_rows(conn, limit: int = 50) -> list[dict]:
+    if not _plugin_available(conn):
+        return []
+    return rows_to_dicts(
+        conn.execute(
+            "SELECT timestamp, plugin_name, kind, item_name, project_path, session_id, "
+            "       status, duration_ms, trigger_type FROM plugin_usage "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+    )
+
+
+def plugin_item_detail(conn, plugin: str, kind: str, item: str, limit: int = 200) -> dict | None:
+    if not _plugin_available(conn):
+        return None
+    row = conn.execute(
+        "SELECT plugin_name, kind, item_name, COUNT(*) AS total, "
+        "       SUM(status='success') AS success, SUM(status='error') AS errors, "
+        "       SUM(status='denied') AS denied, MAX(timestamp) AS last_used, "
+        "       AVG(duration_ms) AS avg_ms "
+        "FROM plugin_usage WHERE plugin_name=? AND kind=? AND item_name=? "
+        "GROUP BY plugin_name, kind, item_name",
+        (plugin, kind, item),
+    ).fetchone()
+    if not row:
+        return None
+    detail = dict(row)
+    detail["history"] = rows_to_dicts(
+        conn.execute(
+            "SELECT timestamp, project_path, session_id, status, duration_ms, "
+            "       trigger_type FROM plugin_usage "
+            "WHERE plugin_name=? AND kind=? AND item_name=? "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (plugin, kind, item, limit),
         )
     )
     return detail
@@ -840,16 +1112,19 @@ def _load_meta(raw):
 
 def export_document(conn, include_usage: bool = True, include_insight: bool = True) -> dict:
     doc = {
-        # 2 added the `mcp_usage` key. The change is additive — a v1 consumer
-        # that iterates `skills`/`usage` is unaffected — but the document shape
-        # did change, so the version says so.
-        "schema_version": 2,
+        # 2 added the `mcp_usage` key; 3 added `plugin_usage` and
+        # `plugin_inventory`. Both changes are additive — a v1 consumer that
+        # iterates `skills`/`usage` is unaffected — but the document shape did
+        # change, so the version says so.
+        "schema_version": 3,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "db_path": db_file_of(conn),
         "skills": [],
         "usage": [],
         "versions": [],
         "mcp_usage": [],
+        "plugin_usage": [],
+        "plugin_inventory": [],
     }
     for s in stats_rows(conn):
         doc["skills"].append(
@@ -902,6 +1177,19 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
             row = dict(r)
             row["metadata"] = _load_meta(row.get("metadata"))
             doc["mcp_usage"].append(row)
+
+    # Absent on a DB that predates the plugin tables.
+    if _plugin_available(conn):
+        for r in conn.execute("SELECT * FROM plugin_usage ORDER BY timestamp DESC"):
+            row = dict(r)
+            row["metadata"] = _load_meta(row.get("metadata"))
+            doc["plugin_usage"].append(row)
+    if _plugin_inventory_available(conn):
+        for r in conn.execute("SELECT * FROM plugin_inventory ORDER BY plugin_name"):
+            row = dict(r)
+            for col in ("tools", "commands"):
+                row[col] = _load_json_list(row.get(col))
+            doc["plugin_inventory"].append(row)
 
     if include_insight:
         doc["insight"] = insight(conn)
@@ -1001,18 +1289,29 @@ def clear_usage(conn, also_skills: bool = False) -> dict:
     with _write_txn(conn):
         n = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
         conn.execute("DELETE FROM skill_usage")
-        # "Clear usage" means both kinds of usage. Leaving MCP rows behind
-        # would keep the Dashboard showing MCP counts after a clear.
+        # "Clear usage" means every kind of usage. Leaving MCP or plugin rows
+        # behind would keep the Dashboard showing counts after a clear.
         c = 0
         if _mcp_available(conn):
             c = conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0]
             conn.execute("DELETE FROM mcp_usage")
+        p = 0
+        if _plugin_available(conn):
+            p = conn.execute("SELECT COUNT(*) FROM plugin_usage").fetchone()[0]
+            conn.execute("DELETE FROM plugin_usage")
+        # plugin_inventory is deliberately kept: it is what is installed, not
+        # what was used, so clearing usage must not make the inventory vanish.
         m = 0
         if also_skills:
             m = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
             conn.execute("DELETE FROM skills")
             conn.execute("DELETE FROM skill_versions")
-    return {"usage_deleted": n, "skills_deleted": m, "mcp_deleted": c}
+    return {
+        "usage_deleted": n,
+        "skills_deleted": m,
+        "mcp_deleted": c,
+        "plugin_deleted": p,
+    }
 
 
 def delete_skill(conn, skill: str) -> dict:
@@ -1057,17 +1356,32 @@ def cleanup_selftest(conn, dry_run: bool = True) -> dict:
                 (SELFTEST_PROJECT,),
             )
         )
-    if not dry_run and (rows or mcp_rows):
+    plugin_rows = []
+    if _plugin_available(conn):
+        plugin_rows = rows_to_dicts(
+            conn.execute(
+                "SELECT id, plugin_name, kind, item_name, status, timestamp FROM plugin_usage "
+                "WHERE project_path = ? ORDER BY id",
+                (SELFTEST_PROJECT,),
+            )
+        )
+    if not dry_run and (rows or mcp_rows or plugin_rows):
         with _write_txn(conn):
             conn.execute("DELETE FROM skill_usage WHERE project_path = ?", (SELFTEST_PROJECT,))
             if _mcp_available(conn):
                 conn.execute("DELETE FROM mcp_usage WHERE project_path = ?", (SELFTEST_PROJECT,))
+            if _plugin_available(conn):
+                conn.execute(
+                    "DELETE FROM plugin_usage WHERE project_path = ?", (SELFTEST_PROJECT,)
+                )
     return {
         "dry_run": dry_run,
         "matched": len(rows),
         "rows": rows,
         "mcp_matched": len(mcp_rows),
         "mcp_rows": mcp_rows,
+        "plugin_matched": len(plugin_rows),
+        "plugin_rows": plugin_rows,
     }
 
 

@@ -1,6 +1,6 @@
-# OpenCode Skill + MCP Tracker (`skillt`)
+# OpenCode Skill + MCP + Plugin Tracker (`skillt`)
 
-记录并查询 OpenCode 里每个 skill **和 MCP 工具**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
+记录并查询 OpenCode 里每个 skill、**MCP 工具和插件工具/命令**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
 数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
 
 > **本仓库的安装方式见 [README.md](README.md)（英文）。** 本仓库是唯一来源，
@@ -16,8 +16,9 @@
 OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具调用钩子来间接识别 skill 使用：
 
 - OpenCode 把 skill 暴露为一个名为 `skill` 的工具（入参 `{ name }`）；
-- 插件 `skill-tracker.js` 监听 `tool.execute.before` / `tool.execute.after` / `permission.ask` / `event`；
-- 识别到工具名称为 `skill` 时，把调用写入 SQLite；
+- 插件 `skill-tracker.js` 监听 `tool.execute.before` / `tool.execute.after` / `permission.ask` / `command.execute.before` / `event`；
+- 识别到工具名称为 `skill` 时写入 `skill_usage`；识别到已配置的 MCP 服务时写入 `mcp_usage`；其它非内置工具写入 `plugin_usage`；
+- 插件命令用 `command.execute.before` 记录，但没有对应的完成 hook，所以状态保持 `unknown`；无法明确归属的插件命令不记录；
 - `skillt` 负责查询、统计、导出、备份、体检。
 
 **MCP 工具走的是同一套钩子。** 所有注册的工具（内置的和 MCP 的）都经过同一个包装器，
@@ -31,6 +32,8 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 - **不要求在 SKILL.md 里加任何脚本或埋点**；
 - 只记录结构化元数据（skill 名、状态、耗时、项目路径、session、模型/agent/分支），**不记录 secrets、不记录完整消息**；
 - MCP 调用**只记参数名，绝不记参数值**（`Object.keys()`，不读取属性）；
+- 插件归属在初始化时通过已安装插件的静态扫描尽力解析；解析失败的工具归为 `(unknown)`，不猜具体插件；
+- 默认排除监控插件自身和 `opencode-notifier`，但仍在插件清单中标为 `skipped`；
 - 单个插件文件 + 一个共享数据层 + 一个入口命令，尽量少依赖。
 
 ---
@@ -52,8 +55,8 @@ OpenCode 运行
 ```
 
 - **写入方**：只有插件（OpenCode 运行时）。所有写入都用 `UNIQUE(session_id, call_id)` 去重 + `ON CONFLICT` upsert。
-- **读取方**：`skillt` 的所有命令。`health` / `mcp` 以只读方式打开数据库，绝不修改。
-- **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里。skill 计数（`skill_usage`）与 MCP 计数（`mcp_usage`）是**两张独立的表**，互不影响。
+- **读取方**：`skillt` 的所有命令。`health` / `mcp` / `plugins` 以只读方式打开数据库，绝不修改。
+- **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里。skill、MCP、插件计数（`skill_usage` / `mcp_usage` / `plugin_usage`）是**三张独立的表**，互不影响。
 
 ---
 
@@ -85,29 +88,32 @@ skillt
 ```
 
 需要真正的终端（`stdin`/`stdout`/`stderr` 三者都必须是 TTY，且 `TERM` 不能为空或 `dumb`）。
-页面：**Dashboard / Skills / Recent / Categories / Data / MCP**。
+页面：**Dashboard / Skills / MCP / Plugins / Recent / Categories / Data**（Data 永远在最后）。
 
-**Dashboard 顶部的 5 张卡片**（每张卡片有名字，下面一行是数字）：
+**Dashboard 顶部的 6 张卡片**（名字在下、数字在上）：
 
 | 卡片 | 含义 |
 |---|---|
 | `Skills` | 库里已知的 skill 总数（`skills` 表行数） |
-| `Uses` | 累计使用次数（`skill_usage` 行数） |
-| `Today` | 今天（本地日历天）的使用次数 |
-| `Personal` | 本地自建 skill 的数量（`category = personal`） |
-| `OSS` | 来自开源上游的 skill 数量（`category = open-source`） |
+| `Skill calls` | 累计 skill 调用次数（`skill_usage` 行数） |
+| `MCP calls` | 累计 MCP 工具调用次数（`mcp_usage` 行数） |
+| `Plugin calls` | 累计插件调用次数（`plugin_usage` 行数） |
+| `Today (all)` | 今天（本地日历天）三类调用总数 |
+| `Skill success` | skill 总体成功率 |
 
-卡片下方有图例说明，并显示**观察样本**（N 个 session、D 天）；若 `Uses` 为 0，表格区会提示「还没有使用记录」。
+卡片下方有图例行，把 `Today (all)` 按三类拆开，并显示**观察样本**（N 个 session、D 天）；三类计数**分开统计**，`Skill calls` 永远不会把 MCP/插件流量算进去。
 
-图例下面还有**一行 MCP 汇总**：`MCP: N call(s) · S server(s) · T tool(s) · D today`。MCP 计数与 skill 计数**分开统计**，所以 `Uses` 卡片永远不会把 MCP 流量算进去。
+`Last 7 days` 是三个**横向并排**的小图——skill、MCP、plugin 调用各一张，每张按自己的峰值缩放（MCP/插件量级通常小一个数量级，共用峰值会被压平）。下面是三个 Top-10 表：**Top Skills**、**Top MCP tools**、**Top Plugins**。
 
-**MCP 页**（最后一个标签页）每个 `(server, tool)` 组合一行，显示调用次数、成功率、平均耗时、最近使用时间；排序与 Skills 页共用 `s` / `ctrl+s`。
+**MCP 页**每个 `(server, tool)` 组合一行，显示调用次数、30 天调用、session 数、成功率、平均耗时、最近使用时间。Skills / MCP / Plugins 三张表**排序和过滤框各自独立**——`s` 只切换当前页的排序，`Enter` 打开该行的详情页。**Recent 页**把三类调用合成一条统一时间线，`Enter` 会按行类型跳到对应的 skill/MCP/插件详情页。
+
+**Plugins 页**每个 `(plugin, kind, item)` 组合一行，显示调用次数、成功率、平均耗时、最近使用时间；页面上方同时显示初始化时扫描到的插件清单、工具/命令数量和被排除的插件。插件工具归属失败时显示 `(unknown)`；插件命令只在扫描明确归属时记录。
 
 | 按键 | 作用 |
 |---|---|
 | `Tab` | 切换页面 |
 | `↑` `↓` / `j` `k` | 移动光标 |
-| `Enter` | 查看选中 skill 详情 |
+| `Enter` | 查看选中行的详情页 |
 | `/` | 跳到 Skills 页并聚焦搜索框 |
 | `s` / `ctrl+s` | 切换排序（次数 ↓ / 最近使用 ↓ / 成功率 ↓ / 名称 ↑） |
 | `Esc` | 清空搜索并取消聚焦 |
@@ -130,6 +136,7 @@ skillt export  [--out FILE] [--pretty] [--force] [--skills-only]
 skillt sync    [--dry-run] [--prune-orphans] [--json]
 skillt health  [--json] [--limit N]
 skillt mcp     [--json] [--limit N]
+skillt plugins [--json] [--limit N]
 skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json]
 skillt cleanup-selftest [--yes]
@@ -140,6 +147,7 @@ skillt cleanup-selftest [--yes]
 - `sync`：重新扫描 `SKILL.md`，把内容变更记录进 `skill_versions`；`--dry-run` 只统计不写。
 - `health`：把每个 skill 分成 **活跃（≤30 天）/ 沉寂（30–90 天）/ 未使用（>90 天或从未）**，并给出风险标记与建议。会显示**观察样本**（N 个 session、D 天）；样本不足 **20 个 session 或 14 天**时只输出一行"数据不足"，不给剪枝建议——在样本足够之前，"0 次使用"没有意义。**只读、只建议、绝不自动删除。**
 - `mcp`：MCP 工具使用情况——按 server 汇总，再列出调用最多的工具（次数、成功率、最近使用）。**只读。**
+- `plugins`：插件清单（来源、版本、工具/命令面、排除状态）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
@@ -175,6 +183,8 @@ skillt help
   与 `skill_usage` 同样的 `UNIQUE(session_id, call_id)` 去重，同样的 status / trigger_type 取值。
   `tool_name = '*'` 表示只知道 server、不知道具体工具（权限拒绝路径）。
   `arg_names` 是调用**参数名**组成的 JSON 数组——参数**值**从不读取，因此不可能被存进来。
+- **`plugin_usage`**：每次插件工具/命令调用一行，按 `(plugin_name, kind, item_name)` 汇总，使用同样的 `UNIQUE(session_id, call_id)` 去重。插件工具的未知归属显示为 `(unknown)`；插件命令 `trigger_type = command_call` 且状态通常是 `unknown`。
+- **`plugin_inventory`**：插件初始化扫描清单，一行一个插件，保存版本、来源、静态发现的 tools/commands 以及 `skipped` 排除标记。清单不会因清空 usage 而删除。
 - **`skill_versions`**：内容哈希历史，`UNIQUE(skill_name, content_hash)`。
 
 ### 5.2 视图
@@ -185,6 +195,9 @@ skillt help
 - `v_mcp_totals`：每个 `(server, tool)` 的 total / success / errors / denied / last_used。
 - `v_mcp_last30`：近 30 天调用次数。
 - `v_mcp_history`：MCP 版的历史视图，额外带 `arg_names`。
+- `v_plugin_totals` / `v_plugin_last30` / `v_plugin_history`：插件用量总计、近 30 天和历史视图。
+
+插件来源和归属是**初始化时的一次性静态扫描**。新增、升级、改名插件或其命令/工具面后，需要重启 OpenCode 才会刷新清单；扫描无法解析的工具只记 `(unknown)`，无法明确归属的命令直接不记。
 
 ### 5.3 运行参数
 
@@ -344,6 +357,8 @@ rm -rf ~/.local/share/opencode/backups
 - **M8 未做容量上限（已修复）。** `branchByDir` / `pendingSkillPerms` 现与 `sessionCtx` / `callCtx` 一样走 `setCapped`（上限 `MAP_CAP`），不再随进程生命周期增长。另：`skill_db.h()` 仍是死代码（0 调用）。
 - **M9 重试静默失效（已修复）。** 旧版 `initDone = true` 在 `init()` 完成**之前**置位，任何早退都会让后续重试静默 no-op。现在 `initDone` 仅在 schema 创建成功后置位，并发调用由 `initInFlight` 去重，失败后仍可重试。
 - **M11 MCP 服务列表只在插件初始化时解析一次。** 新增或改名一个 MCP 服务后，必须**重启 OpenCode** 它的调用才会被记录；在那之前这些调用是**不可见**的（只是被跳过，**不会**记错）。检测**失败即关闭**：若一个服务都识别不出来，宁可不写，也不去猜哪些工具是 MCP。只记**参数名**、绝不记参数值。
+- **M12 插件清单和归属只在初始化时解析一次。** 静态扫描尽力从插件入口源码识别工具/命令；新增、升级、改名插件或它注册的工具/命令后，必须**重启 OpenCode** 才会刷新。工具无法归属时记录为 `(unknown)`；命令无法明确归属时**不记录**（失败即关闭，避免把 `/init` 等内置命令误记成插件）。
+- **M13 内置工具 allowlist 与 OpenCode 1.18.33 对齐并硬编码。** 如果 OpenCode 升级后新增了内置工具，而 tracker 尚未更新，它可能被当作 `(unknown)` 插件工具记录；可用 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` 覆盖 allowlist，或等待 tracker 更新。
 
 ### 编码
 

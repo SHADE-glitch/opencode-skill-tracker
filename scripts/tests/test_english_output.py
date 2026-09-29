@@ -64,6 +64,8 @@ def _run_cli(seeded_db, *args):
         ("health",),
         ("mcp",),
         ("mcp", "--json"),
+        ("plugins",),
+        ("plugins", "--json"),
         ("doctor",),
         ("export",),
         ("sync", "--dry-run"),
@@ -108,7 +110,7 @@ def test_tui_visible_text_is_english(seeded_db):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(5):          # walk every tab, MCP included
+            for _ in range(7):          # walk every tab, MCP and Plugins included
                 for widget in app.screen.query(Static):
                     assert_no_cjk(static_text(widget), f"Static {widget.id}")
                 for table in app.screen.query(DataTable):

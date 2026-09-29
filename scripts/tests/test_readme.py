@@ -25,7 +25,10 @@ def test_readme_has_all_sections():
 
 def test_readme_documents_every_known_limitation():
     text = _text()
-    for marker in ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11"):
+    for marker in (
+        "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10",
+        "M11", "M12", "M13",
+    ):
         assert marker in text, f"README does not mention {marker}"
     for keyword in (
         "UTC",                          # M1
@@ -38,7 +41,9 @@ def test_readme_documents_every_known_limitation():
         "容量上限",                      # M8
         "initDone",                     # M9
         "退出码",                        # M10
-        "重启 OpenCode",                 # M11
+        "重启 OpenCode",                 # M11/M12
+        "静态扫描",                      # M12
+        "allowlist",                      # M13
     ):
         assert keyword in text, f"known-limitation detail missing: {keyword}"
 
@@ -70,7 +75,7 @@ def test_readme_documents_ctrl_shortcuts_and_dashboard_cards():
     assert "ctrl+s" in text
     assert "ctrl+r" in text
     # the six Dashboard cards must be named
-    for card in ("Skills", "Uses", "Today", "Personal", "OSS", "MCP"):
+    for card in ("Skills", "Skill calls", "MCP calls", "Plugin calls", "Today (all)", "Skill success"):
         assert card in text, f"Dashboard card not documented: {card}"
     # the Data-page delete entry is gone; deletion lives on the Skills tab
     assert "删除选中 skill" not in text
