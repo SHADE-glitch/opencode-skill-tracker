@@ -178,7 +178,7 @@ skillt help
   迁移时新增 `content_hash` 列（内容哈希，用于版本追踪）。
 - **`skill_usage`**：每次调用一行。`UNIQUE(session_id, call_id)` 保证幂等去重。
   `status ∈ {success, error, denied, ask, unknown}`；`trigger_type ∈ {tool_call, event_detected, permission_denied, manual}`。
-  `metadata` 是 JSON 文本（model / agent / branch / summary，已由插件清洗）。
+  `metadata` 是 JSON 文本（model / agent / branch，已由插件清洗）；消息正文与标题从不读取，因此不可能被存进来。
 - **`mcp_usage`**：每次 MCP 工具调用一行，按 `(server_name, tool_name)` 区分。
   与 `skill_usage` 同样的 `UNIQUE(session_id, call_id)` 去重，同样的 status / trigger_type 取值。
   `tool_name = '*'` 表示只知道 server、不知道具体工具（权限拒绝路径）。

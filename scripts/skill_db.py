@@ -172,8 +172,7 @@ SELECT u.id, u.skill_name, u.timestamp, u.project_path, u.session_id,
        u.status, u.duration_ms, u.trigger_type,
        json_extract(u.metadata,'$.model')   AS model,
        json_extract(u.metadata,'$.agent')   AS agent,
-       json_extract(u.metadata,'$.branch')  AS branch,
-       json_extract(u.metadata,'$.summary') AS summary
+       json_extract(u.metadata,'$.branch')  AS branch
 FROM skill_usage u
 ORDER BY u.timestamp DESC;
 
@@ -198,8 +197,7 @@ SELECT u.id, u.server_name, u.tool_name, u.timestamp, u.project_path, u.session_
        u.status, u.duration_ms, u.trigger_type, u.arg_names,
        json_extract(u.metadata,'$.model')   AS model,
        json_extract(u.metadata,'$.agent')   AS agent,
-       json_extract(u.metadata,'$.branch')  AS branch,
-       json_extract(u.metadata,'$.summary') AS summary
+       json_extract(u.metadata,'$.branch')  AS branch
 FROM mcp_usage u
 ORDER BY u.timestamp DESC;
 
@@ -225,8 +223,7 @@ SELECT u.id, u.plugin_name, u.kind, u.item_name, u.timestamp, u.project_path, u.
        u.status, u.duration_ms, u.trigger_type,
        json_extract(u.metadata,'$.model')   AS model,
        json_extract(u.metadata,'$.agent')   AS agent,
-       json_extract(u.metadata,'$.branch')  AS branch,
-       json_extract(u.metadata,'$.summary') AS summary
+       json_extract(u.metadata,'$.branch')  AS branch
 FROM plugin_usage u
 ORDER BY u.timestamp DESC;
 """

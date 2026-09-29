@@ -87,6 +87,16 @@ def test_readme_documents_top_limit_alias():
     assert "--limit 3" in text or "`--limit" in text
 
 
+def test_readme_does_not_claim_message_text_is_stored():
+    """`metadata.summary` was removed; the docs must not advertise storing it."""
+    for name in ("README.md", "README.zh-CN.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert "branch / summary" not in text, f"{name} still lists summary in metadata"
+        assert "message body" in text or "消息正文" in text, (
+            f"{name} should state that message text is never stored"
+        )
+
+
 def test_systemd_units_exist_and_use_absolute_execstart():
     service = SYSTEMD / "skillt-auto-backup.service"
     timer = SYSTEMD / "skillt-auto-backup.timer"

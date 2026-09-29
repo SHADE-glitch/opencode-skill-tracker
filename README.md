@@ -287,7 +287,8 @@ OpenCode runtime
 - `skill_usage` — one row per skill call. `UNIQUE(session_id, call_id)` makes it
   idempotent. `status ∈ {success, error, denied, ask, unknown}`;
   `trigger_type ∈ {tool_call, event_detected, permission_denied, manual}`.
-  `metadata` is sanitized JSON (model / agent / branch / summary).
+  `metadata` is sanitized JSON (model / agent / branch) — the message body and
+  title are never read, so they cannot be stored.
 - `mcp_usage` — one row per MCP tool call, keyed by `(server_name, tool_name)`.
   Same `UNIQUE(session_id, call_id)` and status/trigger vocabulary as
   `skill_usage`. `tool_name = '*'` means only the server was known (the
