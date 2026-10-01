@@ -167,7 +167,7 @@ skillt agentos   [--json] [--limit N]
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
 - `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
 
-- `agentos`：**只读**聚合 AgentOS 顾问插件自己的存储。顾问不注册任何 tool、也不注册 command，所以在上面那些用量表里永远不会出现；这一项改读它的 `store/aos.db` 与 `store/loops/*.json`。需要 `AGENT_OS_ROOT`（或 `OPENCODE_SKILL_TRACKER_AGENTOS_DB`），没配就明说"未聚合"。每个 loop 给出逐段状态与耗时、最慢段相对顾问单次预算是否超支，以及最有用的一列——同一会话在 tracker 里到底产生过多少可度量的工具调用。**从不写那个库**；字段是逐个白名单投影出来的，所以 loop 里的 `task_text`（任务原文）和各阶段 payload 一律读不到。见 M21。
+- `agentos`：**只读**聚合 AgentOS 顾问插件自己的存储。顾问不注册任何 tool、也不注册 command，所以在上面那些用量表里永远不会出现；这一项改读它的 `store/aos.db` 与 `store/loops/*.json`。需要 `AGENT_OS_ROOT`（或 `OPENCODE_SKILL_TRACKER_AGENTOS_DB`），没配就明说"未聚合"。每个 loop 给出逐段状态与耗时、最慢段相对顾问单次预算是否超支、同一会话在 tracker 里到底产生过多少可度量的工具调用（这一列最有用），以及召回的记忆**是否真的进了提示**——显示成 `recall 3 → injected 4 (1234c)`，用的是顾问自己的结果数字。`memory_ids` 与 `injected_memory_ids` 刻意分开：假设(hypothesis)可以单独被注入，合并成一个数就把这件事藏掉了。**从不写那个库**；字段是逐个白名单投影出来的，所以 loop 里的 `task_text`（任务原文）和各阶段 payload 一律读不到。见 M21。
 
 参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
 所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。

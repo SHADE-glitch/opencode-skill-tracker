@@ -91,8 +91,9 @@ Healthy today means, at minimum:
 skillt cleanup-selftest          # dry run; must report no synthetic rows
 skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
 skillt sync --dry-run            # scanned == skills row count, changed == 0
-skillt agentos                   # advisor loops: over-budget stages, errors, join
-                                 # with measured usage (AGENT_OS_ROOT must be set)
+skillt agentos                   # advisor loops: over-budget stages, errors, whether
+                                 # the recalled memory reached the prompt, and the
+                                 # join with measured usage (needs AGENT_OS_ROOT)
 wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
 ```
 
@@ -240,6 +241,7 @@ late error text can be dropped by the `COALESCE` on metadata).
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
 | No log rotation (M17) | small | needs a policy decision (rotate vs. cap vs. rely on journald) |
+| The Advisor tab reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one blanks those cells instead of breaking anything, and `_count_only` refuses to count text. A column that used to hold numbers showing `-` is the signal |
 | `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
 | `skill_versions` grows without bound | small | needs a retention decision; no pruning exists today |
 

@@ -254,8 +254,11 @@ skillt agentos   [--json] [--limit N]
   instead. Requires `AGENT_OS_ROOT` (or
   `OPENCODE_SKILL_TRACKER_AGENTOS_DB`) and reports plainly when neither is set.
   Per loop it shows the stage statuses and timings, the slowest stage against
-  the advisor's per-call budget, and — the point of the join — how much measured
-  tool activity that same session produced. **Nothing is ever written to that
+  the advisor's per-call budget, how much measured tool activity that same
+  session produced (the join), and whether the recalled memory actually reached
+  the prompt — `recall 3 → injected 4 (1234c)`, counted from the advisor's own
+  result numbers. `memory_ids` and `injected_memory_ids` are kept apart because
+  a hypothesis can be injected on its own, so collapsing them would hide that. **Nothing is ever written to that
   store**, and no field is ever read that could carry text: the projection names
   every emitted field, so a loop's `task_text` and the engines' stage payloads
   stay where they are. See M21.

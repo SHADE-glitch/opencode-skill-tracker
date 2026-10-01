@@ -76,8 +76,8 @@ skillt doctor            # 期望：0 FAIL
 skillt cleanup-selftest          # 干跑：必须报告没有合成行
 skillt scrub-metadata            # 干跑：必须报 0 行（M14 已闭环）
 skillt sync --dry-run            # scanned == skills 行数，changed == 0
-skillt agentos                   # 顾问 loop：超预算阶段、错误、与可度量用量的连接
-                                 # （需要环境里有 AGENT_OS_ROOT）
+skillt agentos                   # 顾问 loop：超预算阶段、错误、召回是否真的进了提示、
+                                 # 与可度量用量的连接（需要环境里有 AGENT_OS_ROOT）
 wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
 ```
 
@@ -183,6 +183,7 @@ M1–M19 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [REA
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
 | 日志不轮转（M17） | 小 | 需要先定策略（轮转 / 截断 / 交给 journald） |
+| Advisor 页读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那两格变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的列变成 `-` 就是信号 |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
 | `skill_versions` 无上限增长 | 小 | 需要保留策略；目前没有任何清理 |
 

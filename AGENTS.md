@@ -59,7 +59,11 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   `_open_agentos_ro()` (`file:...?mode=ro`). Loop files carry `task_text` (the
   user's task verbatim) and stage `data` carries engine payloads, so
   `_project_loop()` names every field it emits and never splats a dict: adding a
-  field upstream cannot leak it here, only omitting one would.
+  field upstream cannot leak it here, only omitting one would. One level deeper
+  is the same rule: the recall stage's `data` holds `query` (text derived from
+  the user's task) right next to `injection_chars`, so `_project_injection()`
+  names each field and `_count_only()` accepts integers and sized collections
+  only — a text-valued count yields `None`, never a character count.
 - **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
 - **Never commit secrets.** The plugin sanitizes secrets before storing them;

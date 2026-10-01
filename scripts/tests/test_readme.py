@@ -12,7 +12,7 @@ SYSTEMD = ROOT / "skill-tracker" / "systemd"
 # full capture/UI audit; M19 out of the privacy cleanup that followed it. The
 # English README used to stop at M11, so the landing page quietly disagreed with
 # the reference doc.
-LIMITATIONS = tuple(f"M{i}" for i in range(1, 21))
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 22))
 
 
 def _text():
