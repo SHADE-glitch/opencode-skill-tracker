@@ -7,7 +7,7 @@ Two modes in one file:
   * --cli <subcommand>   stdlib only; works on the system python3
                          subcommands: insight | export | sync | cleanup-selftest
                                       | scrub-metadata | health | mcp | plugins
-                                      | auto-backup | doctor
+                                      | agentos | auto-backup | doctor
 
 `textual` is imported lazily so the --cli path never depends on the venv.
 
@@ -235,6 +235,61 @@ def _cli_scrub_metadata(conn, args) -> int:
               "`skillt vacuum`.")
     elif res["checkpointed"]:
         print("  WAL checkpointed: the removed text is no longer on disk.")
+    return 0
+
+
+def _cli_agentos(conn, args) -> int:
+    """The AgentOS advisor store, read-only. Nothing here writes to that store."""
+    res = db.agentos_summary(conn, limit=args.limit)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    if not res["available"]:
+        print(f"AgentOS advisor: not aggregated ({res['reason']})")
+        print("  set AGENT_OS_ROOT, or OPENCODE_SKILL_TRACKER_AGENTOS_DB=<path to store/aos.db>")
+        return 0
+
+    sc = res["store_counts"]
+    print("AgentOS advisor (read-only; that store is never written from here)")
+    print("-" * 56)
+    print(f"  store      {res['db_path']}")
+    if res["loops_dir"]:
+        print(f"  loops dir  {res['loops_dir']}")
+    print(f"  memories {sc.get('memories')}   retrieval {res['retrieval'].get('n')}"
+          f" over {res['retrieval'].get('memories')} memory/memories"
+          f"   observations {sc.get('observations')}   candidates {sc.get('candidates')}"
+          f"   reviews {sc.get('learning_reviews')}")
+    if res["telemetry"]:
+        parts = []
+        for t in res["telemetry"]:
+            last = (db.fmt_time(t["last"]) or "")[5:]
+            parts.append(f"{t['event_type']} {t['n']} (last {last})")
+        print("  telemetry  " + "  ·  ".join(parts))
+    print(f"  per-call budget {res['timeout_ms']} ms — a slower stage never reached the prompt")
+
+    print()
+    print(f"Loops (showing {len(res['loops'])} of {res['loops_total']}, newest first)")
+    print("-" * 56)
+    if not res["loops"]:
+        print("  (no loop files yet)")
+    for loop in res["loops"]:
+        usage = loop.get("usage") or {}
+        used = f"{usage.get('skill', 0)}/{usage.get('mcp', 0)}/{usage.get('plugin', 0)}"
+        slow = loop.get("slowest_stage") or {}
+        slow_txt = f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-"
+        flag = "  OVER BUDGET" if loop.get("over_budget_ms") else ""
+        print(f"  {str(loop.get('loop_id')):<28} {(db.fmt_time(loop.get('created_at')) or '')[5:]:<12}"
+              f" {str(loop.get('final_status')):<9} usage sk/mcp/pl {used}   slowest {slow_txt}{flag}")
+        cells = []
+        for name, st in loop.get("stages", {}).items():
+            mark = {"completed": "ok", "pending": "-", "failed": "ERR"}.get(st["status"], st["status"][:3])
+            cells.append(f"{name}:{mark}")
+        print("      " + " ".join(cells))
+        if loop.get("errors") or (loop.get("postflight") or {}).get("has_error"):
+            print("      errors:"
+                  f" loop={loop.get('errors')}"
+                  f" postflight={'error' if (loop.get('postflight') or {}).get('has_error') else 'clean'}"
+                  "  (text lives in the store; not copied here)")
     return 0
 
 
@@ -680,11 +735,11 @@ def cli_main(args) -> int:
         return 2
 
     # sync / cleanup-selftest / scrub-metadata / doctor need write access
-    # (migration); health, mcp and plugins are pure reads and open read-only so
-    # they can never alter the DB.
+    # (migration); health, mcp, plugins and agentos are pure reads and open the
+    # DB read-only so they can never alter it.
     try:
         conn = db.open_db(
-            args.db, readonly=(args.command in ("health", "mcp", "plugins"))
+            args.db, readonly=(args.command in ("health", "mcp", "plugins", "agentos"))
         )
     except sqlite3.Error as e:
         print(f"skillt: cannot open database {args.db}: {e}", file=sys.stderr)
@@ -704,6 +759,8 @@ def cli_main(args) -> int:
             return _cli_sync(conn, args)
         if args.command == "health":
             return _cli_health(conn, args)
+        if args.command == "agentos":
+            return _cli_agentos(conn, args)
         if args.command == "mcp":
             return _cli_mcp(conn, args)
         if args.command == "plugins":
@@ -1087,6 +1144,15 @@ def _tui_classes() -> dict:
                     t = DataTable(id="plugins-table", zebra_stripes=True)
                     t.cursor_type = "row"
                     yield t
+                with TabPane("Advisor", id="tab-advisor"):
+                    # The AgentOS advisor registers no tool and no command, so it
+                    # can never show up in the usage tables above. Its own store is
+                    # read here instead — read-only, projected field by field, and
+                    # never the task text that lives in the same files.
+                    yield Static(id="advisor-label")
+                    t = DataTable(id="advisor-table", zebra_stripes=True)
+                    t.cursor_type = "row"
+                    yield t
                 with TabPane("Recent", id="tab-recent"):
                     yield Static(
                         "[dim]Skills + MCP + plugins in one timeline  ·  "
@@ -1209,6 +1275,7 @@ def _tui_classes() -> dict:
             section("trends", lambda: self._render_trends(conn))
             section("top tables", lambda: self._render_top_tables(conn))
             section("skills", lambda: self._render_skills_section(conn))
+            section("advisor", lambda: self._render_advisor(conn))
             section("recent timeline", self._render_recent_section)
             section("categories", lambda: self._render_categories(conn))
             section("data page", self._render_data_info)
@@ -1335,6 +1402,49 @@ def _tui_classes() -> dict:
             # order; the Skills tab says so instead of looking broken.
             self.app.has_usage = any(r["total"] for r in self.app.all_rows)
             self.render_skills()
+
+        def _render_advisor(self, conn) -> None:
+            res = db.agentos_summary(conn, limit=30)
+            label = self.query_one("#advisor-label", Static)
+            table = self.query_one("#advisor-table", DataTable)
+            if not table.columns:
+                table.add_columns(
+                    "Loop", "When", "Final", "Stages", "Slowest", "Budget",
+                    "Usage sk/mcp/pl", "Session",
+                )
+            table.clear(columns=False)
+            if not res["available"]:
+                label.update(
+                    f"[dim]AgentOS advisor: not aggregated[/dim]  ·  {res['reason']}\n"
+                    "[dim]set AGENT_OS_ROOT, or OPENCODE_SKILL_TRACKER_AGENTOS_DB"
+                    " pointing at store/aos.db. This tab never writes to that store.[/dim]"
+                )
+                return
+            sc = res["store_counts"]
+            label.update(
+                f"[dim]store {res['db_path']}   ·   memories {sc.get('memories')}"
+                f"   ·   retrieval {res['retrieval'].get('n')}"
+                f" over {res['retrieval'].get('memories')}"
+                f"   ·   loops {res['loops_total']}"
+                f"   ·   per-call budget {res['timeout_ms']} ms[/dim]"
+            )
+            for loop in res["loops"]:
+                stages = loop.get("stages") or {}
+                done = sum(1 for v in stages.values() if v["status"] == "completed")
+                failed = sum(1 for v in stages.values() if v["failed"])
+                slow = loop.get("slowest_stage") or {}
+                usage = loop.get("usage") or {}
+                flag = "  ⚠" if loop.get("over_budget_ms") else ""
+                table.add_row(
+                    str(loop.get("loop_id") or "-"),
+                    db.fmt_time(loop.get("created_at")),
+                    str(loop.get("final_status") or "-"),
+                    f"{done}/{len(stages)} ok" + (f", {failed} err" if failed else ""),
+                    f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-",
+                    ("over" if loop.get("over_budget_ms") else "within") + flag,
+                    f"{usage.get('skill', 0)}/{usage.get('mcp', 0)}/{usage.get('plugin', 0)}",
+                    str(loop.get("session_id") or "-"),
+                )
 
         def _render_recent_section(self) -> None:
             self.render_recent()
@@ -2019,7 +2129,7 @@ class Args:
 
 CLI_COMMANDS = {
     "insight", "export", "sync", "cleanup-selftest", "scrub-metadata", "health",
-    "mcp", "plugins", "auto-backup", "doctor",
+    "mcp", "plugins", "agentos", "auto-backup", "doctor",
 }
 
 
@@ -2130,7 +2240,7 @@ def main(argv):
             raise SystemExit(
                 "--cli requires a subcommand: "
                 "insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|"
-                "plugins|auto-backup|doctor"
+                "plugins|agentos|auto-backup|doctor"
             )
         return cli_main(args)
 

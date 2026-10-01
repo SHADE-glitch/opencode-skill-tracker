@@ -73,6 +73,8 @@ def _run_cli(seeded_db, *args):
         ("cleanup-selftest",),
         ("scrub-metadata",),
         ("scrub-metadata", "--json"),
+        ("agentos",),
+        ("agentos", "--json"),
     ],
 )
 def test_cli_output_is_english(seeded_db, args):

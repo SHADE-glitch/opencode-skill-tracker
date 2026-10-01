@@ -148,7 +148,7 @@ def test_tui_data_page_backup_and_export(seeded_db, tmp_path):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(6):          # Dashboard -> Skills -> MCP -> Plugins -> Recent -> Cats -> Data
+            for _ in range(7):          # Dashboard -> Skills -> MCP -> Plugins -> Recent -> Cats -> Data
                 await pilot.press("tab")
                 await pilot.pause()
 
@@ -393,7 +393,7 @@ def test_tui_data_page_has_no_delete_button(seeded_db):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(6):                # -> Data tab
+            for _ in range(7):                # -> Data tab
                 await pilot.press("tab")
                 await pilot.pause()
             assert not app.screen.query("#btn-delete"), "the Data page delete button must be gone"
@@ -414,7 +414,7 @@ def test_tui_backup_and_export_twice_are_unique(seeded_db):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(6):
+            for _ in range(7):
                 await pilot.press("tab")
                 await pilot.pause()
             await pilot.press("escape")
@@ -468,8 +468,10 @@ def test_duplicate_skill_names_do_not_crash(tmp_path):
 def test_tui_tab_order_is_pinned(seeded_db):
     """The tab contract: Data stays LAST; skills-adjacent tabs group together.
 
-    New order: Dashboard, Skills, MCP, Plugins, Recent, Categories, Data.
-    Six `tab` presses from Dashboard land on Data.
+    Order: Dashboard, Skills, MCP, Plugins, Advisor, Recent, Categories, Data.
+    Seven `tab` presses from Dashboard land on Data — Advisor sits with the
+    "who acted" group and Data stays last, because that is where the destructive
+    keys are.
     """
     from textual.widgets import TabPane
 
@@ -479,7 +481,7 @@ def test_tui_tab_order_is_pinned(seeded_db):
             await pilot.pause()
             ids = [p.id for p in app.screen.query(TabPane)]
             assert ids == [
-                "tab-dash", "tab-skills", "tab-mcp", "tab-plugins",
+                "tab-dash", "tab-skills", "tab-mcp", "tab-plugins", "tab-advisor",
                 "tab-recent", "tab-cats", "tab-data",
             ], ids
 
@@ -493,8 +495,8 @@ def test_tui_tab_order_is_pinned(seeded_db):
             await pilot.pause()
             assert app.screen.query_one("TabbedContent").active == "tab-plugins"
 
-            # Three more land on Data, which is what the Data tests rely on.
-            for _ in range(3):
+            # Four more land on Data, which is what the Data tests rely on.
+            for _ in range(4):
                 await pilot.press("tab")
                 await pilot.pause()
             assert app.screen.query_one("TabbedContent").active == "tab-data"
@@ -1145,4 +1147,65 @@ def test_tui_creates_no_app_timers(seeded_db):
             names = {t.name or "" for t in app._timers}
             assert not [n for n in names if "refresh" in n], names
             app.conn.close()
+    _run(_run_it())
+
+
+def test_tui_advisor_tab_renders_the_store(seeded_db, tmp_path, monkeypatch):
+    """The advisor registers no tool and no command, so it needs its own view."""
+    import skill_db as db
+    from test_agentos import TASK_PROSE, _make_store
+    from textual.widgets import DataTable, Static
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            # The advisor loop's session_id must join to real tracker rows.
+            app.conn.execute(
+                "INSERT INTO skill_usage (skill_name, session_id, project_path,"
+                " trigger_type, status, timestamp, call_id) VALUES"
+                " ('grow','ses_test_1','/p','tool_call','success',"
+                " '2026-10-01T05:00:05.000Z','c-join')"
+            )
+            app.conn.commit()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            label = str(app.screen.query_one("#advisor-label", Static).content)
+            assert "LOOP-TEST-1" not in label
+            assert "memories" in label and "per-call budget" in label
+            table = app.screen.query_one("#advisor-table", DataTable)
+            assert table.row_count == 1, table.row_count
+            assert table.cursor_type == "row"
+            cells = [str(table.get_cell(list(table.rows)[0], c)) for c in table.columns]
+            assert any("LOOP-TEST-1" in c for c in cells), cells
+            # route + recall completed, execute still pending -> 2 of 3
+            assert any("2/3 ok" == c for c in cells), cells
+            assert any(c.startswith("over") for c in cells), cells
+            # the join: give the loop's session a real usage row, then let the
+            # tab activation re-read — no manual refresh
+            assert any("1/0/0" == c for c in cells), cells
+            assert TASK_PROSE not in " ".join(cells) and TASK_PROSE not in label
+
+    _run(_run_it())
+
+
+def test_tui_advisor_tab_says_when_there_is_no_store(seeded_db, monkeypatch):
+    import skill_db as db
+    from textual.widgets import Static
+
+    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            label = str(app.screen.query_one("#advisor-label", Static).content)
+            assert "not aggregated" in label, label
+            assert "never writes" in label, label
+
     _run(_run_it())
