@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]      # repo root
@@ -94,6 +95,9 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
         "skillt scrub-metadata", "capture.freshness", "log.errors",
         "env.opencode_version", "backups.latest", "integrity_check",
         "skillt-auto-backup.timer", "pytest scripts/tests", "bash -n bin/skillt",
+        # MAINTENANCE §11 — how a green is produced. Named here so a translation
+        # that drops the rule drops the build.
+        "pipestatus", "command cp -f",
     ):
         assert needle in en, f"MAINTENANCE.md missing: {needle}"
         assert needle in zh, f"MAINTENANCE.zh-CN.md missing: {needle}"
@@ -200,3 +204,35 @@ def test_systemd_units_exist_and_use_absolute_execstart():
     assert "OnCalendar=daily" in tmr
     assert "Persistent=true" in tmr
     assert "WantedBy=timers.target" in tmr
+
+
+# --- source hygiene --------------------------------------------------------
+SOURCE_DIRS = ("scripts", "plugin", "bin", "skill-tracker")
+SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh", ".service", ".timer"}
+# A red-check edits the thing it pins and then puts it back. A marker that
+# survives is not a comment, it is the guard's own off switch left installed: one
+# did ride through 318 passes on 2026-10-01 (a `return` after a fixture's setenv
+# — inert enough to stay green, and a lie about which guard was being provoked).
+# Written as a class instead of literals because this file is itself scanned: a
+# guard that trips on its own needle is a guard nobody can read.
+CANARY_RE = re.compile(r"TEMP[-_]|CAN[0-9A-Z]ARY|FIXME-REMOV[E]")
+
+
+def test_no_canary_or_scratch_marker_survives_in_tracked_source():
+    """Docs may *name* these markers (MAINTENANCE §11 does); source may not hold one."""
+    offenders = []
+    for directory in SOURCE_DIRS:
+        base = ROOT / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            hit = CANARY_RE.search(text)
+            if hit:
+                line = text[: hit.start()].count("\n") + 1
+                offenders.append(f"{path.relative_to(ROOT)}:{line}: {hit.group()}")
+    assert not offenders, f"red-check canaries left in source: {offenders}"

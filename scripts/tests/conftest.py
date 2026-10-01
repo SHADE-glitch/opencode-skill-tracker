@@ -93,7 +93,6 @@ def isolate_config_dir(monkeypatch, tmp_path):
     monkeypatch.setenv(
         "OPENCODE_SKILL_TRACKER_CONFIG_DIR", str(tmp_path / "no-opencode-config")
     )
-    return  # TEMP-GUARD-OFF
 
 
 @pytest.fixture

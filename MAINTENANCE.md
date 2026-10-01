@@ -291,3 +291,34 @@ or reject it without re-deriving anything:
 3. **Test delta** — before → after counts, with any red-first evidence.
 4. **Deviations** — anything done differently from the approved plan, and why.
 5. **Rollback** — the commit to revert.
+
+## 11. How a `green` is produced
+
+The suite is only evidence if the command that ran it could have failed loudly.
+Four traps, all of them paid for on this machine:
+
+- **Chaining swallows failures.** `a && b` reports only `b`'s status, and
+  `pytest -q | grep -c passed` reports `grep`'s. One command per check, its own
+  status, no pipe: `python3 -m pytest scripts/tests -q > /tmp/pt.log 2>&1;
+  echo "exit=$?"`.
+- **`${PIPESTATUS[0]}` is bash.** This project is driven from **zsh**, where the
+  array is `$pipestatus` and is 1-indexed; the bash spelling expands to nothing,
+  so a failed `git push` printed `push exit=` — a blank status that reads as
+  though the check had run. Verified here: `false | true` then
+  `${pipestatus[1]}` = `1` and `${PIPESTATUS[0]}` = *empty*. Take statuses
+  without a pipe.
+- **A tail is not a conclusion.** A `tail -3` once described a backup as already
+  pruned while it was still on disk. There is no pytest config in this repo — no
+  `addopts`, no summary line a second `-q` could suppress — so the count is
+  always there: read the last line of the log file, not a fragment of a screen.
+- **A red-check leaves a canary behind.** Proving a guard can fail means editing
+  the implementation or the fixture for a moment, and a moment that survives the
+  edit is a fake green. `TEMP-` markers in tracked source are refused by
+  `test_no_canary_or_scratch_marker_survives_in_tracked_source`; one in a
+  conftest fixture passed 318 tests, so the sweep is not paranoia. Restore by
+  re-reading the file, not by trusting that the last edit undid the first. The restore
+  command can abort on its own: `rm` and `cp` are aliased interactive here, so
+  `cp a b && pytest …` stopped at an unanswered prompt, left the canary in the file,
+  and the green check after it never ran at all. Use `command cp -f` / `command rm -f`,
+  and print `git diff --stat` after restoring — an empty diff is the proof, not an
+  `exit=0` from a command that was skipped.
