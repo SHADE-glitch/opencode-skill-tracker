@@ -948,6 +948,17 @@ def bar_cells(table) -> list[str]:
     return [str(table.get_cell(row_key, column.key)) for row_key in table.rows]
 
 
+def advisor_cell(table, label: str, row: int = 0) -> str:
+    """One Advisor cell, addressed by its header so the columns may move."""
+    column = next((c for c in table.columns.values() if str(c.label) == label), None)
+    if column is None:
+        raise AssertionError(
+            f"no {label!r} column; headers are "
+            f"{[str(c.label) for c in table.columns.values()]}"
+        )
+    return str(table.get_cell(list(table.rows)[row], column.key))
+
+
 def test_rank_bar_width_shrinks_with_the_terminal_and_the_columns():
     """A wider terminal must buy a *longer* bar, a busier table a shorter one.
 
@@ -1445,24 +1456,115 @@ def test_tui_advisor_tab_renders_the_store(seeded_db, tmp_path, monkeypatch):
             await pilot.pause()
             label = str(app.screen.query_one("#advisor-label", Static).content)
             assert "LOOP-TEST-1" not in label
-            assert "memories" in label and "per-call budget" in label
+            assert "memories" in label
+            # the budget number is now explained in the legend, not squeezed into
+            # the header line
+            assert "per-call budget of 1200 ms" in static_text(
+                app.screen.query_one("#advisor-legend", Static))
             table = app.screen.query_one("#advisor-table", DataTable)
             assert table.row_count == 1, table.row_count
             assert table.cursor_type == "row"
             cells = [str(table.get_cell(list(table.rows)[0], c)) for c in table.columns]
             assert any("LOOP-TEST-1" in c for c in cells), cells
-            # route + recall completed, execute still pending -> 2 of 3
-            assert any("2/3 ok" == c for c in cells), cells
-            assert any(c.startswith("over") for c in cells), cells
+            # route + recall completed, execute still pending. The denominator is
+            # the stages this loop *recorded*, not the advisor's ten known stages.
+            assert advisor_cell(table, "Stages recorded") == "2 of 3 recorded", cells
+            assert advisor_cell(table, "Outcome") == "partial", cells
             # the join: give the loop's session a real usage row, then let the
             # tab activation re-read — no manual refresh
-            assert any("1/0/0" == c for c in cells), cells
-            # did the memory reach the prompt: recalled 3, injected 4 (a
-            # hypothesis rides along), 1234 characters
-            assert any("3 → 4 (1234c)" == c for c in cells), cells
+            assert advisor_cell(table, "Measured calls") == (
+                "1 skill, 0 mcp, 0 plugin"), cells
+            # three different counts, in three different columns: the engine's
+            # self-report, the memories selected, and what reached the prompt
+            assert advisor_cell(table, "Searched") == "3", cells
+            assert advisor_cell(table, "Recalled") == "3", cells
+            assert advisor_cell(table, "Reached the prompt") == "4 (1234 chars)", cells
+            assert "over budget by 2800ms" in advisor_cell(table, "Slowest vs budget"), cells
             assert TASK_PROSE not in " ".join(cells) and TASK_PROSE not in label
 
     _run(_run_it())
+
+
+def test_tui_advisor_tab_has_a_plain_language_legend(seeded_db, tmp_path, monkeypatch):
+    from test_agentos import _make_store
+    """The tab must explain itself, not depend on the reader knowing the jargon."""
+    import skill_db as db
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            legend = static_text(app.screen.query_one("#advisor-legend", Static))
+            for phrase in ("one advisor participation", "Reached the prompt",
+                           "measured", "budget", "read-only"):
+                assert phrase.lower() in legend.lower(), (phrase, legend)
+            # the budget number is printed, so a reader can judge "over" at all
+            assert "1200" in legend, legend
+            headers = [str(c.label) for c in
+                       app.screen.query_one("#advisor-table", DataTable).columns.values()]
+            assert not any("sk/mcp/pl" in h for h in headers), headers
+            assert not any("→" in h for h in headers), headers
+
+    _run(_run_it())
+
+
+def test_tui_advisor_searched_recalled_and_reached_are_three_numbers(seeded_db, monkeypatch, tmp_path):
+    from test_agentos import _make_store
+    """`retrieved`, `len(memory_ids)` and `len(injected_memory_ids)` are not one number.
+
+    With a single fixture loop they coincide, which is how a column printing the
+    wrong one stayed invisible: 5 searched, 3 recalled, 4 reached the prompt.
+    """
+    import skill_db as db
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path, extra_loop=True))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            table = app.screen.query_one("#advisor-table", DataTable)
+            assert table.row_count == 2, table.row_count
+            rows = {advisor_cell(table, "Loop", i): i for i in range(table.row_count)}
+            assert "LOOP-TEST-2" in rows, rows
+            i = rows["LOOP-TEST-2"]
+            assert advisor_cell(table, "Searched", i) == "5"
+            assert advisor_cell(table, "Recalled", i) == "3"
+            assert advisor_cell(table, "Reached the prompt", i) == "4 (1359 chars)"
+
+    _run(_run_it())
+
+
+def test_tui_advisor_columns_carry_no_abbreviations(seeded_db, monkeypatch, tmp_path):
+    from test_agentos import _make_store
+    """`1/0/0` and `2/3 ok` were guessable only by whoever wrote them."""
+    import skill_db as db
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            table = app.screen.query_one("#advisor-table", DataTable)
+            cells = [str(table.get_cell(list(table.rows)[0], c)) for c in table.columns]
+            for cryptic in ("1/0/0", "2/3 ok", "3 → 4 (1234c)", "within", "over"):
+                assert cryptic not in cells, (cryptic, cells)
+
+    _run(_run_it())
+
+
+def test_tui_dead_bar_wrapper_is_gone():
+    """`uses_bar` had no caller; a second name for one helper invites drift."""
+    assert not hasattr(st, "uses_bar")
 
 
 def test_tui_advisor_tab_says_when_there_is_no_store(seeded_db, monkeypatch):

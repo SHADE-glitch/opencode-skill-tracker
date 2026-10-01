@@ -25,7 +25,7 @@ QUERY_PROSE = "QUERY-DICT-MUST-NEVER-BE-READ"
 ERROR_PROSE = "ENGINE-ERROR-TEXT-MUST-NEVER-LEAVE-THE-STORE"
 
 
-def _make_store(tmp_path, *, with_loops=True, drop_retrieval=False):
+def _make_store(tmp_path, *, with_loops=True, drop_retrieval=False, extra_loop=False):
     """A stand-in advisor store: the shape the aggregator expects, no AgentOS."""
     store = tmp_path / "store"
     store.mkdir()
@@ -117,6 +117,17 @@ def _make_store(tmp_path, *, with_loops=True, drop_retrieval=False):
             },
         }
         (loops / "LOOP-TEST-1.json").write_text(json.dumps(loop), encoding="utf-8")
+        if extra_loop:
+            # The three recall numbers are *different* facts and the fixture must
+            # be able to tell them apart: `retrieved` is the engine's own count,
+            # `memory_ids` is what was selected, `injected_memory_ids` is what
+            # reached the prompt. With one loop they coincide by accident.
+            other = json.loads(json.dumps(loop))
+            other["loop_id"] = "LOOP-TEST-2"
+            other["session_id"] = "ses_test_2"
+            other["stages"]["recall"]["data"]["retrieved"] = 5
+            other["stages"]["recall"]["data"]["injection_chars"] = 1359
+            (loops / "LOOP-TEST-2.json").write_text(json.dumps(other), encoding="utf-8")
         # A half-written file must not take the digest down with it.
         (loops / "LOOP-TRUNCATED.json").write_text("{not json", encoding="utf-8")
     return str(store / "aos.db")
@@ -294,8 +305,9 @@ def test_cli_agentos_text_and_json(tmp_path, tracker, capsys, monkeypatch):
     assert st._cli_agentos(tracker, args) == 0
     out = capsys.readouterr().out
     assert "AgentOS advisor" in out and "LOOP-TEST-1" in out
-    assert "OVER BUDGET" in out
-    assert "recall 3 → injected 4 (1234c)" in out, out
+    assert "over the 1200ms budget" in out
+    assert ("searched 3 / recalled 3 / reached the prompt 4 (1234 chars)" in out), out
+    assert "usage sk/mcp/pl" not in out, "the CLI kept the abbreviations"
     for prose in (TASK_PROSE, QUERY_PROSE):
         assert prose not in out, "the CLI printed text from the store"
 

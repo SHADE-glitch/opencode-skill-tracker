@@ -94,10 +94,6 @@ def rate_text(total, success) -> str:
     return f"[red]{pct}%[/]"
 
 
-def uses_bar(value, peak, width=16):
-    return bar(value, peak, width)
-
-
 def bar(value, peak, width=24):
     if peak <= 0:
         return ""
@@ -337,17 +333,20 @@ def _cli_agentos(conn, args) -> int:
         print("  (no loop files yet)")
     for loop in res["loops"]:
         usage = loop.get("usage") or {}
-        used = f"{usage.get('skill', 0)}/{usage.get('mcp', 0)}/{usage.get('plugin', 0)}"
+        used = (f"{usage.get('skill', 0)} skill"
+                f" / {usage.get('mcp', 0)} mcp / {usage.get('plugin', 0)} plugin")
         slow = loop.get("slowest_stage") or {}
         slow_txt = f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-"
-        flag = "  OVER BUDGET" if loop.get("over_budget_ms") else ""
+        if loop.get("over_budget_ms") and slow.get("ms") is not None:
+            slow_txt += f" · over the {res['timeout_ms']}ms budget"
         inj = loop.get("injection") or {}
         inj_txt = ("-" if not inj else
-                   f"recall {inj.get('retrieved')} → injected {inj.get('injected')}"
-                   f" ({inj.get('chars')}c)")
+                   f"searched {inj.get('retrieved')} / recalled {inj.get('recalled')}"
+                   f" / reached the prompt {inj.get('injected')}"
+                   f" ({inj.get('chars')} chars)")
         print(f"  {str(loop.get('loop_id')):<28} {(db.fmt_time(loop.get('created_at')) or '')[5:]:<12}"
-              f" {str(loop.get('final_status')):<9} usage sk/mcp/pl {used}   {inj_txt}"
-              f"   slowest {slow_txt}{flag}")
+              f" {str(loop.get('final_status')):<9} measured calls {used}   {inj_txt}"
+              f"   slowest {slow_txt}")
         cells = []
         for name, st in loop.get("stages", {}).items():
             mark = {"completed": "ok", "pending": "-", "failed": "ERR"}.get(st["status"], st["status"][:3])
@@ -1221,6 +1220,10 @@ def _tui_classes() -> dict:
                     t = DataTable(id="advisor-table", zebra_stripes=True)
                     t.cursor_type = "row"
                     yield t
+                    # What the columns mean, on the screen that shows them. The
+                    # abbreviations this replaced were only readable by whoever
+                    # wrote them.
+                    yield Static(id="advisor-legend")
                 with TabPane("Recent", id="tab-recent"):
                     yield Static(
                         "[dim]Skills + MCP + plugins in one timeline  ·  "
@@ -1510,13 +1513,32 @@ def _tui_classes() -> dict:
         def _render_advisor(self, conn) -> None:
             res = db.agentos_summary(conn, limit=30)
             label = self.query_one("#advisor-label", Static)
+            legend = self.query_one("#advisor-legend", Static)
             table = self.query_one("#advisor-table", DataTable)
             if not table.columns:
                 table.add_columns(
-                    "Loop", "When", "Final", "Stages", "Recall → injected",
-                    "Slowest", "Budget", "Usage sk/mcp/pl", "Session",
+                    "Loop", "Started", "Outcome", "Stages recorded", "Searched",
+                    "Recalled", "Reached the prompt", "Slowest vs budget",
+                    "Measured calls", "Session",
                 )
             table.clear(columns=False)
+            # Set before the availability branch, so the explanation is on screen
+            # even when there is nothing to explain yet.
+            budget = res["timeout_ms"]
+            legend.update(
+                "[dim]One row = one advisor participation in one session.  ·  "
+                "Searched / Recalled / Reached the prompt are three different "
+                "counts: what the engine found, what it selected, and what actually "
+                "reached the prompt (with its size in characters). A hypothesis can "
+                "be injected on its own, so the last two are kept apart.  ·  "
+                "Measured calls is what this tracker recorded for that same session; "
+                "zero measured calls is not the same as a loop that never ran.  ·  "
+                f"Slowest vs budget compares that loop's slowest stage with the "
+                f"advisor's per-call budget of {budget} ms "
+                "(OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS overrides it) — a stage over "
+                "it never reached the prompt.  ·  Read-only: this tab never writes to "
+                "that store and never copies its task text.[/dim]"
+            )
             if not res["available"]:
                 label.update(
                     f"[dim]AgentOS advisor: not aggregated[/dim]  ·  {res['reason']}\n"
@@ -1529,8 +1551,7 @@ def _tui_classes() -> dict:
                 f"[dim]store {res['db_path']}   ·   memories {sc.get('memories')}"
                 f"   ·   retrieval {res['retrieval'].get('n')}"
                 f" over {res['retrieval'].get('memories')}"
-                f"   ·   loops {res['loops_total']}"
-                f"   ·   per-call budget {res['timeout_ms']} ms[/dim]"
+                f"   ·   loops {res['loops_total']}[/dim]"
             )
             for loop in res["loops"]:
                 stages = loop.get("stages") or {}
@@ -1538,21 +1559,29 @@ def _tui_classes() -> dict:
                 failed = sum(1 for v in stages.values() if v["failed"])
                 slow = loop.get("slowest_stage") or {}
                 usage = loop.get("usage") or {}
-                flag = "  ⚠" if loop.get("over_budget_ms") else ""
                 inj = loop.get("injection") or {}
-                inj_txt = ("-" if not inj else
-                           f"{inj.get('retrieved')} → {inj.get('injected')}"
-                           f" ({inj.get('chars')}c)")
+                slow_txt = f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-"
+                # `over_budget_ms` is a flag, not a duration — the amount over is
+                # this stage's own time minus the budget it was measured against.
+                if loop.get("over_budget_ms") and slow.get("ms") is not None:
+                    slow_txt += f" · over budget by {slow['ms'] - budget}ms"
+                reached = "-"
+                if inj:
+                    reached = f"{inj.get('injected')} ({inj.get('chars')} chars)"
                 table.add_row(
                     str(loop.get("loop_id") or "-"),
                     db.fmt_time(loop.get("created_at")),
                     str(loop.get("final_status") or "-"),
-                    f"{done}/{len(stages)} ok" + (f", {failed} err" if failed else ""),
-                    inj_txt,
-                    f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-",
-                    ("over" if loop.get("over_budget_ms") else "within") + flag,
-                    f"{usage.get('skill', 0)}/{usage.get('mcp', 0)}/{usage.get('plugin', 0)}",
-                    str(loop.get("session_id") or "-"),
+                    f"{done} of {len(stages)} recorded"
+                    + (f", {failed} failed" if failed else ""),
+                    "-" if inj.get("retrieved") is None else str(inj.get("retrieved")),
+                    "-" if inj.get("recalled") is None else str(inj.get("recalled")),
+                    reached,
+                    slow_txt,
+                    f"{usage.get('skill', 0)} skill,"
+                    f" {usage.get('mcp', 0)} mcp,"
+                    f" {usage.get('plugin', 0)} plugin",
+                    db.short_session(str(loop.get("session_id") or "-")),
                 )
 
         def _render_recent_section(self) -> None:
