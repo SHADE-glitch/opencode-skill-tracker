@@ -87,7 +87,7 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   `README.zh-CN.md` (Chinese, the exhaustive reference), plus
   `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
   `scripts/tests/test_readme.py` asserts that **both** READMEs document every
-  limitation M1–M18, that `README.zh-CN.md` documents every section, and that
+  limitation M1–M19, that `README.zh-CN.md` documents every section, and that
   both maintenance checklists name the same checks, commands and invariants —
   update all four when behaviour changes, or the suite fails.
 - **No `set_interval`/`set_timer` in the TUI.** On textual 8.2.8, any app timer

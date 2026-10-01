@@ -404,7 +404,7 @@ The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 
 ## Known limitations
 
-The full audit — M1 through M18, with reproduction notes — lives in
+The full audit — M1 through M19, with reproduction notes — lives in
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制). Highlights:
 
 - **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
@@ -420,6 +420,15 @@ The full audit — M1 through M18, with reproduction notes — lives in
 - **M4** Backups `chmod 0600` **after** `VACUUM INTO`, leaving a brief
   permissive window; a failed VACUUM can leave a **half-written file** behind
   that must be deleted by hand.
+- **M19** The two ways a backup is made write to **two different places**, and
+  retention only covers one. `auto-backup` (the timer) writes into `BACKUP_DIR`
+  (`~/.local/share/opencode/backups/`) and prunes it to 30 daily + 12 monthly;
+  `skillt backup` and the automatic pre-write backup taken by
+  `scrub-metadata --yes` / `cleanup-selftest --yes` use `backup_db()`'s default
+  path — **next to the database**. Those files are **never touched by
+  retention**, so they accumulate indefinitely (measured 5 loose files, 3 of
+  them still carrying the M14 text, on 2026-10-01). Clearing them is a manual,
+  deliberate decision.
 - **M5** `VACUUM` / backup / export / refresh run on the UI thread, so a very
   large database briefly freezes the TUI.
 - **M6** (mitigated) Non-UTF-8 locales forced `UnicodeEncodeError`; stdout and
@@ -456,7 +465,10 @@ The full audit — M1 through M18, with reproduction notes — lives in
   emits only an allowlist of keys, and `__selftest` asserts it is never
   written, but **rows already in your database do not remove themselves**, nor
   do the backups taken of it. Run `skillt scrub-metadata` to see them, then
-  `--yes` to strip the keys. Measured 40 such rows in a real 8-day database.
+  `--yes` to strip the keys. Measured 40 such rows in a real 8-day database;
+  they were stripped with `scrub-metadata --yes` on 2026-10-01 — but the backups
+  taken **before** that still hold the text, so re-check with
+  `skillt scrub-metadata` (it must report 0) and see M19.
 - **M15** A call that never completes leaves **no row at all**. Usage is written
   at `tool.execute.after` or from `message.part.updated`; `tool.execute.before`
   only parks the start time in memory. So an aborted, crashed or

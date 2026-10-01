@@ -19,7 +19,9 @@
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
 | 测试 | 289 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
-| 备份定时器 | **未安装**：`systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`；最新备份停在 2026-09-23 |
+| 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
+| 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
+| metadata 清理 | 2026-10-01 已执行 `scrub-metadata --yes`，剥掉 40 行（skill 17 / mcp 10 / plugin 13），用量行与 46 条 `error` 文本全部保留。此后 `skillt scrub-metadata` 必须报 0 行 |
 
 安装布局——四个位置都是**指回本仓库的符号链接**，所以改仓库即生效、无需重装；但改插件必须**重启 OpenCode**：
 
@@ -70,8 +72,18 @@ skillt doctor            # 期望：0 FAIL
 
 ```bash
 skillt cleanup-selftest          # 干跑：必须报告没有合成行
+skillt scrub-metadata            # 干跑：必须报 0 行（M14 已闭环）
 skillt sync --dry-run            # scanned == skills 行数，changed == 0
 wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
+```
+
+再查一遍保留策略够不着的那些备份（M19）——清理前的原文就留在这些文件里：
+
+```bash
+for f in ~/.local/share/opencode/skill-usage-backup-*.db; do
+  printf '%s  summary_rows=%s\n' "$(basename "$f")" \
+    "$(sqlite3 -readonly "file:$f?mode=ro" "SELECT (SELECT COUNT(*) FROM skill_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM mcp_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM plugin_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL);" 2>/dev/null || echo '未迁移的老库')"
+done
 ```
 
 然后做这份清单里**最有价值的一步**：拿 OpenCode 自己的记录对账。它能在别的检查全绿时抓到"采集悄悄变了形"。
@@ -140,13 +152,14 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 7. 已知限制
 
-M1–M18 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
-维护时最容易咬人的几条：**M14**（历史行里仍有提示词原文，用 `skillt scrub-metadata`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）。
+M1–M19 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
+维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（那些更早的备份在 `BACKUP_DIR` 之外，保留策略永远够不着）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修
 
 | 项 | 成本 | 为什么先不修 |
 |---|---|---|
+| `backup_db()` 默认写在数据库旁边，落在保留策略之外（M19） | 小 | 一行改动（`base = db.BACKUP_DIR`）+ 一个"`skillt backup` 应落进 `BACKUP_DIR`"的测试；但它会改变用户找备份的位置，该由你明确决定，不该顺手改掉 |
 | `branchByDir` 负缓存无 TTL（M16） | 小 | 动采集路径；AGENTS.md 要求改采集必须带测试，且当前 null 的主因是会话目录本身不是 git 仓库 |
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |

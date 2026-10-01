@@ -9,9 +9,10 @@ README = ROOT / "README.zh-CN.md"
 SYSTEMD = ROOT / "skill-tracker" / "systemd"
 
 # Every documented limitation, in both languages. M14-M18 came out of the
-# full capture/UI audit; the English README used to stop at M11, so the
-# landing page quietly disagreed with the reference doc.
-LIMITATIONS = tuple(f"M{i}" for i in range(1, 19))
+# full capture/UI audit; M19 out of the privacy cleanup that followed it. The
+# English README used to stop at M11, so the landing page quietly disagreed with
+# the reference doc.
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 20))
 
 
 def _text():
@@ -70,6 +71,7 @@ def test_english_readme_documents_every_known_limitation():
         "prompt",              # M14
         "no row at all",       # M15
         "COALESCE",            # M18
+        "never touched by",    # M19
     ):
         assert keyword in text, f"English limitation detail missing: {keyword}"
 

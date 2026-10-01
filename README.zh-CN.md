@@ -355,6 +355,7 @@ rm -rf ~/.local/share/opencode/backups
 ### 备份
 
 - **M4 备份权限窗口。** `VACUUM INTO` 完成**之后**才 `chmod 0600`，存在极短的宽松权限窗口；若 VACUUM 失败，可能留下**未清理的半成品文件**（需手工删除）。
+- **M19 两种备份的存放位置不同，保留策略只覆盖其中一个。** `auto-backup`（定时器走的那条）写进 `BACKUP_DIR`（`~/.local/share/opencode/backups/`）并按 30 每日 + 12 每月清理；而 `skillt backup` 以及 `scrub-metadata --yes` / `cleanup-selftest --yes` 前自动写的回滚备份用的是 `backup_db()` 默认路径——**写在数据库旁边**（`~/.local/share/opencode/`）。那些文件**永远不会被保留策略碰到**（`BACKUP_RE` 只在 `BACKUP_DIR` 里生效），会一直堆积。2026-10-01 实测该处散落 5 个文件，其中 3 个仍含 M14 的原文。清理它们要手工确认。
 
 ### 界面
 
@@ -376,7 +377,7 @@ rm -rf ~/.local/share/opencode/backups
 
 ### 本轮审计新增（M14–M18）
 
-- **M14 历史行里可能仍有用户提示词原文（已封住写入与导出，库里数据需自清）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`），但**已经落库的历史行不会自己消失**，备份文件同理。清理：`skillt scrub-metadata`（先看 dry-run 清单）→ `skillt scrub-metadata --yes`（自动先备份）。本轮实测生产库仍有 40 行命中。
+- **M14 历史行里可能仍有用户提示词原文（写入与导出已封住；库里数据已清理，备份文件仍有）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`）。2026-10-01 已用 `skillt scrub-metadata --yes` 清掉生产库里命中的 **40 行**（skill 17 / mcp 10 / plugin 13，用量行保留、`error` 文本 46 条保留）。**但清理之前形成的备份文件里仍是原文**——包括本次 `--yes` 之前自动写的那份回滚备份。检查方法见 MAINTENANCE §3，删除与否由你决定。任何时候都可以重跑 `skillt scrub-metadata` 验证：应当报告 0 行命中。
 - **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
 - **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
 - **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。

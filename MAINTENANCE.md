@@ -23,7 +23,9 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
 | Test suite | 289 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
-| Backup timer | **not installed** — `systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`; newest backup 2026-09-23 |
+| Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
+| Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
+| Metadata scrub | Applied 2026-10-01: `scrub-metadata --yes` stripped 40 rows (17 skill / 10 mcp / 13 plugin), usage rows and all 46 `error` texts kept. `skillt scrub-metadata` must now report 0 |
 
 Install layout — all four are **symlinks back into this repo**, so editing the
 repo is live (no reinstall needed) except that OpenCode must be restarted to
@@ -85,8 +87,19 @@ Healthy today means, at minimum:
 
 ```bash
 skillt cleanup-selftest          # dry run; must report no synthetic rows
+skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
 skillt sync --dry-run            # scanned == skills row count, changed == 0
 wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
+```
+
+Then look at the backups that retention cannot reach (M19) — these are the ones
+holding pre-scrub data:
+
+```bash
+for f in ~/.local/share/opencode/skill-usage-backup-*.db; do
+  printf '%s  summary_rows=%s\n' "$(basename "$f")" \
+    "$(sqlite3 -readonly "file:$f?mode=ro" "SELECT (SELECT COUNT(*) FROM skill_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM mcp_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM plugin_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL);" 2>/dev/null || echo 'pre-migration')"
+done
 ```
 
 Then confirm the capture is still telling the truth against OpenCode's own
@@ -184,19 +197,21 @@ state.
 
 ## 7. Known limitations
 
-M1–M18, with reproduction notes:
+M1–M19, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制) /
 [README.md](README.md#known-limitations).
 The ones most likely to bite during maintenance: **M14** (historical prompt text
-still in rows — `skillt scrub-metadata`), **M15** (calls that never completed
-leave no row), **M16** (one failed git lookup silences `branch` for a directory),
-**M17** (no log rotation), **M18** (a late error text can be dropped by the
-`COALESCE` on metadata).
+in rows — scrubbed 2026-10-01, still present in the older backups), **M19**
+(those older backups are outside `BACKUP_DIR` and retention never reaches them),
+**M15** (calls that never completed leave no row), **M16** (one failed git
+lookup silences `branch` for a directory), **M17** (no log rotation), **M18** (a
+late error text can be dropped by the `COALESCE` on metadata).
 
 ## 8. Deferred (P2) — ranked, with why they are not fixed
 
 | Item | Cost | Why deferred |
 |---|---|---|
+| `backup_db()`'s default writes next to the DB, outside the retention sweep (M19) | small | one-line change (`base = db.BACKUP_DIR`) plus a test that `skillt backup` lands in `BACKUP_DIR`; it changes where users find their backups, so it needs a deliberate decision, not a drive-by fix |
 | `branchByDir` negative cache has no TTL (M16) | small | touches the capture path; AGENTS.md requires tests for capture changes, and the dominant cause of nulls here is non-git session dirs |
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
