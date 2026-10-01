@@ -24,7 +24,15 @@ usage** into a local SQLite database. Three layers, in dependency order:
 4. `scripts/skill_db.py::agentos_*` — a **read-only neighbour**, not a fourth
    layer: the AgentOS advisor registers no tool and no command, so it can never
    appear in the usage tables, and `skillt agentos` / the Advisor tab read its
-   own store instead (`$AGENT_OS_ROOT/store/aos.db` + `store/loops/*.json`).
+   own store instead (`store/aos.db` + `store/loops/*.json`). Resolution is
+   explicit path → `OPENCODE_SKILL_TRACKER_AGENTOS_DB` → `AOS_DB` →
+   `AGENT_OS_ROOT` → the checkout the installed `plugin/agent-os.js` symlink
+   resolves into. The last one exists because the host sets `AGENT_OS_ROOT`
+   inline in its `opencode` alias, so no ordinary shell has it; discovery walks
+   **outward until it finds a real `store/aos.db`** rather than trimming path
+   components, so a copied plugin file yields nothing instead of a plausible
+   wrong path — and an explicit-but-broken `AGENT_OS_ROOT` is still an error,
+   never replaced by a guess.
 
 `bin/skillt` is a bash dispatcher that resolves its own location through
 symlinks and execs one of the above.

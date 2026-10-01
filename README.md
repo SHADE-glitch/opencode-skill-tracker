@@ -251,8 +251,15 @@ skillt agentos   [--json] [--limit N]
 - `agentos` — the **AgentOS advisor**, aggregated read-only from its own store.
   The advisor registers no tool and no command, so it can never appear in the
   usage tables above; this reads its `store/aos.db` + `store/loops/*.json`
-  instead. Requires `AGENT_OS_ROOT` (or
-  `OPENCODE_SKILL_TRACKER_AGENTOS_DB`) and reports plainly when neither is set.
+  instead. The store is located in this order: the explicit argument,
+  `OPENCODE_SKILL_TRACKER_AGENTOS_DB`, `AOS_DB`, `$AGENT_OS_ROOT/store/aos.db`,
+  and finally **the checkout the installed advisor plugin is symlinked from** —
+  because `AGENT_OS_ROOT` is set inline by the host's `opencode` alias and never
+  reaches an ordinary shell, the last step is what makes the tab work with zero
+  configuration. Nothing found ⇒ it says so and names the directory it searched
+  (`OPENCODE_SKILL_TRACKER_CONFIG_DIR` overrides where that is, default
+  `~/.config/opencode`). Discovery only ever *reads* a link, and a wrong
+  `AGENT_OS_ROOT` is reported as an error rather than quietly replaced.
   Per loop it shows the stage statuses and timings, the slowest stage against
   the advisor's per-call budget, how much measured tool activity that same
   session produced (the join), and whether the recalled memory actually reached

@@ -247,6 +247,7 @@ def _cli_agentos(conn, args) -> int:
     if not res["available"]:
         print(f"AgentOS advisor: not aggregated ({res['reason']})")
         print("  set AGENT_OS_ROOT, or OPENCODE_SKILL_TRACKER_AGENTOS_DB=<path to store/aos.db>")
+        print("  — an installed advisor plugin needs neither: its symlink points at the store.")
         return 0
 
     sc = res["store_counts"]
@@ -1431,7 +1432,9 @@ def _tui_classes() -> dict:
                 label.update(
                     f"[dim]AgentOS advisor: not aggregated[/dim]  ·  {res['reason']}\n"
                     "[dim]set AGENT_OS_ROOT, or OPENCODE_SKILL_TRACKER_AGENTOS_DB"
-                    " pointing at store/aos.db. This tab never writes to that store.[/dim]"
+                    " pointing at store/aos.db — an installed advisor plugin needs"
+                    " neither, its symlink points here. This tab never writes to"
+                    " that store.[/dim]"
                 )
                 return
             sc = res["store_counts"]

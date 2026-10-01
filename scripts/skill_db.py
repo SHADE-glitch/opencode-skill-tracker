@@ -1930,13 +1930,55 @@ AGENTOS_STAGES = (
 AGENTOS_LOOP_FIELDS = ("loop_id", "session_id", "stage", "final_status",
                        "created_at", "updated_at", "memory_mode", "provider", "model")
 
+# Where the advisor installs itself: a file in opencode's plugin directory. On
+# this machine it is a symlink into the checkout, so the checkout's root — and
+# with it `store/aos.db` — is a fact already recorded on disk, not a variable
+# the user has to remember to export for every shell that runs `skillt`.
+AGENTOS_PLUGIN_FILE = os.path.join("plugin", "agent-os.js")
+AGENTOS_CONFIG_DIR_ENV = "OPENCODE_SKILL_TRACKER_CONFIG_DIR"
+
+
+def _agentos_config_dir() -> str:
+    """opencode's config directory, same precedence as the plugin's own."""
+    return os.environ.get(AGENTOS_CONFIG_DIR_ENV) or os.path.join(HOME, ".config", "opencode")
+
+
+def _discover_agentos_store() -> str | None:
+    """Derive `store/aos.db` from the installed advisor plugin. Returns None on doubt.
+
+    Resolves the plugin file (usually a symlink) and walks *outward* from it,
+    returning the first ancestor that really does hold `store/aos.db`. Walking
+    for the store instead of stripping a fixed number of path components means a
+    plugin file that was copied out of the checkout, or a checkout with no store
+    yet, produces no answer rather than a confident wrong path.
+    """
+    link = os.path.join(_agentos_config_dir(), AGENTOS_PLUGIN_FILE)
+    if not os.path.exists(link):
+        return None
+    try:
+        current = os.path.dirname(os.path.realpath(link))
+    except OSError:
+        return None
+    while True:
+        candidate = os.path.join(current, "store", "aos.db")
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:  # filesystem root, still nothing
+            return None
+        current = parent
+
 
 def agentos_store(db_path: str | None = None) -> dict:
     """Locate the advisor store. Never creates anything.
 
     Resolution order, all read at call time (a def-time default would freeze the
     developer's machine into the signature): explicit argument, then
-    `OPENCODE_SKILL_TRACKER_AGENTOS_DB`, then `$AGENT_OS_ROOT/store/aos.db`.
+    `OPENCODE_SKILL_TRACKER_AGENTOS_DB`, then `AOS_DB`, then
+    `$AGENT_OS_ROOT/store/aos.db`, then the checkout the installed plugin points
+    at. The last two are the difference between "works here" and "works in the
+    TUI the user actually opened": `AGENT_OS_ROOT` is set inline by the
+    `opencode` alias, so it is not in the environment of an ordinary shell.
     """
     path = db_path or os.environ.get(AGENTOS_DB_ENV) or os.environ.get("AOS_DB")
     if not path:
@@ -1945,7 +1987,14 @@ def agentos_store(db_path: str | None = None) -> dict:
             path = os.path.join(root, "store", "aos.db")
     result = {"requested": path, "db": None, "loops": None, "reason": ""}
     if not path:
-        result["reason"] = "no store configured (set AGENT_OS_ROOT or OPENCODE_SKILL_TRACKER_AGENTOS_DB)"
+        path = _discover_agentos_store()
+        result["requested"] = path
+    if not path:
+        result["reason"] = (
+            "no store configured (set AGENT_OS_ROOT or "
+            f"OPENCODE_SKILL_TRACKER_AGENTOS_DB; also looked for {AGENTOS_PLUGIN_FILE} "
+            f"under {_agentos_config_dir()})"
+        )
         return result
     if not os.path.isfile(path):
         result["reason"] = f"no database at {path}"

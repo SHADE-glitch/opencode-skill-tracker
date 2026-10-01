@@ -18,7 +18,7 @@
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
 | 测试 | 289 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
-| AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；目前所有阶段都在 15–172ms，预算是 1200ms |
+| AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。这台机器上 `skillt agentos` **不需要任何环境变量**：`~/.config/opencode/plugin/agent-os.js` 是指向那个 checkout 的软链，聚合器从它向外逐层找到真实存在的 `store/aos.db`。目前所有阶段都在 15–172ms，预算是 1200ms |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
 | 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
@@ -52,7 +52,8 @@
 | 绝不读取消息正文，因此也不会存储 | `test_readme.py`、`__selftest` 断言 |
 | schema 有两份副本：插件 `TABLES_SQL`/`VIEWS_SQL` 与 Python `SCHEMA_SQL`，必须同一提交里一起改 | `test_plugin_and_python_schema_do_not_drift` |
 | 改视图必须升 `SCHEMA_VERSION`，否则老库继续用旧视图（`CREATE VIEW IF NOT EXISTS` 不更新） | `test_migration.py`、`test_schema_sync.py` |
-| 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`，也不得读真实插件日志 | `temp_skills` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch |
+| 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`、真实插件日志，**也不得读真实顾问库** | `temp_skills` + `isolate_config_dir` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch |
+| 顾问库**只读、且是找到的而不是猜的**：用 `file:...?mode=ro` 打开；定位方式是已安装的插件软链向外逐层找到真实存在的 `store/aos.db`，绝不靠砍路径层数拼路径，也不掩盖一个指错了的 `AGENT_OS_ROOT` | `_open_agentos_ro()`、`_discover_agentos_store()`、`test_agentos.py`（链可找到 / 环境变量仍优先 / 坏环境变量继续报错 / 复制出来的文件被拒绝） |
 | 推送前测试全绿，**两条文档里的命令都要跑** | `AGENTS.md` |
 
 ## 2. 每日（在相信任何数字之前）
@@ -77,7 +78,7 @@ skillt cleanup-selftest          # 干跑：必须报告没有合成行
 skillt scrub-metadata            # 干跑：必须报 0 行（M14 已闭环）
 skillt sync --dry-run            # scanned == skills 行数，changed == 0
 skillt agentos                   # 顾问 loop：超预算阶段、错误、召回是否真的进了提示、
-                                 # 与可度量用量的连接（需要环境里有 AGENT_OS_ROOT）
+                                 # 与可度量用量的连接（这台机器不需要环境变量）
 wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
 ```
 

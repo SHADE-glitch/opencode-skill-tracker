@@ -176,6 +176,120 @@ def test_a_missing_store_is_reported_and_never_created(tmp_path, monkeypatch):
     assert not (tmp_path / "nope.db").exists(), "aggregating must never create the store"
 
 
+# --- discovery: the installed plugin is the configuration -------------------
+# `AGENT_OS_ROOT` is set inline by the host's `opencode` alias, so it never
+# reaches the environment of the shell that runs `skillt`. Requiring it made a
+# correctly installed machine look unconfigured. These cases pin the fallback
+# and, more importantly, the three ways it must refuse to guess.
+def _fake_install(tmp_path, *, with_store=True):
+    """A checkout + the plugin-dir symlink an install actually leaves behind.
+
+    Returns (config_dir, expected_db_or_None). The checkout lives somewhere the
+    walk can find it only through the link, so nothing here can pass by accident
+    via a path prefix.
+    """
+    checkout = tmp_path / "AgentOS"
+    nested = checkout / "integrations" / "opencode" / "plugin"
+    nested.mkdir(parents=True)
+    target = nested / "agent-os.js"
+    target.write_text("export default { id: 'agent-os' }\n", encoding="utf-8")
+
+    expected = None
+    if with_store:
+        expected = os.path.realpath(_make_store(checkout))
+
+    config = tmp_path / "config"
+    link_dir = config / "plugin"
+    link_dir.mkdir(parents=True)
+    link = link_dir / "agent-os.js"
+    link.symlink_to(target)
+    return str(config), expected
+
+
+def test_the_installed_plugin_link_finds_the_store(tmp_path, monkeypatch):
+    config, expected = _fake_install(tmp_path)
+    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CONFIG_DIR", config)
+
+    out = db.agentos_store()
+    assert out["db"] == expected, out
+    assert out["reason"] == ""
+    assert out["loops"] == os.path.join(
+        os.path.dirname(expected), "loops"
+    ), out
+
+
+def test_discovery_never_beats_an_explicit_path(tmp_path, monkeypatch):
+    """An env var is a statement of intent; a symlink is only a hint."""
+    config, _ = _fake_install(tmp_path)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    other = _make_store(other_root)
+    monkeypatch.delenv(db.AGENTOS_DB_ENV, raising=False)
+    monkeypatch.delenv("AOS_DB", raising=False)
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CONFIG_DIR", config)
+    monkeypatch.setenv("AGENT_OS_ROOT", str(tmp_path / "other"))
+    assert db.agentos_store()["db"] == other
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, other)
+    assert db.agentos_store()["db"] == other
+    assert db.agentos_store(db_path=other)["db"] == other
+
+
+def test_a_broken_env_is_not_papered_over_by_discovery(tmp_path, monkeypatch):
+    """AGENT_OS_ROOT set but wrong must still say 'no database at ...'.
+
+    Silently falling back to a different store here would make a misconfigured
+    machine report someone else's numbers, which is worse than an empty tab.
+    """
+    config, _ = _fake_install(tmp_path)
+    for var in (db.AGENTOS_DB_ENV, "AOS_DB"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CONFIG_DIR", config)
+    monkeypatch.setenv("AGENT_OS_ROOT", str(tmp_path / "not-a-checkout"))
+    out = db.agentos_store()
+    assert out["db"] is None
+    assert "no database at" in out["reason"]
+
+
+def test_a_plugin_file_with_no_store_above_it_is_refused(tmp_path, monkeypatch):
+    """The walk looks for the store instead of trimming path components.
+
+    A copied-out plugin file, and a checkout that has not created its store yet,
+    both have to end in "nothing found" — not in a path that looks plausible and
+    then fails to open.
+    """
+    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+
+    config, _ = _fake_install(tmp_path, with_store=False)
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CONFIG_DIR", config)
+    out = db.agentos_store()
+    assert out["db"] is None and "no store configured" in out["reason"]
+
+    plain = tmp_path / "plain"
+    (plain / "plugin").mkdir(parents=True)
+    (plain / "plugin" / "agent-os.js").write_text("// not a link\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CONFIG_DIR", str(plain))
+    out = db.agentos_store()
+    assert out["db"] is None and "no store configured" in out["reason"]
+    # The reason names the directory it searched, so the empty tab is explainable.
+    assert str(plain) in out["reason"]
+
+
+def test_discovery_reads_only_the_link(tmp_path, monkeypatch):
+    """No write, no create: probing the config dir must not leave a file behind."""
+    config, expected = _fake_install(tmp_path)
+    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CONFIG_DIR", config)
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+    db.agentos_store()
+    assert sorted(str(p) for p in tmp_path.rglob("*")) == before
+    assert os.path.isfile(expected)
+
+
 # --- privacy: whitelist projection, not scrubbing -------------------------
 def test_task_text_and_payloads_are_never_read(tmp_path, tracker):
     res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
