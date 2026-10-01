@@ -155,7 +155,9 @@ def test_tui_data_page_backup_and_export(seeded_db, tmp_path):
             await pilot.press("escape")
             await pilot.press("b")      # backup
             await pilot.pause()
-            backups = glob.glob(os.path.join(os.path.dirname(seeded_db), "skill-usage-backup-*.db"))
+            # Backups land in BACKUP_DIR (M19), exports stay beside the DB.
+            import skill_db as db
+            backups = glob.glob(os.path.join(db.BACKUP_DIR, "skill-usage-backup-*.db"))
             assert backups, "backup button must create a file"
             assert stat.S_IMODE(os.stat(backups[0]).st_mode) == 0o600
 
@@ -423,8 +425,9 @@ def test_tui_backup_and_export_twice_are_unique(seeded_db):
                 await pilot.press("e")
                 await pilot.pause()
 
+            import skill_db as db
             d = os.path.dirname(seeded_db)
-            backups = glob.glob(os.path.join(d, "skill-usage-backup-*.db"))
+            backups = glob.glob(os.path.join(db.BACKUP_DIR, "skill-usage-backup-*.db"))
             exports = glob.glob(os.path.join(d, "skill-usage-export-*.json"))
             assert len(backups) == 2, f"expected 2 distinct backups, got {backups}"
             assert len(exports) == 2, f"expected 2 distinct exports, got {exports}"

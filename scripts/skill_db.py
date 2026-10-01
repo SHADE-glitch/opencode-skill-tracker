@@ -1373,18 +1373,26 @@ def backup_db(conn, target: str | None = None) -> str:
     if target:
         target = os.path.abspath(os.path.expanduser(target))
     else:
+        # BACKUP_DIR, not next to the database: retention only ever sweeps
+        # BACKUP_DIR, so a default that landed beside the DB produced backups
+        # that nothing would ever prune (and nothing would ever report — doctor
+        # reads backups.latest from BACKUP_DIR only).
         # The default name is second-resolution; two backups in the same second
         # would otherwise collide. Bump the timestamp until a name is free.
-        base = os.path.dirname(db_file_of(conn))
+        os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(BACKUP_DIR, 0o700)
+        except OSError:
+            pass  # the backup itself still needs to be private; the dir is best effort
         now = datetime.now(timezone.utc)
         for bump in range(5):
             ts = (now + timedelta(seconds=bump)).strftime("%Y%m%d-%H%M%S")
-            candidate = os.path.join(base, f"skill-usage-backup-{ts}.db")
+            candidate = os.path.join(BACKUP_DIR, f"skill-usage-backup-{ts}.db")
             if not os.path.exists(candidate):
                 target = candidate
                 break
         else:
-            raise FileExistsError(f"no free backup name near {base}")
+            raise FileExistsError(f"no free backup name near {BACKUP_DIR}")
     if os.path.exists(target):
         raise FileExistsError(f"refusing to overwrite existing file: {target}")
     conn.commit()  # VACUUM cannot run inside an open transaction

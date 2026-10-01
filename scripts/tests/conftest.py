@@ -68,6 +68,18 @@ def temp_skills(tmp_path, monkeypatch):
     return str(skills)
 
 
+@pytest.fixture(autouse=True)
+def isolate_backup_dir(tmp_path, monkeypatch):
+    """No test may write into the real ~/.local/share/opencode/backups.
+
+    `backup_db()`'s default target is BACKUP_DIR, and quite a few tests take a
+    backup (the Data page's `b`, the pre-delete safety backup, retention runs).
+    Pointing it at a per-test directory also makes each test's view of
+    `backups.latest` its own instead of this machine's.
+    """
+    monkeypatch.setattr(db, "BACKUP_DIR", str(tmp_path / "backups"))
+
+
 @pytest.fixture
 def empty_db(tmp_path):
     """A base-schema DB that has NOT been migrated yet.

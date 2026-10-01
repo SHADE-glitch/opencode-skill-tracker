@@ -216,3 +216,30 @@ def test_backup_db_avoids_same_second_collision(seeded_db):
     with pytest.raises(FileExistsError):
         db.backup_db(conn, first)
     conn.close()
+
+
+def test_default_backup_lands_in_the_retention_directory(seeded_db):
+    """M19: a backup nobody's retention can reach is a backup nobody rotates.
+
+    backup_db()'s default used to write beside the database, while
+    `plan_retention` and `doctor backups.latest` only ever look in BACKUP_DIR —
+    so `skillt backup` silently created unpruned, unreported files (and, once
+    redacted metadata existed, unredacted copies of the database).
+    """
+    conn = db.open_db(seeded_db, readonly=False)
+    path = db.backup_db(conn)
+
+    assert os.path.dirname(path) == db.BACKUP_DIR
+    assert db.BACKUP_RE.match(os.path.basename(path)), path
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+    db_dir = os.path.dirname(db.db_file_of(conn))
+    assert db_dir != db.BACKUP_DIR, "fixture must not put the DB in BACKUP_DIR"
+    assert not [n for n in os.listdir(db_dir) if db.BACKUP_RE.match(n)], \
+        "the database's own directory must stay free of backups"
+
+    # doctor reads BACKUP_DIR, so it must now be able to see this one.
+    latest = max(os.path.getmtime(os.path.join(db.BACKUP_DIR, n))
+                 for n in os.listdir(db.BACKUP_DIR) if db.BACKUP_RE.match(n))
+    assert abs(latest - os.path.getmtime(path)) < 2
+    conn.close()
