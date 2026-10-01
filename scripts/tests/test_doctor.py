@@ -18,6 +18,11 @@ class Args:
         self.db = db_path
         self.json = json
         self.limit = 10
+        self.freshness_days = 7
+
+
+def checks_by_name(conn, args):
+    return {name: (status, detail) for name, status, detail in st._doctor_checks(conn, args)}
 
 
 def _healthy_setup(tmp_path, monkeypatch):
@@ -46,10 +51,18 @@ def _healthy_setup(tmp_path, monkeypatch):
     plugin.write_text(
         "tool.execute.before tool.execute.after permission.ask event:\n"
         "mcp_usage function classify( recordMcpUsage\n"
-        "plugin_usage recordPluginUsage command.execute.before\n",
+        "plugin_usage recordPluginUsage command.execute.before\n"
+        "// Builtin tool ids, verified against OpenCode 1.18.33 with\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(st, "PLUGIN_PATH", str(plugin))
+
+    # Never read the developer's real tracker log, and never shell out for a
+    # version comparison that has nothing to compare against.
+    log = tmp_path / "skill-tracker.log"
+    log.write_text("2026-01-01T00:00:00.000Z [info] initialized\n", encoding="utf-8")
+    monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(log))
+    monkeypatch.setattr(st, "_opencode_version", lambda: "1.18.33\n")
 
     bdir = tmp_path / "backups"
     bdir.mkdir()
@@ -78,7 +91,10 @@ def test_doctor_json_is_structured(tmp_path, monkeypatch, capsys):
     assert doc["summary"]["fail"] == 0
     names = {c["name"] for c in doc["checks"]}
     assert {"db.quick_check", "plugin.hooks", "plugin.mcp_hooks", "plugin.plugin_hooks",
-            "skills.frontmatter_names"} <= names
+            "skills.frontmatter_names", "capture.freshness", "log.errors",
+            "env.opencode_version"} <= names
+    for c in doc["checks"]:
+        assert c["status"] in ("PASS", "WARN", "FAIL"), c
     conn.close()
 
 
@@ -129,4 +145,120 @@ def test_doctor_reports_missing_skills_dir(tmp_path, monkeypatch, capsys):
     assert "missing" in out
     assert "skills.frontmatter_names" not in out, "must not vacuously pass"
     assert rc == 0
+    conn.close()
+
+
+# --- capture pipeline checks ----------------------------------------------
+# The tracker's whole purpose is to keep recording, and a silent stop is
+# indistinguishable from an idle machine unless someone asks.
+def test_doctor_passes_on_fresh_capture(tmp_path, monkeypatch):
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    conn.execute(
+        "INSERT INTO skill_usage (skill_name, session_id, trigger_type, status,"
+        " timestamp, call_id) VALUES ('alpha','s1','tool_call','success',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'c1')"
+    )
+    conn.commit()
+    status, detail = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    assert status == "PASS", detail
+    assert "skill_usage" in detail, "must name which stream is newest"
+    conn.close()
+
+
+def test_doctor_warns_when_nothing_has_been_recorded(tmp_path, monkeypatch):
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    status, detail = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    assert status == "WARN", detail
+    assert "no usage rows" in detail
+    conn.close()
+
+
+def test_doctor_warns_when_capture_has_stalled(tmp_path, monkeypatch):
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    conn.execute(
+        "INSERT INTO mcp_usage (server_name, tool_name, session_id, trigger_type,"
+        " status, timestamp, call_id) VALUES ('s','t','s1','tool_call','success',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days'), 'c1')"
+    )
+    conn.commit()
+    status, detail = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    assert status == "WARN", detail
+    assert "mcp_usage" in detail and "30" in detail
+    # The limit is a knob because a genuinely idle machine is not a fault.
+    status, _ = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    a = Args(db_path)
+    a.freshness_days = 60
+    assert checks_by_name(conn, a)["capture.freshness"][0] == "PASS"
+    conn.close()
+
+
+def test_doctor_survives_a_database_without_the_new_tables(tmp_path, monkeypatch):
+    """A pre-migration DB must WARN, not raise out of doctor."""
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    conn.execute("DROP TABLE plugin_usage")
+    conn.commit()
+    row = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    assert row[0] in ("PASS", "WARN"), row
+    conn.close()
+
+
+# --- tracker log ----------------------------------------------------------
+def test_doctor_counts_plugin_errors_in_the_log(tmp_path, monkeypatch):
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    log = tmp_path / "noisy.log"
+    log.write_text(
+        "2026-01-01T00:00:00.000Z [info] initialized\n"
+        "2026-01-01T00:00:01.000Z [err] recordMcpUsage: database is locked\n"
+        "2026-01-01T00:00:02.000Z [err] init: no such table\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(log))
+    status, detail = checks_by_name(conn, Args(db_path))["log.errors"]
+    assert status == "WARN", detail
+    assert "2 error line(s)" in detail
+    assert "no such table" in detail, "the last error is the one shown"
+    conn.close()
+
+
+def test_doctor_warns_when_the_log_is_absent(tmp_path, monkeypatch):
+    """No log has ever been written: the plugin has not initialised."""
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(tmp_path / "gone.log"))
+    status, detail = checks_by_name(conn, Args(db_path))["log.errors"]
+    assert status == "WARN", detail
+    assert "not initialised" in detail
+    conn.close()
+
+
+# --- OpenCode version vs the pinned allowlist (M13) -----------------------
+def test_doctor_warns_when_opencode_outgrew_the_allowlist(tmp_path, monkeypatch):
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "_opencode_version", lambda: "1.19.2\n")
+    status, detail = checks_by_name(conn, Args(db_path))["env.opencode_version"]
+    assert status == "WARN", detail
+    assert "1.19.2" in detail and "1.18.33" in detail
+    assert "DEFAULT_BUILTIN_TOOLS" in detail, "must say what to do about it"
+    conn.close()
+
+
+def test_doctor_warns_when_opencode_is_not_on_path(tmp_path, monkeypatch):
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "_opencode_version", lambda: None)
+    status, detail = checks_by_name(conn, Args(db_path))["env.opencode_version"]
+    assert status == "WARN", detail
+    assert "not on PATH" in detail
+    conn.close()
+
+
+def test_the_new_checks_can_never_fail_doctor(tmp_path, monkeypatch):
+    """They are advisory: capture can legitimately be idle for a week."""
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(tmp_path / "gone.log"))
+    monkeypatch.setattr(st, "_opencode_version", lambda: None)
+    names = ("capture.freshness", "log.errors", "env.opencode_version")
+    found = checks_by_name(conn, Args(db_path))
+    for n in names:
+        assert n in found, f"{n} missing"
+        assert found[n][0] != "FAIL", found[n]
+    assert st._cli_doctor(conn, Args(db_path)) == 0
     conn.close()

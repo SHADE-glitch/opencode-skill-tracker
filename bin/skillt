@@ -51,8 +51,8 @@ SYS_PY="$(command -v python3 || true)"
 # may appear before OR after the subcommand: `skillt --json top` == `skillt top --json`.
 #
 # NOTE: the value-taking flag list below must stay in sync with the parsers in
-# skill-tui.py (--db --days --min-uses --limit --out) and skill-stats.py
-# (--db --limit).
+# skill-tui.py (--db --days --min-uses --limit --out --freshness-days) and
+# skill-stats.py (--db --limit).
 cmd=""
 skip=0
 cli=0
@@ -62,7 +62,7 @@ for t in "$@"; do
     rest+=("$t"); skip=0; continue
   fi
   case "$t" in
-    --db|--days|--min-uses|--limit|--out) rest+=("$t"); skip=1 ;;
+    --db|--days|--min-uses|--limit|--out|--freshness-days) rest+=("$t"); skip=1 ;;
     --cli) cli=1 ;;
     -h|--help) cmd="help" ;;
     --*) rest+=("$t") ;;

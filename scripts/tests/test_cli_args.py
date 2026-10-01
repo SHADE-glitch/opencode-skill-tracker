@@ -65,6 +65,24 @@ def test_parse_args_missing_value():
         st.parse_args(["--cli", "insight", "--days"])
 
 
+def test_parse_args_freshness_days():
+    a = st.parse_args(["--cli", "doctor", "--freshness-days", "14"])
+    assert a.freshness_days == 14
+    with pytest.raises(SystemExit) as ei:
+        st.parse_args(["--cli", "doctor", "--freshness-days", "0"])
+    assert ei.value.code == 2
+    with pytest.raises(SystemExit) as ei:
+        st.parse_args(["--cli", "doctor", "--freshness-days"])
+    assert "requires a value" in str(ei.value)
+
+
+def test_parse_args_accepts_scrub_metadata():
+    """A new subcommand must be in CLI_COMMANDS or the dispatcher rejects it."""
+    a = st.parse_args(["--cli", "scrub-metadata"])
+    assert a.command == "scrub-metadata"
+    assert "scrub-metadata" in st.CLI_COMMANDS
+
+
 def test_parse_args_unknown_command():
     # SystemExit(<str>) keeps the message in .code; the shell turns it into 1.
     with pytest.raises(SystemExit) as ei:

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -408,6 +410,35 @@ PLUGIN_MCP_MARKERS = ("mcp_usage", "function classify(", "recordMcpUsage")
 # Same for plugin tool/command capture.
 PLUGIN_PLUGIN_MARKERS = ("plugin_usage", "recordPluginUsage", "command.execute.before")
 
+# The plugin's builtin-tool allowlist is verified against one OpenCode release
+# (limitation M13). Read the pin out of the plugin source rather than keeping a
+# second copy here, which is exactly the drift this check exists to catch.
+VERSION_PIN_RE = re.compile(r"verified against OpenCode (\d+\.\d+\.\d+)")
+OPENCODE_VERSION_TIMEOUT_S = 2
+
+# The tracker's own log. `log()` never throws, so a hook that starts failing is
+# invisible in the database — it only ever shows up here.
+TRACKER_LOG_PATH = os.path.join(db.HOME, ".config", "opencode", "logs", "skill-tracker.log")
+
+# How stale the newest recorded call may get before doctor says so. A tracker
+# that stopped writing looks exactly like an idle machine from the inside.
+CAPTURE_FRESHNESS_DAYS = 7
+
+
+def _opencode_version():
+    """Output of `opencode --version`, or None when it cannot be run.
+
+    Separate function so the check above never has to shell out in a test.
+    """
+    try:
+        proc = subprocess.run(
+            ["opencode", "--version"], capture_output=True, text=True,
+            timeout=OPENCODE_VERSION_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout or None
+
 
 def _doctor_checks(conn, args) -> list:
     """Return [(name, 'PASS'|'WARN'|'FAIL', detail)] for `skillt doctor`."""
@@ -465,12 +496,14 @@ def _doctor_checks(conn, args) -> list:
             add("skills.scan", False, f"error: {e}")
 
     # --- Plugin ---------------------------------------------------------
+    plugin_src = None
     pexists = os.path.isfile(PLUGIN_PATH)
     add("plugin.exists", pexists, PLUGIN_PATH if pexists else f"missing: {PLUGIN_PATH}")
     if pexists:
         try:
             with open(PLUGIN_PATH, encoding="utf-8", errors="replace") as f:
                 src = f.read()
+            plugin_src = src
             miss = [m for m in PLUGIN_MARKERS if m not in src]
             add("plugin.hooks", not miss,
                 "all hooks present" if not miss else f"missing: {', '.join(miss)}", warn=True)
@@ -515,6 +548,85 @@ def _doctor_checks(conn, args) -> list:
             add("backups.latest", age_d <= 7, f"{stamp} ({age_d:.1f}d ago)", warn=True)
     except Exception as e:  # noqa: BLE001
         add("backups.latest", False, f"error: {e}", warn=True)
+
+    # --- Capture pipeline ----------------------------------------------
+    # Everything above proves the parts exist. These three prove it is still
+    # *recording*, which is the only thing this tool is for.
+    def has_table(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone() is not None
+
+    limit = getattr(args, "freshness_days", CAPTURE_FRESHNESS_DAYS)
+    try:
+        newest = None
+        for table in ("skill_usage", "mcp_usage", "plugin_usage"):
+            if not has_table(table):
+                continue
+            ts = conn.execute(f"SELECT MAX(timestamp) FROM {table}").fetchone()[0]
+            # ISO-8601 UTC of fixed width sorts as text.
+            if ts and (newest is None or ts > newest[0]):
+                newest = (ts, table)
+        if newest is None:
+            add("capture.freshness", False, "no usage rows in any table", warn=True)
+        else:
+            age = conn.execute(
+                "SELECT julianday('now') - julianday(?)", (newest[0],)
+            ).fetchone()[0]
+            add(
+                "capture.freshness", age <= limit,
+                f"newest {newest[1]} {db.fmt_time(newest[0])} ({age:.1f}d ago,"
+                f" want <= {limit}d)",
+                warn=True,
+            )
+    except Exception as e:  # noqa: BLE001
+        add("capture.freshness", False, f"error: {e}", warn=True)
+
+    try:
+        if not os.path.isfile(TRACKER_LOG_PATH):
+            add(
+                "log.errors", False,
+                f"no log at {TRACKER_LOG_PATH} — the plugin has not initialised",
+                warn=True,
+            )
+        else:
+            count, last = 0, ""
+            with open(TRACKER_LOG_PATH, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "[err]" in line:
+                        count += 1
+                        last = line.rstrip()
+            add(
+                "log.errors", count == 0,
+                f"{count} error line(s)" + (f"; last: {last[:90]}" if last else ""),
+                warn=True,
+            )
+    except OSError as e:
+        add("log.errors", False, f"read failed: {e}", warn=True)
+
+    try:
+        pinned = VERSION_PIN_RE.search(plugin_src).group(1) if plugin_src else None
+        out = _opencode_version()
+        running = re.search(r"\d+\.\d+\.\d+", out or "")
+        if not pinned:
+            add(
+                "env.opencode_version", False,
+                "cannot read the allowlist pin from the plugin source", warn=True,
+            )
+        elif running is None:
+            add("env.opencode_version", False,
+                "`opencode --version` unavailable (not on PATH?)", warn=True)
+        else:
+            same = running.group(0) == pinned
+            add(
+                "env.opencode_version", same,
+                f"opencode {running.group(0)}, builtin-tool allowlist pinned to {pinned}"
+                + ("" if same else " — refresh DEFAULT_BUILTIN_TOOLS or set "
+                                    "OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS"),
+                warn=True,
+            )
+    except Exception as e:  # noqa: BLE001 - a version check must never break doctor
+        add("env.opencode_version", False, f"version check failed: {e}", warn=True)
 
     return checks
 
@@ -1849,6 +1961,7 @@ def parse_args(argv):
     a.skills_only = False
     a.dry_run = False
     a.prune_orphans = False
+    a.freshness_days = CAPTURE_FRESHNESS_DAYS
     a.yes = False
     a.no_sync = False
 
@@ -1874,7 +1987,7 @@ def parse_args(argv):
             a.yes = True
         elif t == "--no-sync":
             a.no_sync = True
-        elif t in ("--db", "--days", "--min-uses", "--limit", "--out"):
+        elif t in ("--db", "--days", "--min-uses", "--limit", "--out", "--freshness-days"):
             i += 1
             if i >= len(argv):
                 raise SystemExit(f"{t} requires a value")
@@ -1887,6 +2000,8 @@ def parse_args(argv):
                 a.min_uses = _int_arg("--min-uses", val, minimum=0)
             elif t == "--limit":
                 a.limit = _int_arg("--limit", val, minimum=1)
+            elif t == "--freshness-days":
+                a.freshness_days = _int_arg("--freshness-days", val, minimum=1)
             else:
                 a.out = val
         elif t in ("-h", "--help"):
