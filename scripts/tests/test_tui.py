@@ -920,3 +920,61 @@ def test_mcp_detail_stats_always_include_last_used(seeded_mcp_db):
                 await pilot.pause()
 
     _run(_run_it())
+
+
+def test_tui_dashboard_mcp_row_enter_opens_detail(seeded_mcp_db):
+    """The dashboard promised "Enter opens detail" and did nothing.
+
+    Regression: `dash-mcp` kept the default cell cursor, so Enter raised
+    CellSelected instead of RowSelected and no handler was listening.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#dash-mcp", DataTable)
+            assert table.cursor_type == "row", "row cursor or Enter never selects a row"
+            assert table.row_count >= 1
+            table.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.screen.__class__.__name__ == "McpDetailScreen", (
+                "Enter must open the MCP detail screen"
+            )
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen.query("#dash-mcp")
+
+    _run(_run_it())
+
+
+def test_tui_dashboard_plugin_row_enter_opens_detail(seeded_plugin_db):
+    """A scoped npm plugin name carries a "/" itself.
+
+    Regression: the plugin row key was `plugin/kind/item` and was split back
+    apart on Enter, so `@tarquinen/opencode-dcp@3.2.0` parsed into a bogus
+    plugin and the detail page never opened — from the Plugins tab as well as
+    from the dashboard.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            for tid in ("#dash-plugins", "#plugins-table"):
+                table = app.screen.query_one(tid, DataTable)
+                if tid == "#plugins-table":
+                    app.screen.query_one("TabbedContent").active = "tab-plugins"
+                    await pilot.pause()
+                assert table.row_count >= 1
+                table.focus()
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                assert app.screen.__class__.__name__ == "PluginDetailScreen", (
+                    f"Enter on {tid} must open the plugin detail screen"
+                )
+                await pilot.press("escape")
+                await pilot.pause()
+
+    _run(_run_it())

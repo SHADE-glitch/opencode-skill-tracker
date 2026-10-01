@@ -919,10 +919,16 @@ def _tui_classes() -> dict:
                         t.cursor_type = "row"
                         yield t
                         yield Label("Top MCP tools", classes="section")
+                        # All three dashboard tables need the row cursor: Enter
+                        # raises RowSelected, which is what opens a detail page.
+                        # With the default cell cursor Enter silently did
+                        # nothing while the label below promised otherwise.
                         t = DataTable(id="dash-mcp", zebra_stripes=True)
+                        t.cursor_type = "row"
                         yield t
                         yield Label("Top Plugins", classes="section")
                         t = DataTable(id="dash-plugins", zebra_stripes=True)
+                        t.cursor_type = "row"
                         yield t
                 with TabPane("Skills", id="tab-skills"):
                     yield Input(
@@ -1083,10 +1089,13 @@ def _tui_classes() -> dict:
                 top.clear(columns=True)
                 top.add_columns("#", "Skill", "Uses", "Success rate", "Last used")
                 for i, r in enumerate(db.top_rows(conn, 10), 1):
+                    key = f"dash-skill:{r['skill_name']}"
+                    self.app.row_targets[key] = ("skill", r["skill_name"])
                     top.add_row(
                         str(i), r["skill_name"], str(r["total"]),
                         rate_text(r["total"], r["success"]),
                         db.fmt_time(r["last_used"]),
+                        key=key,
                     )
 
                 # Top-10 companions to the Skills table above. `mcp_rows` /
@@ -1097,21 +1106,29 @@ def _tui_classes() -> dict:
                 dm.clear(columns=True)
                 dm.add_columns("#", "Server", "Tool", "Calls", "Success rate", "Last used")
                 for i, r in enumerate(mcp_rows[:10], 1):
+                    key = f"dash-mcp:{r['server_name']}:{r['tool_name']}"
+                    self.app.row_targets[key] = ("mcp", r["server_name"], r["tool_name"])
                     dm.add_row(
                         str(i), r["server_name"], r["tool_name"], str(r["total"]),
                         rate_text(r["total"], r["success"]),
                         db.fmt_time(r["last_used"]),
+                        key=key,
                     )
 
                 dp = self.query_one("#dash-plugins", DataTable)
                 dp.clear(columns=True)
                 dp.add_columns("#", "Plugin", "Kind", "Item", "Calls", "Success rate", "Last used")
                 for i, r in enumerate(plugin_rows[:10], 1):
+                    key = f"dash-plugin:{r['plugin_name']}:{r['kind']}:{r['item_name']}"
+                    self.app.row_targets[key] = (
+                        "plugin", r["plugin_name"], r["kind"], r["item_name"],
+                    )
                     dp.add_row(
                         str(i), r["plugin_name"], r["kind"], r["item_name"],
                         str(r["total"]),
                         rate_text(r["total"], r["success"]),
                         db.fmt_time(r["last_used"]),
+                        key=key,
                     )
 
                 self.app.all_rows = all_rows
@@ -1218,6 +1235,7 @@ def _tui_classes() -> dict:
                 # files sharing a frontmatter name would otherwise raise
                 # DuplicateKey and break the whole table.
                 self.app.path_to_name[r["path"]] = r["skill_name"]
+                self.app.row_targets[r["path"]] = ("skill", r["skill_name"])
                 table.add_row(
                     r["skill_name"], r["source"], str(r["total"]),
                     str(r.get("uses_30d", 0)), str(r.get("sessions", 0)),
@@ -1284,7 +1302,10 @@ def _tui_classes() -> dict:
             table.clear()
             for r in rows:
                 avg = r.get("avg_ms")
-                # Keyed by the full tool id, which is unique per row.
+                # `tool_id` is unique per row, and it is only ever a key: a
+                # server name may itself contain "_", so the pair is registered
+                # here rather than split back out of the string on Enter.
+                self.app.row_targets[r["tool_id"]] = ("mcp", r["server_name"], r["tool_name"])
                 table.add_row(
                     r["server_name"], r["tool_name"], str(r["total"]),
                     str(r.get("uses_30d", 0)), str(r.get("sessions", 0)),
@@ -1359,8 +1380,13 @@ def _tui_classes() -> dict:
                 )
             table.clear()
             for r in rows:
+                # `item_id` is unique per row but not parseable: a scoped npm
+                # plugin name (`@scope/pkg@1.0`) contains a "/" itself, so the
+                # triple is stored here instead of being split out on Enter.
+                self.app.row_targets[r["item_id"]] = (
+                    "plugin", r["plugin_name"], r["kind"], r["item_name"],
+                )
                 avg = r.get("avg_ms")
-                # Keyed by the full item id, which is unique per row.
                 table.add_row(
                     r["plugin_name"], r["kind"], r["item_name"], str(r["total"]),
                     str(r.get("uses_30d", 0)), str(r.get("sessions", 0)),
@@ -1419,12 +1445,18 @@ def _tui_classes() -> dict:
             elif event.input.id == "plugins-search":
                 self.render_plugins()
 
-        def _open_mcp_detail(self, tool_id: str | None) -> None:
-            if not tool_id or "_" not in tool_id:
+        def _open_skill_detail(self, name: str | None) -> None:
+            if not name:
                 return
-            # tool_id is f"{server}_{tool}"; the tool part may itself contain
-            # underscores, so split on the first one only (mirrors the DB view).
-            server, tool = tool_id.split("_", 1)
+            try:
+                detail = db.skill_detail(self.app.conn, name)
+            except Exception as e:  # noqa: BLE001
+                self.app.notify(f"Could not read detail: {e}", severity="error")
+                return
+            if detail:
+                self.app.push_screen(SkillDetailScreen(name, detail))
+
+        def _open_mcp_detail(self, server: str, tool: str) -> None:
             try:
                 detail = db.mcp_tool_detail(self.app.conn, server, tool)
             except Exception as e:  # noqa: BLE001
@@ -1435,10 +1467,7 @@ def _tui_classes() -> dict:
             else:
                 self.app.notify(f"No MCP history for {server}.{tool}", severity="warning")
 
-        def _open_plugin_detail(self, item_id: str | None) -> None:
-            if not item_id or item_id.count("/") != 2:
-                return
-            plugin, kind, item = item_id.split("/", 2)
+        def _open_plugin_detail(self, plugin: str, kind: str, item: str) -> None:
             try:
                 detail = db.plugin_item_detail(self.app.conn, plugin, kind, item)
             except Exception as e:  # noqa: BLE001
@@ -1447,7 +1476,7 @@ def _tui_classes() -> dict:
             if detail:
                 self.app.push_screen(PluginDetailScreen(plugin, kind, item, detail))
             else:
-                self.app.notify(f"No plugin history for {item_id}", severity="warning")
+                self.app.notify(f"No plugin history for {plugin}/{kind}/{item}", severity="warning")
 
         def _open_recent_detail(self, row_key: str | None) -> None:
             """Route a unified-timeline row to its skill/MCP/plugin page."""
@@ -1469,30 +1498,30 @@ def _tui_classes() -> dict:
                     else:
                         self.app.notify(f"No MCP history for {rest}", severity="warning")
                 elif kind == "plugin":
-                    self._open_plugin_detail(rest)
+                    # Right-anchored because a scoped npm plugin name carries a
+                    # "/" of its own; replaced wholesale once rows carry targets.
+                    parts = rest.rsplit("/", 2)
+                    if len(parts) == 3:
+                        self._open_plugin_detail(*parts)
             except Exception as e:  # noqa: BLE001
                 self.app.notify(f"Could not open detail: {e}", severity="error")
 
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
             tid = event.data_table.id
-            key = event.row_key.value
-            if tid == "skills-table":
-                name = self.app.path_to_name.get(key)
-                if not name:
-                    return
-                try:
-                    detail = db.skill_detail(self.app.conn, name)
-                except Exception as e:  # noqa: BLE001
-                    self.app.notify(f"Could not read detail: {e}", severity="error")
-                    return
-                if detail:
-                    self.app.push_screen(SkillDetailScreen(name, detail))
-            elif tid == "mcp-table":
-                self._open_mcp_detail(key)
-            elif tid == "plugins-table":
-                self._open_plugin_detail(key)
-            elif tid == "recent-table":
-                self._open_recent_detail(key)
+            if tid == "recent-table":
+                # Still key-parsed until the timeline rows carry a target.
+                self._open_recent_detail(event.row_key.value)
+                return
+            target = self.app.row_targets.get(event.row_key.value)
+            if not target:
+                return
+            kind, *rest = target
+            if kind == "skill":
+                self._open_skill_detail(rest[0])
+            elif kind == "mcp":
+                self._open_mcp_detail(rest[0], rest[1])
+            else:
+                self._open_plugin_detail(rest[0], rest[1], rest[2])
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             bid = event.button.id
@@ -1732,6 +1761,11 @@ def _tui_classes() -> dict:
             self.all_rows: list[dict] = []
             self.recent_rows_cache: list[dict] = []
             self.path_to_name: dict = {}
+            # row key -> what to open. A row's identity is (server, tool) or
+            # (plugin, kind, item); any single-string encoding of it is
+            # ambiguous, because those names contain the separators themselves
+            # (`@scope/name`, `conductor:newTrack`).
+            self.row_targets: dict = {}
             self.has_usage = True
             self.sort_mode = "count"
             self.mcp_sort_mode = "count"
