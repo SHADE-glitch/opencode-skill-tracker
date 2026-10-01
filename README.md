@@ -152,7 +152,7 @@ skillt
 
 Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs, and `TERM` neither
 empty nor `dumb`). Pages: **Dashboard / Skills / MCP / Plugins / Recent /
-Categories / Data** (Data is always last).
+Categories / Advisor / Data** (Data is always last).
 
 The six Dashboard cards, each labelled below its number:
 
@@ -193,6 +193,19 @@ the Skills / MCP / Plugins tables has its own sort mode and filter box — `s`
 cycles the sort of whichever page is active, and `Enter` opens the row's
 detail page. The **Recent** page merges all three kinds into one timeline;
 `Enter` routes each row to its skill/MCP/plugin detail page.
+
+The **Advisor** page reads the AgentOS advisor's own store, read-only, and prints
+one row per advisor participation in a session: `Started`, `Outcome`,
+`Stages recorded` (out of the stages that loop actually wrote down, not out of the
+advisor's ten known stages), then **three different recall counts** — `Searched`
+(the engine's own tally), `Recalled` (memories it selected) and `Reached the
+prompt` (what was injected, with its size in characters) — then `Slowest vs
+budget`, `Measured calls` (what this tracker recorded for that same session) and a
+shortened session id. Keeping the three counts apart is the point: a hypothesis
+can be injected without being part of the recalled set, and one number would hide
+that. A legend under the table says all of this on the screen itself. The tab
+never writes to that store and never copies the task text stored beside these
+numbers.
 
 | Key | Action |
 |---|---|
@@ -269,8 +282,9 @@ skillt agentos   [--json] [--limit N]
   Per loop it shows the stage statuses and timings, the slowest stage against
   the advisor's per-call budget, how much measured tool activity that same
   session produced (the join), and whether the recalled memory actually reached
-  the prompt — `recall 3 → injected 4 (1234c)`, counted from the advisor's own
-  result numbers. `memory_ids` and `injected_memory_ids` are kept apart because
+  the prompt — `searched 3 / recalled 3 / reached the prompt 4 (1234 chars)`,
+  counted from the advisor's own result numbers. `memory_ids` and
+  `injected_memory_ids` are kept apart because
   a hypothesis can be injected on its own, so collapsing them would hide that. **Nothing is ever written to that
   store**, and no field is ever read that could carry text: the projection names
   every emitted field, so a loop's `task_text` and the engines' stage payloads

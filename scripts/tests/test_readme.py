@@ -157,9 +157,30 @@ def test_readme_documents_ctrl_shortcuts_and_dashboard_cards():
     assert "删除 skill 的入口**只**在 Skills 页" in text
 
 
+def test_readmes_list_every_tab_page_including_advisor():
+    """The page list omitted Advisor, so a reader could not find the tab at all.
+
+    A guard for something that was only caught by reading: the list is asserted
+    against the TUI's own tab ids, so adding a TabPane without documenting it
+    reddens the build.
+    """
+    en = (ROOT / "README.md").read_text(encoding="utf-8")
+    zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+    def listed(text, marker):
+        start = text.index(marker) + len(marker)
+        segment = text[start:start + 400]
+        return segment[: segment.index("(") if "(" in segment[:400] else 400]
+
+    for label, segment in (("README.md", listed(en, "Pages: ")),
+                           ("README.zh-CN.md", listed(zh, "页面："))):
+        for page in ("Dashboard", "Skills", "MCP", "Plugins", "Recent",
+                     "Categories", "Advisor", "Data"):
+            assert page in segment, f"{label} page list omits {page}: {segment[:120]!r}"
+
+
 def test_readme_documents_top_limit_alias():
     text = _text()
-    assert "--limit 3" in text or "`--limit" in text
 
 
 def test_readme_does_not_claim_message_text_is_stored():

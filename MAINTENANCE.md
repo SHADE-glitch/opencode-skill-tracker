@@ -220,6 +220,14 @@ state.
   that ladder to a constant left all of them green — an expectation derived from
   the thing under test is not a guard. The tests now name absolute block counts
   and the helper test uses strict inequalities.
+- **The advisor's three recall counts are never collapsed into one.** `Searched`
+  is the engine's self-report, `Recalled` is `len(memory_ids)`, `Reached the
+  prompt` is `len(injected_memory_ids)`; a hypothesis can be injected on its own,
+  so merging them hides a real fact. The column that used to print `retrieved`
+  under a header saying "recall" was a reporting error, not a style problem —
+  `test_tui_advisor_searched_recalled_and_reached_are_three_numbers` pins it with
+  a fixture loop whose three numbers differ (`_make_store(extra_loop=True)`),
+  because with one loop they coincide by accident and no test could tell.
 - **A drawn chart row must not depend on its data for width.** The trend rows
   are a fixed `TREND_ROW_WIDTH` (20) and `.trend` pins the height to
   `TREND_LINES`; `fmt_count` caps a count at five characters. Neither leg is

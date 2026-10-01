@@ -100,7 +100,7 @@ skillt
 ```
 
 需要真正的终端（`stdin`/`stdout`/`stderr` 三者都必须是 TTY，且 `TERM` 不能为空或 `dumb`）。
-页面：**Dashboard / Skills / MCP / Plugins / Recent / Categories / Data**（Data 永远在最后）。
+页面：**Dashboard / Skills / MCP / Plugins / Recent / Categories / Advisor / Data**（Data 永远在最后）。
 
 **Dashboard 顶部的 6 张卡片**（名字在下、数字在上）：
 
@@ -118,6 +118,8 @@ skillt
 `Last 7 days` 是三个**横向并排**的小图——skill、MCP、plugin 调用各一张，每张按自己的峰值缩放（MCP/插件量级通常小一个数量级，共用峰值会被压平）。每一行**固定 20 字符**、三张图**高度钉死一致**，所以三者永远落在**同一条水平线**上：以前计数不加补白，只要某张图出现大数就只有它自己折行，那一张的日子就和另外两张错开了。窄于 70 列时行就放不下了（实测：70 列格子恰为 20 宽，66 列只剩 18/19/19），此时三张一起裁切，而不是各切各的。超过 5 位的数字会被压缩（`123456` → `123k`），这正是行宽能保持恒定的原因。下面是三个 Top-10 表：**Top Skills**、**Top MCP tools**、**Top Plugins**，每张多一列 `vs top`，**柱长就是调用次数**。每个流各自按自己最忙的那一行缩放，**不共用最大值**——共用峰值会让一个较安静的流看起来“什么都没发生”，而它的首行其实是这个流的第一名。柱是唯一由 app 控制宽度的列，所以终端越窄、表的列越多，柱就越短：100 列时六/七/八列的表分别给 14 / 12 / 10 格，80 列时是 10 / 8 / 6。
 
 **MCP 页**每个 `(server, tool)` 组合一行，显示调用次数、30 天调用、session 数、成功率、平均耗时、最近使用时间。Skills / MCP / Plugins 三张表**排序和过滤框各自独立**——`s` 只切换当前页的排序，`Enter` 打开该行的详情页。**Recent 页**把三类调用合成一条统一时间线，`Enter` 会按行类型跳到对应的 skill/MCP/插件详情页。
+
+**Advisor 页**只读聚合 AgentOS 顾问插件自己的存储，一行 = 顾问在一次会话里参与一次。列依次是：`Started`（何时开始）、`Outcome`（这次 loop 的最终状态）、`Stages recorded`（**这个 loop 实际写下来的阶段里**完成了几个——分母不是顾问认识的 10 个阶段）、然后是**三个互不相同的召回计数**：`Searched`（引擎自报检索到多少）、`Recalled`（它真正选回的记忆数）、`Reached the prompt`（最终进入提示的条数，括号里是字符数）、`Slowest vs budget`（最慢阶段耗时，超过单次预算时写出超了多少）、`Measured calls`（同一会话在 tracker 里可度量的工具调用）、以及截短后的 session id。三个计数**故意不合并**：假说(hypothesis)可以被单独注入，合成一个数就把这件事藏掉了。表格下方有一段图例把这些话写在页面上。本页**从不写那个库**，也从不复制存在同一批文件里的任务原文（字段是逐个白名单投影出来的）。
 
 **Plugins 页**每个 `(plugin, kind, item)` 组合一行，显示调用次数、成功率、平均耗时、最近使用时间；页面上方同时显示初始化时扫描到的插件清单、工具/命令数量和被排除的插件。插件工具归属失败时显示 `(unknown)`；插件命令只在扫描明确归属时记录。
 
@@ -167,7 +169,7 @@ skillt agentos   [--json] [--limit N]
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
 - `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
 
-- `agentos`：**只读**聚合 AgentOS 顾问插件自己的存储。顾问不注册任何 tool、也不注册 command，所以在上面那些用量表里永远不会出现；这一项改读它的 `store/aos.db` 与 `store/loops/*.json`。需要 `AGENT_OS_ROOT`（或 `OPENCODE_SKILL_TRACKER_AGENTOS_DB`），没配就明说"未聚合"。每个 loop 给出逐段状态与耗时、最慢段相对顾问单次预算是否超支、同一会话在 tracker 里到底产生过多少可度量的工具调用（这一列最有用），以及召回的记忆**是否真的进了提示**——显示成 `recall 3 → injected 4 (1234c)`，用的是顾问自己的结果数字。`memory_ids` 与 `injected_memory_ids` 刻意分开：假设(hypothesis)可以单独被注入，合并成一个数就把这件事藏掉了。**从不写那个库**；字段是逐个白名单投影出来的，所以 loop 里的 `task_text`（任务原文）和各阶段 payload 一律读不到。见 M21。
+- `agentos`：**只读**聚合 AgentOS 顾问插件自己的存储。顾问不注册任何 tool、也不注册 command，所以在上面那些用量表里永远不会出现；这一项改读它的 `store/aos.db` 与 `store/loops/*.json`。需要 `AGENT_OS_ROOT`（或 `OPENCODE_SKILL_TRACKER_AGENTOS_DB`），没配就明说"未聚合"。每个 loop 给出逐段状态与耗时、最慢段相对顾问单次预算是否超支、同一会话在 tracker 里到底产生过多少可度量的工具调用（这一列最有用），以及召回的记忆**是否真的进了提示**——显示成 `searched 3 / recalled 3 / reached the prompt 4 (1234 chars)`（CLI 与 TUI 同一套词）。`memory_ids` 与 `injected_memory_ids` 刻意分开：假设(hypothesis)可以单独被注入，合并成一个数就把这件事藏掉了。**从不写那个库**；字段是逐个白名单投影出来的，所以 loop 里的 `task_text`（任务原文）和各阶段 payload 一律读不到。见 M21。
 
 参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
 所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。

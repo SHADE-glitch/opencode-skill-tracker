@@ -173,6 +173,12 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 - **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** 第一版把每根渲染出来的柱和
   `rank_bar_width(...)` 比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫
   不是守卫。现在断言的是绝对的格子数，辅助函数那条用严格不等式。
+- **顾问的三个召回计数绝不合并。** `Searched` 是引擎自报，`Recalled` 是
+  `len(memory_ids)`，`Reached the prompt` 是 `len(injected_memory_ids)`；假说可以被单独注入，
+  合并就把一件真实的事藏起来了。以前在写着"recall"的列里打印 `retrieved` 是**报告错误**，
+  不是风格问题——`test_tui_advisor_searched_recalled_and_reached_are_three_numbers`
+  用一个三者互不相等的 fixture loop（`_make_store(extra_loop=True)`）钉住它，因为只有一个
+  loop 时三个数恰好相等，任何测试都分辨不出来。
 - **手画的图表行，宽度不许依赖数据。** 趋势行固定为 `TREND_ROW_WIDTH`（20），
   `.trend` 把高度钉到 `TREND_LINES`，`fmt_count` 把计数压到 5 字符以内。两条腿都不是摆设：
   只撤一条时另一条会把错位藏起来；钉高是**故意用"裁切"换"错位"**——窄于 70 列时三张一起裁（这个 70 是实测的，不是估的）。
