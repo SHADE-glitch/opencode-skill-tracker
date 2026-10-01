@@ -207,6 +207,16 @@ state.
   `LookupError: <ContextVar name='active_app'>` — reproduced with an empty
   callback, on both App and Screen, and after `timer.stop()`. That takes 47 TUI
   tests down. `test_tui_creates_no_app_timers` pins this.
+- **A drawn chart row must not depend on its data for width.** The trend rows
+  are a fixed `TREND_ROW_WIDTH` (20) and `.trend` pins the height to
+  `TREND_LINES`; `fmt_count` caps a count at five characters. Neither leg is
+  decoration: with only one removed the other hides the drift, and the pinned
+  height deliberately trades **staggering for clipping** below 70 columns (measured, not estimated). The
+  three series are still scaled to their **own** peak on purpose. The guards are
+  `test_tui_trend_charts_share_one_line_when_a_series_is_huge`,
+  `test_tui_trend_css_height_matches_the_line_count` and
+  `test_tui_trend_rows_are_a_fixed_width` — the last measures the rendered text
+  with the markup stripped, because `Static.content` keeps it.
 - **Row identity is never parsed out of the row key.** Names contain the
   separators (`@scope/pkg`, `conductor:newTrack`, server names with `_`), so
   every table registers `(kind, ...parts)` in `app.row_targets`. Don't reintroduce

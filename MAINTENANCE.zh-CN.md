@@ -165,6 +165,14 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 ## 6. 刻意为之的偏离（别"顺手修回去"）
 
 - **TUI 里没有后台定时器。** 屏幕在按键（5 秒节流）、切页、`r` 时重读，并显示 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会一次带走 47 个 TUI 测试。`test_tui_creates_no_app_timers` 把这条钉住。
+- **手画的图表行，宽度不许依赖数据。** 趋势行固定为 `TREND_ROW_WIDTH`（20），
+  `.trend` 把高度钉到 `TREND_LINES`，`fmt_count` 把计数压到 5 字符以内。两条腿都不是摆设：
+  只撤一条时另一条会把错位藏起来；钉高是**故意用"裁切"换"错位"**——窄于 70 列时三张一起裁（这个 70 是实测的，不是估的）。
+  三个序列各自取峰值这一点仍是有意为之。守卫是
+  `test_tui_trend_charts_share_one_line_when_a_series_is_huge`、
+  `test_tui_trend_css_height_matches_the_line_count` 和
+  `test_tui_trend_rows_are_a_fixed_width`；最后这条量的是**剥掉标记后**的文本，
+  因为 `Static.content` 返回的原串带着标记。
 - **行身份绝不从 row key 里 parse 回来。** 名字本身含分隔符（`@scope/pkg`、`conductor:newTrack`、带 `_` 的 server 名），所以每张表在渲染时把 `(kind, ...parts)` 注册进 `app.row_targets`。不要恢复 `split()`。
 - **`unified_recent_rows` 额外返回详情页需要的列**（`skill_name`、`server_name`+`tool_name`、`plugin_name`+`item_kind`+`item_name`），显示用的 `name` 不是主键。
 - **导出对 metadata 走白名单**（`EXPORT_METADATA_KEYS`）而不是整列倒出。文档形状因此升到 `schema_version = 4`；再改形状要升版本并同步 `test_export.py` / `test_plugin_db.py`。

@@ -171,7 +171,14 @@ observed sample (sessions and days). The three counters are kept separate, so
 
 `Last 7 days` shows three side-by-side charts — skill, MCP and plugin calls —
 each scaled to its own peak (MCP/plugin volumes are usually an order of
-magnitude smaller). Below them, top-10 tables mirror the three kinds: **Top
+magnitude smaller). Every day line is a fixed 20 characters and every chart is
+pinned to the same height, so the three always sit on **one horizontal line**:
+an un-padded count used to make only the chart that had a large number
+word-wrap, and its day rows fell out of step with its neighbours. Below 70 columns the row no longer
+fits (measured: the cells are exactly 20 wide at 70, and 18/19/19 at 66) and all
+three clip alike instead of staggering. Counts beyond five
+characters are compacted (`123456` → `123k`), which is what keeps the row a
+constant length. Below them, top-10 tables mirror the three kinds: **Top
 Skills**, **Top MCP tools** and **Top Plugins**.
 
 The **MCP** page lists one row per `(server, tool)` pair with call count,
