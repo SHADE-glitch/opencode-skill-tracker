@@ -11,6 +11,7 @@ for reasons unrelated to the code.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -1008,4 +1009,137 @@ def test_tui_recent_row_with_colon_in_name_opens_detail(seeded_plugin_db):
             await pilot.pause()
             assert app.screen.__class__.__name__ == "PluginDetailScreen"
 
+    _run(_run_it())
+
+
+def test_tui_picks_up_rows_written_by_the_plugin(seeded_db):
+    """The writer is a separate process, so navigating must re-read.
+
+    Regression: cards only changed on manual `r`, so a dashboard that said
+    "21 Skill calls" kept saying it while the plugin recorded more.
+    """
+    import sqlite3
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            before = static_text(app.screen.query_one("#card-usage", Static))
+            assert "21" in before, before
+
+            extra = sqlite3.connect(seeded_db)
+            extra.execute(
+                "INSERT INTO skill_usage (skill_name, session_id, project_path,"
+                " trigger_type, status, timestamp, call_id)"
+                " VALUES ('grow','s-live','/p','tool_call','success',"
+                " strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'c-live')"
+            )
+            extra.commit()
+            extra.close()
+
+            screen = app.screen
+            skills = screen.query_one("#skills-table", DataTable)
+            cursor_before = skills.cursor_coordinate
+            # Pretend the last read was a while ago, then navigate.
+            screen._last_refresh = 0.0
+            await pilot.press("j")
+            await pilot.pause()
+
+            after = static_text(app.screen.query_one("#card-usage", Static))
+            assert "22" in after, f"{before!r} -> {after!r}"
+            assert skills.cursor_coordinate == cursor_before, "a refresh must not move the cursor"
+            app.conn.close()
+
+    _run(_run_it())
+
+
+def test_tui_refresh_is_throttled_not_per_keystroke(seeded_db):
+    """_maybe_refresh must be cheap: a re-read at most every stale window."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            calls = []
+            screen = app.screen
+            real = screen.refresh_data
+            screen.refresh_data = lambda: calls.append(1) or real()
+            screen._last_refresh = 0.0
+            await pilot.press("j")
+            await pilot.pause()
+            assert len(calls) == 1, calls
+            for _ in range(5):
+                await pilot.press("j")
+                await pilot.pause()
+            assert len(calls) == 1, f"fresh data re-read {len(calls)} times in a row"
+            app.conn.close()
+
+    _run(_run_it())
+
+
+def test_tui_shows_the_age_of_what_is_on_screen(seeded_db):
+    """Idle numbers must not look live."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            legend = static_text(app.screen.query_one("#cards-legend", Static))
+            assert "data as of" in legend, legend
+            assert "observed" in legend
+    _run(_run_it())
+
+
+def test_tui_refreshes_when_a_tab_is_activated(seeded_db):
+    import sqlite3
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            extra = sqlite3.connect(seeded_db)
+            extra.execute(
+                "INSERT INTO skill_usage (skill_name, session_id, project_path,"
+                " trigger_type, status, timestamp, call_id)"
+                " VALUES ('grow','s-tab','/p','tool_call','success',"
+                " strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'c-tab')"
+            )
+            extra.commit()
+            extra.close()
+
+            app.screen.query_one("TabbedContent").active = "tab-skills"
+            await pilot.pause()
+            assert "22" in static_text(app.screen.query_one("#card-usage", Static))
+            app.conn.close()
+
+    _run(_run_it())
+
+
+def test_tui_reports_an_unopenable_database_instead_of_crashing(tmp_path):
+    """A path whose directory does not exist must not escape on_mount."""
+    db_path = str(tmp_path / "nope" / "skill-usage.db")
+    assert not os.path.isdir(os.path.dirname(db_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=db_path, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            assert app.conn is None
+            legend = static_text(app.screen.query_one("#cards-legend", Static))
+            assert "Cannot open" in legend, legend
+
+    _run(_run_it())
+
+
+def test_tui_creates_no_app_timers(seeded_db):
+    """textual 8.2.8: an app timer makes run_test teardown raise LookupError.
+
+    The refresh is deliberately event-driven, so nothing is left pending when a
+    headless test exits. Pin that, or the whole TUI suite goes red at once.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            names = {t.name or "" for t in app._timers}
+            assert not [n for n in names if "refresh" in n], names
+            app.conn.close()
     _run(_run_it())

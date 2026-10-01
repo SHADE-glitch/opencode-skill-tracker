@@ -424,6 +424,15 @@ TRACKER_LOG_PATH = os.path.join(db.HOME, ".config", "opencode", "logs", "skill-t
 # that stopped writing looks exactly like an idle machine from the inside.
 CAPTURE_FRESHNESS_DAYS = 7
 
+# The TUI is a monitor: the writer is another process (the OpenCode plugin), so
+# a screen that only updates on manual `r` shows numbers the user must not trust
+# as current. Every interaction re-reads, and the age of what is on screen is
+# always printed. This is *not* a background timer on purpose: on textual 8.2.8
+# any app timer created after the screens are mounted makes `run_test`'s
+# teardown raise `LookupError: active_app`, which would take the whole suite
+# down with it. See `skillt doctor` capture.freshness for the idle case.
+REFRESH_STALE_AFTER_S = 5
+
 
 def _opencode_version():
     """Output of `opencode --version`, or None when it cannot be run.
@@ -986,6 +995,9 @@ def _tui_classes() -> dict:
 
     # ---- main screen -------------------------------------------------------
     class MainScreen(Screen):
+        # Wall-clock time of the last full re-read; drives _maybe_refresh.
+        _last_refresh: float = 0.0
+
         BINDINGS = [
             Binding("q", "app.quit", "Quit"),
             Binding("r", "refresh_data", "Refresh"),
@@ -1105,7 +1117,14 @@ def _tui_classes() -> dict:
 
         # -- lifecycle ------------------------------------------------------
         def on_mount(self) -> None:
-            self.app.conn = db.open_db(self.app.db_path, readonly=False)
+            try:
+                self.app.conn = db.open_db(self.app.db_path, readonly=False)
+            except sqlite3.Error as e:
+                # A database that will not open is not a reason to hand the
+                # user Textual's internal traceback: say what failed, on the
+                # screen, and stop there.
+                self._fail_with(f"Cannot open {self.app.db_path}: {e}")
+                return
             try:
                 db.ensure_schema(self.app.conn)
             except Exception as e:  # noqa: BLE001
@@ -1117,6 +1136,32 @@ def _tui_classes() -> dict:
                     self.app.notify(f"sync failed: {e}", severity="warning")
             self._layout_cards()
             self.refresh_data()
+
+        def _fail_with(self, message: str) -> None:
+            """Leave an error on screen, not only in a transient toast."""
+            try:
+                self.query_one("#cards-legend", Static).update(f"[red]{message}[/red]")
+            except Exception:  # noqa: BLE001 - widget not composed yet
+                pass
+            self.app.notify(message, severity="error")
+
+        def _maybe_refresh(self) -> None:
+            """Re-read the data if what is on screen has gone stale."""
+            if self.app.conn is None or self.app.screen is not self:
+                return
+            if time.time() - self._last_refresh < REFRESH_STALE_AFTER_S:
+                return
+            self.refresh_data()
+
+        def on_key(self, event) -> None:
+            # Navigating is a reason to look again: another process may have
+            # written since the screen was drawn.
+            self._maybe_refresh()
+
+        def on_tabbed_content_tab_activated(self, event) -> None:
+            # Switching tabs is when a user looks; do not make them press `r`.
+            if self.app.conn is not None:
+                self.refresh_data()
 
         def on_resize(self, event) -> None:
             self._layout_cards()
@@ -1137,130 +1182,169 @@ def _tui_classes() -> dict:
 
         # -- rendering ------------------------------------------------------
         def refresh_data(self) -> None:
+            """Re-read every section of the screen.
+
+            Each section is attempted on its own. They used to share one
+            try/except, so a failure halfway through left the cards it had
+            already written current and every table below them stale — the
+            screen looked refreshed while parts of it were not.
+            """
             conn = self.app.conn
-            try:
-                s = db.dashboard_summary(conn)
-                self.query_one("#card-skills", Static).update(
-                    f"[b]{s['total_skills']}[/b]\n[dim]Skills[/dim]"
-                )
-                self.query_one("#card-usage", Static).update(
-                    f"[b]{s['total_usage']}[/b]\n[dim]Skill calls[/dim]"
-                )
-                self.query_one("#card-mcp", Static).update(
-                    f"[b]{s['total_mcp']}[/b]\n[dim]MCP calls[/dim]"
-                )
-                self.query_one("#card-plugin", Static).update(
-                    f"[b]{s.get('total_plugin', 0)}[/b]\n[dim]Plugin calls[/dim]"
-                )
-                self.query_one("#card-today", Static).update(
-                    f"[b]{s.get('today_all', s['today_usage'])}[/b]\n[dim]Today (all)[/dim]"
-                )
-                all_rows = db.stats_rows(conn)
-                tot = sum(r["total"] for r in all_rows)
-                ok = sum(r["success"] for r in all_rows)
-                # The number carries the meaning (green/amber/red), so the card
-                # border stays neutral instead of being permanently amber.
-                self.query_one("#card-rate", Static).update(
-                    f"[b]{rate_text(tot, ok)}[/b]\n[dim]Skill success[/dim]"
-                )
+            failures: list[str] = []
+            self._last_refresh = time.time()
+
+            def section(label, render):
+                try:
+                    render()
+                except Exception as e:  # noqa: BLE001
+                    failures.append(f"{label}: {e}")
+
+            section("cards", lambda: self._render_cards(conn))
+            section("trends", lambda: self._render_trends(conn))
+            section("top tables", lambda: self._render_top_tables(conn))
+            section("skills", lambda: self._render_skills_section(conn))
+            section("recent timeline", self._render_recent_section)
+            section("categories", lambda: self._render_categories(conn))
+            section("data page", self._render_data_info)
+
+            if failures:
                 self.query_one("#cards-legend", Static).update(
-                    f"[dim]Today (all) = {s['today_usage']} skill + {s['today_mcp']} mcp"
-                    f" + {s.get('today_plugin', 0)} plugin  ·  "
-                    f"{s['personal']} personal / {s['open_source']} OSS skills  ·  "
-                    f"observed {s['sample']['sessions']} session(s) over "
-                    f"{s['sample']['days_observed']} day(s)[/dim]"
+                    "[red]Partly stale[/red]  ·  " + "  ·  ".join(failures[:3])
+                )
+                self.app.notify("; ".join(failures), severity="error")
+
+        def _render_cards(self, conn) -> None:
+            s = db.dashboard_summary(conn)
+            self.query_one("#card-skills", Static).update(
+                f"[b]{s['total_skills']}[/b]\n[dim]Skills[/dim]"
+            )
+            self.query_one("#card-usage", Static).update(
+                f"[b]{s['total_usage']}[/b]\n[dim]Skill calls[/dim]"
+            )
+            self.query_one("#card-mcp", Static).update(
+                f"[b]{s['total_mcp']}[/b]\n[dim]MCP calls[/dim]"
+            )
+            self.query_one("#card-plugin", Static).update(
+                f"[b]{s.get('total_plugin', 0)}[/b]\n[dim]Plugin calls[/dim]"
+            )
+            self.query_one("#card-today", Static).update(
+                f"[b]{s.get('today_all', s['today_usage'])}[/b]\n[dim]Today (all)[/dim]"
+            )
+            rows = db.stats_rows(conn)
+            tot = sum(r["total"] for r in rows)
+            ok = sum(r["success"] for r in rows)
+            # The number carries the meaning (green/amber/red), so the card
+            # border stays neutral instead of being permanently amber.
+            self.query_one("#card-rate", Static).update(
+                f"[b]{rate_text(tot, ok)}[/b]\n[dim]Skill success[/dim]"
+            )
+            self.query_one("#cards-legend", Static).update(
+                f"[dim]Today (all) = {s['today_usage']} skill + {s['today_mcp']} mcp"
+                f" + {s.get('today_plugin', 0)} plugin  ·  "
+                f"{s['personal']} personal / {s['open_source']} OSS skills  ·  "
+                f"observed {s['sample']['sessions']} session(s) over "
+                f"{s['sample']['days_observed']} day(s)  ·  "
+                # The screen only re-reads on interaction, so say when it last
+                # did: idle numbers must never look live.
+                f"data as of {datetime.now().strftime('%H:%M:%S')}[/dim]"
+            )
+
+        def _render_trends(self, conn) -> None:
+            # Three 7-day charts side by side, each scaled to its own peak:
+            # MCP and plugin volumes are usually an order of magnitude
+            # below skill calls, so a shared peak would flatten them
+            # invisible. Bars are narrow (10) so all three fit in 80 cols.
+            for wid, label, color, data in (
+                ("#trend-skills", "skill calls", "cyan", db.daily_activity(conn, 7)),
+                ("#trend-mcp", "MCP calls", "magenta", db.daily_mcp_activity(conn, 7)),
+                ("#trend-plugins", "plugin calls", "yellow", db.daily_plugin_activity(conn, 7)),
+            ):
+                peak = max((d["count"] for d in data), default=0)
+                chart = [f"[b]{label}[/b]"]
+                for d in data:
+                    # Pad *inside* the markup so the trailing gutter still
+                    # counts; without it the count runs into the next
+                    # chart's date at 80 columns.
+                    cells = f"{bar(d['count'], peak, 8):<8}"
+                    chart.append(
+                        f"{d['date'][5:]}  [{color}]{cells}[/{color}]  {d['count']}"
+                    )
+                self.query_one(wid, Static).update("\n".join(chart))
+
+        def _render_top_tables(self, conn) -> None:
+            mcp_rows = db.mcp_stats_rows(conn)
+            plugin_rows = db.plugin_stats_rows(conn)
+            self.render_mcp(mcp_rows)
+            self.render_plugins(plugin_rows)
+
+            top = self.query_one("#dash-top", DataTable)
+            top.clear(columns=True)
+            top.add_columns("#", "Skill", "Uses", "Success rate", "Last used")
+            for i, r in enumerate(db.top_rows(conn, 10), 1):
+                key = f"dash-skill:{r['skill_name']}"
+                self.app.row_targets[key] = ("skill", r["skill_name"])
+                top.add_row(
+                    str(i), r["skill_name"], str(r["total"]),
+                    rate_text(r["total"], r["success"]),
+                    db.fmt_time(r["last_used"]),
+                    key=key,
                 )
 
-                mcp_rows = db.mcp_stats_rows(conn)
-                plugin_rows = db.plugin_stats_rows(conn)
-                self.render_mcp(mcp_rows)
-                self.render_plugins(plugin_rows)
+            # Top-10 companions to the Skills table above. `mcp_rows` /
+            # `plugin_rows` arrive pre-sorted by total DESC, so slicing is
+            # the whole ranking. Empty states keep headers only, mirroring
+            # the MCP/Plugins tabs on a skills-only DB.
+            dm = self.query_one("#dash-mcp", DataTable)
+            dm.clear(columns=True)
+            dm.add_columns("#", "Server", "Tool", "Calls", "Success rate", "Last used")
+            for i, r in enumerate(mcp_rows[:10], 1):
+                key = f"dash-mcp:{r['server_name']}:{r['tool_name']}"
+                self.app.row_targets[key] = ("mcp", r["server_name"], r["tool_name"])
+                dm.add_row(
+                    str(i), r["server_name"], r["tool_name"], str(r["total"]),
+                    rate_text(r["total"], r["success"]),
+                    db.fmt_time(r["last_used"]),
+                    key=key,
+                )
 
-                # Three 7-day charts side by side, each scaled to its own peak:
-                # MCP and plugin volumes are usually an order of magnitude
-                # below skill calls, so a shared peak would flatten them
-                # invisible. Bars are narrow (10) so all three fit in 80 cols.
-                for wid, label, color, data in (
-                    ("#trend-skills", "skill calls", "cyan", db.daily_activity(conn, 7)),
-                    ("#trend-mcp", "MCP calls", "magenta", db.daily_mcp_activity(conn, 7)),
-                    ("#trend-plugins", "plugin calls", "yellow", db.daily_plugin_activity(conn, 7)),
-                ):
-                    peak = max((d["count"] for d in data), default=0)
-                    chart = [f"[b]{label}[/b]"]
-                    for d in data:
-                        # Pad *inside* the markup so the trailing gutter still
-                        # counts; without it the count runs into the next
-                        # chart's date at 80 columns.
-                        cells = f"{bar(d['count'], peak, 8):<8}"
-                        chart.append(
-                            f"{d['date'][5:]}  [{color}]{cells}[/{color}]  {d['count']}"
-                        )
-                    self.query_one(wid, Static).update("\n".join(chart))
+            dp = self.query_one("#dash-plugins", DataTable)
+            dp.clear(columns=True)
+            dp.add_columns("#", "Plugin", "Kind", "Item", "Calls", "Success rate", "Last used")
+            for i, r in enumerate(plugin_rows[:10], 1):
+                key = f"dash-plugin:{r['plugin_name']}:{r['kind']}:{r['item_name']}"
+                self.app.row_targets[key] = (
+                    "plugin", r["plugin_name"], r["kind"], r["item_name"],
+                )
+                dp.add_row(
+                    str(i), r["plugin_name"], r["kind"], r["item_name"],
+                    str(r["total"]),
+                    rate_text(r["total"], r["success"]),
+                    db.fmt_time(r["last_used"]),
+                    key=key,
+                )
 
-                top = self.query_one("#dash-top", DataTable)
-                top.clear(columns=True)
-                top.add_columns("#", "Skill", "Uses", "Success rate", "Last used")
-                for i, r in enumerate(db.top_rows(conn, 10), 1):
-                    key = f"dash-skill:{r['skill_name']}"
-                    self.app.row_targets[key] = ("skill", r["skill_name"])
-                    top.add_row(
-                        str(i), r["skill_name"], str(r["total"]),
-                        rate_text(r["total"], r["success"]),
-                        db.fmt_time(r["last_used"]),
-                        key=key,
-                    )
+        def _render_skills_section(self, conn) -> None:
+            self.app.all_rows = db.stats_rows(conn)
+            # With no usage rows every sort mode collapses to the same
+            # order; the Skills tab says so instead of looking broken.
+            self.app.has_usage = any(r["total"] for r in self.app.all_rows)
+            self.render_skills()
 
-                # Top-10 companions to the Skills table above. `mcp_rows` /
-                # `plugin_rows` arrive pre-sorted by total DESC, so slicing is
-                # the whole ranking. Empty states keep headers only, mirroring
-                # the MCP/Plugins tabs on a skills-only DB.
-                dm = self.query_one("#dash-mcp", DataTable)
-                dm.clear(columns=True)
-                dm.add_columns("#", "Server", "Tool", "Calls", "Success rate", "Last used")
-                for i, r in enumerate(mcp_rows[:10], 1):
-                    key = f"dash-mcp:{r['server_name']}:{r['tool_name']}"
-                    self.app.row_targets[key] = ("mcp", r["server_name"], r["tool_name"])
-                    dm.add_row(
-                        str(i), r["server_name"], r["tool_name"], str(r["total"]),
-                        rate_text(r["total"], r["success"]),
-                        db.fmt_time(r["last_used"]),
-                        key=key,
-                    )
+        def _render_recent_section(self) -> None:
+            self.render_recent()
 
-                dp = self.query_one("#dash-plugins", DataTable)
-                dp.clear(columns=True)
-                dp.add_columns("#", "Plugin", "Kind", "Item", "Calls", "Success rate", "Last used")
-                for i, r in enumerate(plugin_rows[:10], 1):
-                    key = f"dash-plugin:{r['plugin_name']}:{r['kind']}:{r['item_name']}"
-                    self.app.row_targets[key] = (
-                        "plugin", r["plugin_name"], r["kind"], r["item_name"],
-                    )
-                    dp.add_row(
-                        str(i), r["plugin_name"], r["kind"], r["item_name"],
-                        str(r["total"]),
-                        rate_text(r["total"], r["success"]),
-                        db.fmt_time(r["last_used"]),
-                        key=key,
-                    )
+        def _render_categories(self, conn) -> None:
+            cats = self.query_one("#cats-table", DataTable)
+            cats.clear(columns=True)
+            cats.add_columns("Source", "Category", "Skills", "Uses", "Success", "Errors", "Denied")
+            for r in db.categories(conn):
+                cats.add_row(
+                    r["source"], r["category"] or "-", str(r["skills"]), str(r["usage"]),
+                    str(r["success"]), str(r["errors"]), str(r["denied"]),
+                )
 
-                self.app.all_rows = all_rows
-                # With no usage rows every sort mode collapses to the same
-                # order; the Skills tab says so instead of looking broken.
-                self.app.has_usage = any(r["total"] for r in self.app.all_rows)
-                self.render_skills()
-                self.render_recent()
-
-                cats = self.query_one("#cats-table", DataTable)
-                cats.clear(columns=True)
-                cats.add_columns("Source", "Category", "Skills", "Uses", "Success", "Errors", "Denied")
-                for r in db.categories(conn):
-                    cats.add_row(
-                        r["source"], r["category"] or "-", str(r["skills"]), str(r["usage"]),
-                        str(r["success"]), str(r["errors"]), str(r["denied"]),
-                    )
-                self.query_one("#data-info", Static).update(self._data_info())
-            except Exception as e:  # noqa: BLE001
-                self.app.notify(f"Refresh failed: {e}", severity="error")
+        def _render_data_info(self) -> None:
+            self.query_one("#data-info", Static).update(self._data_info())
 
         def _data_info(self) -> str:
             """DB path/size/row counts + last backup, shown on the Data page.
