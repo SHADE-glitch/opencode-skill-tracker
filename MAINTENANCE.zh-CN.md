@@ -149,6 +149,14 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 4. 同时更新 `plugin/skill-tracker.js` 里的 `DEFAULT_BUILTIN_TOOLS` **和**同一行那句 `verified against OpenCode X.Y.Z` 注释——`doctor` 解析的就是那句注释，漏掉它等于重新制造它要检的漂移。
 5. 重启 OpenCode，用 `skillt plugins` 确认清单已刷新。
 
+6. 大版本升级后**重新测量事件载荷**。字段名已经咬过一次（M20：代码照 SDK 类型写，
+   宿主发的却是另一套名字），所以这一步的原则是**观测，而不是相信文档**。做法：在
+   `/tmp` 建一个一次性项目，放一个探针插件，只记录
+   `permission.asked` / `permission.replied` / `command.execute.before` 的**键名与枚举值**，
+   用 `OPENCODE_SKILL_TRACKER_DB` 指向临时库跑一次，再把到达的字段和 tracker 读取的
+   字段逐一对。探针请只留在 `/tmp`：它会打印字段值，用在合成沙箱会话里可以，放在有
+   真实文本的地方不行。
+
 不想改插件就设 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS`——但那样 `env.opencode_version` 会**故意**一直 WARN。
 
 ## 6. 刻意为之的偏离（别"顺手修回去"）
@@ -174,8 +182,23 @@ M1–M19 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [REA
 | 日志不轮转（M17） | 小 | 需要先定策略（轮转 / 截断 / 交给 journald） |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
 | `skill_versions` 无上限增长 | 小 | 需要保留策略；目前没有任何清理 |
-| 插件**命令**采集没有生产证据 | 未知 | 需要在 OpenCode 里真跑一次 `/command`；当前 `command_call` 为 0 行（M12） |
-| `denied` 状态没有生产证据 | 未知 | 需要一次真实的配置级拒绝；权限路径目前只有单元测试覆盖 |
+
+### 已用 live 验证结清（2026-10-01）
+
+两条此前"只有单测"的采集路径，已在 `/tmp` 沙箱里对真实 `opencode run` 跑通（库用
+`OPENCODE_SKILL_TRACKER_DB` 隔离、模型 `opencode/space-bunny-free`、提示词全合成、
+用绝对路径调用二进制以绕开 shell alias）：
+
+- **插件命令采集是通的。** `--command dcp-compress` 触发了
+  `command.execute.before`，写下
+  `@tarquinen/opencode-dcp@3.2.0 / command / dcp-compress / command_call / unknown`。
+- **拒绝采集当时是坏的，现已修好。** OpenCode 1.18.33 发的是
+  `permission.asked` → `permission.replied`：id 在 `id`、被拒调用在 `tool.callID`、
+  答复是 `reply` 且用 `requestID` 关联。而 tracker 监听的是 `permission.updated`、
+  读的是 `permissionID`/`response`——这个宿主从不发这些名字，于是**每一次真实拒绝都
+  什么都没写**，生产里 `denied` 为 0 不是"没遇到"而是"记不下"。现在能正确落库，但
+  M20 依然成立：宿主只对 `edit`/`bash`/`webfetch`/`doom_loop`/`external_directory`
+  设门，这五类都不在度量范围内，所以仍应预期 `denied` 为 0 行。
 
 ## 9. 回滚
 

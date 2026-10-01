@@ -497,6 +497,19 @@ The full audit — M1 through M19, with reproduction notes — lives in
   actual error text, `status` is corrected to `error` (the monotonic rule) but
   `metadata.error` is **not** filled in. Left alone deliberately: that clause is
   the load-bearing dedup invariant.
+- **M20** A `denied` row cannot be produced by OpenCode 1.18.33. Denials do
+  reach the tracker — as the bus events `permission.asked` then
+  `permission.replied` (fields `requestID` and `reply: "reject"`, the refused
+  call under `tool.callID`), measured live on 2026-10-01 — and they are recorded
+  correctly now. But the host gates only five permission kinds (`edit`, `bash`,
+  `webfetch`, `doom_loop`, `external_directory`) and **none of them is a category
+  this tracker measures**: skills, MCP tools and plugin tools run without asking,
+  and a denied `bash` is deliberately not recorded. So no table will ever show a
+  denial on this version. The earlier code additionally listened for
+  `permission.updated` and read `permissionID` / `response`, none of which
+  1.18.33 sends — that mismatch is fixed, and
+  `test_permission_rejection_writes_a_denied_row` pins the real shapes; what is
+  left is a host boundary, not a tracker bug.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 

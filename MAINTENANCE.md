@@ -178,6 +178,16 @@ inventories resolve only at init (M11/M12). So:
    what `doctor` parses, so leaving it behind re-creates the drift it detects.
 5. Restart OpenCode. Confirm with `skillt plugins` that the inventory refreshed.
 
+6. Re-measure the event payloads after any major upgrade. Payload names have
+   already bitten once (M20: the code followed the SDK types while the host sent
+   different ones), so the check is to **observe, not to trust the docs**. Build
+   a throwaway project under `/tmp` with a probe plugin that logs the *keys and
+   enum values* of `permission.asked` / `permission.replied` /
+   `command.execute.before`, run it with `OPENCODE_SKILL_TRACKER_DB` pointed at a
+   temp database, and compare what arrives with what the tracker reads. Keep the
+   probe in `/tmp`: it dumps field values, which is fine for a synthetic sandbox
+   session and not fine anywhere real text lives.
+
 If you don't want to touch the plugin, set `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS`
 instead — but then `env.opencode_version` keeps WARNING on purpose.
 
@@ -229,8 +239,26 @@ late error text can be dropped by the `COALESCE` on metadata).
 | No log rotation (M17) | small | needs a policy decision (rotate vs. cap vs. rely on journald) |
 | `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
 | `skill_versions` grows without bound | small | needs a retention decision; no pruning exists today |
-| Command capture has no production evidence | unknown | needs one real `/command` run in OpenCode; 0 `command_call` rows so far (M12) |
-| `denied` status has no production evidence | unknown | needs a real config-level denial; permission paths are unit-tested only |
+
+### Resolved by live verification (2026-10-01)
+
+Both previously-unproven capture paths were exercised against a real
+`opencode run` session in a `/tmp` sandbox (isolated DB via
+`OPENCODE_SKILL_TRACKER_DB`, model `opencode/space-bunny-free`, synthetic
+prompts, binary invoked by absolute path so the shell alias never applies):
+
+- **Plugin command capture works.** `--command dcp-compress` fired
+  `command.execute.before` and wrote
+  `@tarquinen/opencode-dcp@3.2.0 / command / dcp-compress / command_call / unknown`.
+- **The denial path was broken, and is fixed.** OpenCode 1.18.33 emits
+  `permission.asked` then `permission.replied`, with the id in `id`, the refused
+  call in `tool.callID`, and the answer in `reply` keyed by `requestID`. The
+  tracker listened for `permission.updated` and read `permissionID` / `response`
+  — names this host never sends — so **every real rejection wrote nothing**,
+  which is why `denied` was 0 in production rather than merely unobserved.
+  Rejections now land correctly, but M20 still holds: the host gates only
+  `edit`/`bash`/`webfetch`/`doom_loop`/`external_directory`, none of which the
+  tracker measures, so expect 0 `denied` rows regardless.
 
 ## 9. Rollback
 

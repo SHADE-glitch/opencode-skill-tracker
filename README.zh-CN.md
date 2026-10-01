@@ -388,6 +388,8 @@ rm -rf ~/.local/share/opencode/backups
 - **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。
 - **M18 后到的错误文本可能被丢弃。** 三条 UPSERT 都用 `metadata = COALESCE(已存在, 新来的)`：若 `after` 钩子先写了一行、随后事件路径带着真正的报错文本到达，`status` 会被纠正为 `error`（单调规则），但 `metadata.error` **不会**被补进去。承载去重不变量，本轮不动。
 
+- **M20 `denied` 行在 OpenCode 1.18.33 上不可能出现。** 拒绝事件确实会送到 tracker——走事件总线的 `permission.asked` 再接 `permission.replied`（字段是 `requestID` 与 `reply: "reject"`，被拒的调用在 `tool.callID`，id 在 `id`；2026-10-01 实测），现在也能被正确记录。但宿主只对五个权限类别设门（`edit`、`bash`、`webfetch`、`doom_loop`、`external_directory`），**这五类都不是本 tracker 度量的对象**：skill、MCP 工具、插件工具都不询问直接执行，被拒的 `bash` 又是刻意不记录的。所以这个版本上任何表都不会出现 denied。旧代码还监听 `permission.updated`、读 `permissionID`/`response`——1.18.33 从不发这些名字，该错配已修，并由 `test_permission_rejection_writes_a_denied_row` 用真实形状钉住；剩下的这条是**宿主边界**，不是 tracker 缺陷。
+
 ### 插件自测（重要）
 
 - **`__selftest()` 必须使用隔离数据库。** 自测会在库里插入 `call-test-*` 合成行。现在它会在**打开任何数据库之前**检查环境变量：

@@ -9,7 +9,8 @@ usage** into a local SQLite database. Three layers, in dependency order:
 
 1. `plugin/skill-tracker.js` — the **only writer**. Runs inside OpenCode's Bun
    runtime. Listens on `tool.execute.before` / `tool.execute.after` /
-   `permission.ask` / `command.execute.before` / `event` / `chat.message`.
+   `permission.ask` / `command.execute.before` / `event` / `chat.message` /
+   `dispose`.
    Every registered tool goes through the same wrapper, so MCP and plugin tools
    are captured alongside skills; an MCP tool id is `{server}_{tool}` and is
    resolved against the configured server list by longest-prefix match. Plugin
@@ -62,6 +63,13 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   exclusions are the tracker itself (realpath-aware) and `opencode-notifier`.
   The builtin tool allowlist is pinned to OpenCode 1.18.33; set
   `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` after an OpenCode upgrade if needed.
+- **Permission payload shapes are measured, not assumed.** OpenCode 1.18.33
+  emits `permission.asked` (id at `id`, refused call at `tool.callID`) followed
+  by `permission.replied` (`requestID` + `reply`); the SDK types declare
+  `permission.updated` / `permissionID` / `response`, and coding to those names
+  made every real rejection write nothing. Both spellings are handled. Before
+  changing a permission handler, re-run the `/tmp` probe recipe in
+  `MAINTENANCE.md` §5 rather than trusting the SDK.
 - **Plugin inventory is init-time state.** A new/renamed plugin or surface needs
   an OpenCode restart to be discovered; `plugin_inventory` is retained when
   usage is cleared.
