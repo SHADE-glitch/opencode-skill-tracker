@@ -22,7 +22,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
 | Test suite | 289 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
-| AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. `skillt agentos` finds it with **no environment variable here**: `~/.config/opencode/plugin/agent-os.js` is a symlink into that checkout and the aggregator walks outward from it until it sees `store/aos.db`. Every stage so far has been 15–172 ms against a 1200 ms budget |
+| AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Every stage so far has been 15–172 ms against a 1200 ms budget. **The 5 loops are live-test samples** (`model=opencode/space-bunny-free`), not production usage |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
@@ -65,8 +65,7 @@ not the test, is what changed.
 | Message bodies are never read, so never stored. | `test_readme.py`, `__selftest` assertion |
 | The schema lives in two copies: `TABLES_SQL`/`VIEWS_SQL` (plugin) and `SCHEMA_SQL` (Python). Change both in the same commit. | `test_plugin_and_python_schema_do_not_drift` |
 | A view change requires a `SCHEMA_VERSION` bump, or existing databases keep the old view (`CREATE VIEW IF NOT EXISTS` never updates). | `test_migration.py`, `test_schema_sync.py` |
-| Capture tests are hermetic: nothing may read the real `~/.config/opencode/skills`, the real plugin log, **or the real advisor store**. | `temp_skills` + `isolate_config_dir` fixtures, `_isolated()` env, `test_doctor.py` monkeypatches |
-| The advisor store is **read-only and found, not guessed**: opened `file:...?mode=ro`, and located by walking outward from the installed plugin link until a real `store/aos.db` appears — never by trimming path components, and never over an explicit-but-broken `AGENT_OS_ROOT`. | `_open_agentos_ro()`, `_discover_agentos_store()`, `test_agentos.py` (link found / env wins / broken env stays an error / copied file refused) |
+| Capture tests are hermetic: nothing may read the real `~/.config/opencode/skills` or the real plugin log. | `temp_skills` fixture, `_isolated()` env, `test_doctor.py` monkeypatches |
 | The suite is green before pushing, on **both** documented commands. | `AGENTS.md` |
 
 ## 2. Daily (before trusting the numbers)
@@ -94,7 +93,7 @@ skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
 skillt sync --dry-run            # scanned == skills row count, changed == 0
 skillt agentos                   # advisor loops: over-budget stages, errors, whether
                                  # the recalled memory reached the prompt, and the
-                                 # join with measured usage (no env var needed here)
+                                 # join with measured usage (needs AGENT_OS_ROOT)
 wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
 ```
 

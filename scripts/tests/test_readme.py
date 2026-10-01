@@ -104,9 +104,7 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
 
     # The load-bearing invariants, by the name a future editor will grep for.
     for needle in ("UNIQUE(session_id, call_id)", "SCHEMA_VERSION", "export default",
-                   "Object.keys()", "TABLES_SQL",
-                   # the advisor store's two guards, named so a reader can find them
-                   "_open_agentos_ro()", "_discover_agentos_store", "isolate_config_dir"):
+                   "Object.keys()", "TABLES_SQL"):
         assert needle in en, f"MAINTENANCE.md dropped an invariant: {needle}"
         assert needle in zh, f"MAINTENANCE.zh-CN.md dropped an invariant: {needle}"
 

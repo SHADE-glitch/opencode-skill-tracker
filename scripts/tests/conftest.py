@@ -80,21 +80,6 @@ def isolate_backup_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "BACKUP_DIR", str(tmp_path / "backups"))
 
 
-@pytest.fixture(autouse=True)
-def isolate_config_dir(monkeypatch, tmp_path):
-    """No test may discover anything from the real ~/.config/opencode.
-
-    The advisor store can be found by reverse-reading the installed plugin
-    symlink, and on this machine that symlink exists and points at a real store.
-    Left alone, every "no store configured" assertion would pass only on a fresh
-    clone and fail here — the same class of failure the skills-directory fix
-    removed. A test that wants a discoverable store sets this to its own tree.
-    """
-    monkeypatch.setenv(
-        "OPENCODE_SKILL_TRACKER_CONFIG_DIR", str(tmp_path / "no-opencode-config")
-    )
-
-
 @pytest.fixture
 def empty_db(tmp_path):
     """A base-schema DB that has NOT been migrated yet.
