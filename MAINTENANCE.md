@@ -22,6 +22,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
 | Test suite | 289 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; every stage so far has been 15–172 ms against a 1200 ms budget |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
@@ -90,6 +91,8 @@ Healthy today means, at minimum:
 skillt cleanup-selftest          # dry run; must report no synthetic rows
 skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
 skillt sync --dry-run            # scanned == skills row count, changed == 0
+skillt agentos                   # advisor loops: over-budget stages, errors, join
+                                 # with measured usage (AGENT_OS_ROOT must be set)
 wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
 ```
 

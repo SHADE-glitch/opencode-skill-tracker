@@ -213,6 +213,7 @@ skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
 skillt scrub-metadata [--yes] [--json] [--limit N]
+skillt agentos   [--json] [--limit N]
 ```
 
 - `insight` — most used / fastest growing / **never used** / dormant / highest
@@ -246,6 +247,18 @@ skillt scrub-metadata [--yes] [--json] [--limit N]
   Dry-run by default and lists what it would touch; `--yes` applies (backup
   taken first, then the WAL is checkpointed so the text really leaves the disk).
   See M14.
+
+- `agentos` — the **AgentOS advisor**, aggregated read-only from its own store.
+  The advisor registers no tool and no command, so it can never appear in the
+  usage tables above; this reads its `store/aos.db` + `store/loops/*.json`
+  instead. Requires `AGENT_OS_ROOT` (or
+  `OPENCODE_SKILL_TRACKER_AGENTOS_DB`) and reports plainly when neither is set.
+  Per loop it shows the stage statuses and timings, the slowest stage against
+  the advisor's per-call budget, and — the point of the join — how much measured
+  tool activity that same session produced. **Nothing is ever written to that
+  store**, and no field is ever read that could carry text: the projection names
+  every emitted field, so a loop's `task_text` and the engines' stage payloads
+  stay where they are. See M21.
 
 Argument validation: `--days ≥ 1`, `--min-uses ≥ 0`, `--limit ≥ 1`,
 `--freshness-days ≥ 1`; invalid values fail fast with exit code 2. Every
@@ -510,6 +523,12 @@ The full audit — M1 through M19, with reproduction notes — lives in
   1.18.33 sends — that mismatch is fixed, and
   `test_permission_rejection_writes_a_denied_row` pins the real shapes; what is
   left is a host boundary, not a tracker bug.
+- **M21** The advisor's per-call budget is a copied default. skillt cannot read
+  `AOS_TIMEOUT_MS` across the seam, so the "over budget" flag uses AgentOS's
+  documented default (1200 ms) unless
+  `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` says otherwise. If AgentOS changes its
+  default and nobody changes this, the flag goes quietly stale — the same shape
+  as M13, and the reason it is named here rather than buried in a constant.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 

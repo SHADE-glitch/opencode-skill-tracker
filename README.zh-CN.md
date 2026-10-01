@@ -153,6 +153,7 @@ skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
 skillt scrub-metadata [--yes] [--json] [--limit N]
+skillt agentos   [--json] [--limit N]
 ```
 
 - `insight`：最常使用 / 增长最快 / **从未使用** / 长期未使用 / 失败率最高，并附观察样本（session 数与天数）。
@@ -165,6 +166,8 @@ skillt scrub-metadata [--yes] [--json] [--limit N]
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（三张用量表里最新一条距今多少天，阈值 `--freshness-days`，默认 7）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）。这三项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
 - `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
+
+- `agentos`：**只读**聚合 AgentOS 顾问插件自己的存储。顾问不注册任何 tool、也不注册 command，所以在上面那些用量表里永远不会出现；这一项改读它的 `store/aos.db` 与 `store/loops/*.json`。需要 `AGENT_OS_ROOT`（或 `OPENCODE_SKILL_TRACKER_AGENTOS_DB`），没配就明说"未聚合"。每个 loop 给出逐段状态与耗时、最慢段相对顾问单次预算是否超支，以及最有用的一列——同一会话在 tracker 里到底产生过多少可度量的工具调用。**从不写那个库**；字段是逐个白名单投影出来的，所以 loop 里的 `task_text`（任务原文）和各阶段 payload 一律读不到。见 M21。
 
 参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
 所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。
@@ -386,6 +389,7 @@ rm -rf ~/.local/share/opencode/backups
 - **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
 - **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
 - **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。
+- **M21 顾问的单次预算是抄来的默认值。** tracker 没法跨那道缝读 `AOS_TIMEOUT_MS`，所以"是否超预算"用的是 AgentOS 文档里的默认值 1200ms，除非用 `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` 覆盖。AgentOS 若改了默认而这边没跟着改，这个标记就会**安静地失效**——和 M13 同一形状，所以写在这里而不是藏在常量里。
 - **M18 后到的错误文本可能被丢弃。** 三条 UPSERT 都用 `metadata = COALESCE(已存在, 新来的)`：若 `after` 钩子先写了一行、随后事件路径带着真正的报错文本到达，`status` 会被纠正为 `error`（单调规则），但 `metadata.error` **不会**被补进去。承载去重不变量，本轮不动。
 
 - **M20 `denied` 行在 OpenCode 1.18.33 上不可能出现。** 拒绝事件确实会送到 tracker——走事件总线的 `permission.asked` 再接 `permission.replied`（字段是 `requestID` 与 `reply: "reject"`，被拒的调用在 `tool.callID`，id 在 `id`；2026-10-01 实测），现在也能被正确记录。但宿主只对五个权限类别设门（`edit`、`bash`、`webfetch`、`doom_loop`、`external_directory`），**这五类都不是本 tracker 度量的对象**：skill、MCP 工具、插件工具都不询问直接执行，被拒的 `bash` 又是刻意不记录的。所以这个版本上任何表都不会出现 denied。旧代码还监听 `permission.updated`、读 `permissionID`/`response`——1.18.33 从不发这些名字，该错配已修，并由 `test_permission_rejection_writes_a_denied_row` 用真实形状钉住；剩下的这条是**宿主边界**，不是 tracker 缺陷。

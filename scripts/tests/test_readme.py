@@ -126,12 +126,13 @@ def test_readme_documents_commands_and_backup_ops():
     for cmd in (
         "skillt health", "skillt auto-backup", "skillt doctor", "skillt sync",
         "skillt insight", "skillt export", "skillt cleanup-selftest",
-        "skillt scrub-metadata",
+        "skillt scrub-metadata", "skillt agentos",
     ):
         assert cmd in text, f"command not documented: {cmd}"
     # the new headless surface must be documented where readers look for it
     en = (ROOT / "README.md").read_text(encoding="utf-8")
-    for cmd in ("skillt scrub-metadata", "skillt doctor", "--freshness-days"):
+    for cmd in ("skillt scrub-metadata", "skillt doctor", "--freshness-days",
+                "skillt agentos", "OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS"):
         assert cmd in en, f"README.md does not document: {cmd}"
     assert "enable-linger" in text
     assert "120 秒" in text or "120" in text

@@ -21,6 +21,10 @@ usage** into a local SQLite database. Three layers, in dependency order:
 3. `scripts/skill-tui.py` (Textual TUI + `--cli` headless subcommands) and
    `scripts/skill-stats.py` (legacy CLI). Read-only apart from explicit
    `delete` / `clear` / `backup` / `vacuum`.
+4. `scripts/skill_db.py::agentos_*` — a **read-only neighbour**, not a fourth
+   layer: the AgentOS advisor registers no tool and no command, so it can never
+   appear in the usage tables, and `skillt agentos` / the Advisor tab read its
+   own store instead (`$AGENT_OS_ROOT/store/aos.db` + `store/loops/*.json`).
 
 `bin/skillt` is a bash dispatcher that resolves its own location through
 symlinks and execs one of the above.
@@ -49,6 +53,13 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **Do not change the capture logic in the plugin** without tests. Writes are
   deduplicated by `UNIQUE(session_id, call_id)` + `ON CONFLICT` upsert; that
   invariant is load-bearing.
+- **The advisor store is read-only and field-whitelisted.** Never open it with
+  `open_db()` — that helper falls back to read-write and creates a missing file,
+  which would hand a foreign store to a "read-only" reader. Use
+  `_open_agentos_ro()` (`file:...?mode=ro`). Loop files carry `task_text` (the
+  user's task verbatim) and stage `data` carries engine payloads, so
+  `_project_loop()` names every field it emits and never splats a dict: adding a
+  field upstream cannot leak it here, only omitting one would.
 - **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
 - **Never commit secrets.** The plugin sanitizes secrets before storing them;
