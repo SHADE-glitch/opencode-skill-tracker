@@ -138,6 +138,27 @@ def fmt_count(n) -> str:
     return f"{round(value / 1_000_000_000)}G"
 
 
+# The `vs top` column in the three Dashboard ranking tables. The table gives
+# every column the width of its widest cell, so the bar column is the only one
+# whose footprint we control — it is what absorbs a narrow terminal.
+RANK_LADDER = ((100, 14), (80, 10), (70, 7), (0, 5))
+
+
+def rank_bar_width(columns: int, term_width: int) -> int:
+    """Blocks for a ranking bar: longer on a wider terminal, shorter on a busier table.
+
+    `columns` counts the table's columns *including* the bar. Top Plugins carries
+    eight of them and Top Skills six, so in the same terminal the plugin bars are
+    the short ones — the alternative is the table running off to the right.
+    """
+    base = next(w for threshold, w in RANK_LADDER if term_width >= threshold)
+    if columns >= 8:
+        base -= 4
+    elif columns >= 7:
+        base -= 2
+    return max(3, base)
+
+
 # ===========================================================================
 # CLI mode (no textual)
 # ===========================================================================
@@ -1284,6 +1305,16 @@ def _tui_classes() -> dict:
 
         def on_resize(self, event) -> None:
             self._layout_cards()
+            # The ranking bars are sized from the terminal width, so a resize
+            # changes the answer. Go through `refresh_data`, which is the
+            # already-guarded redraw path (per-section failures land in the
+            # legend instead of killing the screen) rather than inventing a
+            # second, unguarded way to re-draw the dashboard. No timer.
+            if self.app.conn is None:
+                return
+            if self.query_one(TabbedContent).active != "tab-dash":
+                return
+            self.refresh_data()
 
         def _layout_cards(self) -> None:
             """Six cards across on a wide terminal, 3x2 on a narrow one.
@@ -1380,8 +1411,9 @@ def _tui_classes() -> dict:
             # trailing field printed at its natural length makes one line longer
             # than its neighbours whenever a count gains a digit, that chart
             # word-wraps on its own, and the three no longer share a horizontal
-            # line. `.trend` pins the height for the same reason: below about 74
-            # columns all three clip alike instead of drifting apart.
+            # line. `.trend` pins the height for the same reason: below 70
+            # columns (measured: cells are 20 wide at 70, 18/19/19 at 66) all
+            # three clip alike instead of drifting apart.
             for wid, label, color, data in (
                 ("#trend-skills", "skill calls", "cyan",
                  db.daily_activity(conn, TREND_DAYS)),
@@ -1406,14 +1438,22 @@ def _tui_classes() -> dict:
             self.render_mcp(mcp_rows)
             self.render_plugins(plugin_rows)
 
+            # `vs top` gives each stream its own shape: the bar is measured
+            # against that stream's busiest row, never against the other two. A
+            # shared peak would make a quiet stream read as "nothing happened".
+            width = self.size.width
+            top_rows = db.top_rows(conn, 10)
             top = self.query_one("#dash-top", DataTable)
             top.clear(columns=True)
-            top.add_columns("#", "Skill", "Uses", "Success rate", "Last used")
-            for i, r in enumerate(db.top_rows(conn, 10), 1):
+            barw = rank_bar_width(6, width)
+            top.add_columns("#", "Skill", "Uses", "vs top", "Success rate", "Last used")
+            top_peak = top_rows[0]["total"] if top_rows else 0
+            for i, r in enumerate(top_rows, 1):
                 key = f"dash-skill:{r['skill_name']}"
                 self.app.row_targets[key] = ("skill", r["skill_name"])
                 top.add_row(
                     str(i), r["skill_name"], str(r["total"]),
+                    bar(r["total"], top_peak, barw),
                     rate_text(r["total"], r["success"]),
                     db.fmt_time(r["last_used"]),
                     key=key,
@@ -1425,12 +1465,16 @@ def _tui_classes() -> dict:
             # the MCP/Plugins tabs on a skills-only DB.
             dm = self.query_one("#dash-mcp", DataTable)
             dm.clear(columns=True)
-            dm.add_columns("#", "Server", "Tool", "Calls", "Success rate", "Last used")
+            barw = rank_bar_width(7, width)
+            dm.add_columns("#", "Server", "Tool", "Calls", "vs top",
+                           "Success rate", "Last used")
+            mcp_peak = mcp_rows[0]["total"] if mcp_rows else 0
             for i, r in enumerate(mcp_rows[:10], 1):
                 key = f"dash-mcp:{r['server_name']}:{r['tool_name']}"
                 self.app.row_targets[key] = ("mcp", r["server_name"], r["tool_name"])
                 dm.add_row(
                     str(i), r["server_name"], r["tool_name"], str(r["total"]),
+                    bar(r["total"], mcp_peak, barw),
                     rate_text(r["total"], r["success"]),
                     db.fmt_time(r["last_used"]),
                     key=key,
@@ -1438,7 +1482,10 @@ def _tui_classes() -> dict:
 
             dp = self.query_one("#dash-plugins", DataTable)
             dp.clear(columns=True)
-            dp.add_columns("#", "Plugin", "Kind", "Item", "Calls", "Success rate", "Last used")
+            barw = rank_bar_width(8, width)
+            dp.add_columns("#", "Plugin", "Kind", "Item", "Calls", "vs top",
+                           "Success rate", "Last used")
+            plugin_peak = plugin_rows[0]["total"] if plugin_rows else 0
             for i, r in enumerate(plugin_rows[:10], 1):
                 key = f"dash-plugin:{r['plugin_name']}:{r['kind']}:{r['item_name']}"
                 self.app.row_targets[key] = (
@@ -1447,6 +1494,7 @@ def _tui_classes() -> dict:
                 dp.add_row(
                     str(i), r["plugin_name"], r["kind"], r["item_name"],
                     str(r["total"]),
+                    bar(r["total"], plugin_peak, barw),
                     rate_text(r["total"], r["success"]),
                     db.fmt_time(r["last_used"]),
                     key=key,
