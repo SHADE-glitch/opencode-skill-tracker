@@ -476,9 +476,29 @@ def _run_bun(script: str, extra_env: dict | None = None):
     )
 
 
+def _temp_skills(tmp_path) -> str:
+    """A skills tree the plugin can scan, so no test reads the developer's own.
+
+    The shipped `__selftest()` asserts at least one skill was scanned, which
+    silently made it depend on ~/.config/opencode/skills existing and being
+    non-empty.
+    """
+    root = tmp_path / "skills"
+    for name in ("brainstorming", "systematic-debugging"):
+        d = root / "personal-skills" / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: fixture\n---\nbody\n", encoding="utf-8"
+        )
+    return str(root)
+
+
 def _isolated(tmp_path, isolate_db: bool = True, plugins: str = "") -> dict:
     env = {
         "OPENCODE_SKILL_TRACKER_LOG": str(tmp_path / "plugin.log"),
+        # Pin the skills tree for the same reason as the MCP servers below: the
+        # plugin's own scan must never depend on what the developer has installed.
+        "OPENCODE_SKILL_TRACKER_SKILLS_DIR": _temp_skills(tmp_path),
         # Pin the MCP server set so detection never reads the developer's real
         # opencode.json (which exists and does declare servers).
         "OPENCODE_SKILL_TRACKER_MCP_SERVERS": "test-server",

@@ -504,8 +504,13 @@ def walk_skill_files(root: str) -> list[str]:
     return sorted(out)
 
 
-def scan_skills(skills_dir: str = SKILLS_DIR) -> list[dict]:
-    """Return [{name, category, path, description, content_hash, size_bytes}]."""
+def scan_skills(skills_dir: str | None = None) -> list[dict]:
+    """Return [{name, category, path, description, content_hash, size_bytes}].
+
+    `skills_dir` defaults to SKILLS_DIR at call time, not at def time, so a
+    caller (or a test) that repoints the module attribute gets that value.
+    """
+    skills_dir = SKILLS_DIR if skills_dir is None else skills_dir
     found = []
     for file in walk_skill_files(skills_dir):
         try:
@@ -531,7 +536,7 @@ def scan_skills(skills_dir: str = SKILLS_DIR) -> list[dict]:
     return found
 
 
-def sync_versions(conn, skills_dir: str = SKILLS_DIR, dry_run: bool = False,
+def sync_versions(conn, skills_dir: str | None = None, dry_run: bool = False,
                   prune_orphans: bool = False) -> dict:
     """Hash every SKILL.md; record a skill_versions row per content change."""
     stats = {

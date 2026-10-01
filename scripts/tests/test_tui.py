@@ -1,8 +1,11 @@
 """Headless smoke tests for the Textual app (requires the skillt venv).
 
 Runs the real app against a temp DB and asserts the plan's acceptance criteria:
-37 skills displayed, sorting works, the detail screen opens, the confirm modal
-does not write on cancel, and quitting is clean.
+the skills directory is listed, sorting works, the detail screen opens, the
+confirm modal does not write on cancel, and quitting is clean. Anything that
+touches SKILLS_DIR uses the `temp_skills` fixture — never the real
+~/.config/opencode/skills, which changes on its own and makes the suite fail
+for reasons unrelated to the code.
 """
 
 from __future__ import annotations
@@ -34,17 +37,17 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_tui_loads_37_skills_and_sorts(empty_db):
+def test_tui_loads_skills_and_sorts(empty_db, temp_skills):
     async def _run_it():
         app = SkillTUI(db_path=empty_db, no_sync=False)
         async with app.run_test() as pilot:
             await pilot.pause()
             conn = app.conn
             assert conn is not None
-            assert conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 37
+            assert conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 5
 
             table = app.screen.query_one("#skills-table", DataTable)
-            assert table.row_count == 37, "all 37 skills must be listed"
+            assert table.row_count == 5, "all 5 fixture skills must be listed"
 
             # sort cycles through all four modes without error
             for _ in range(4):
@@ -57,10 +60,10 @@ def test_tui_loads_37_skills_and_sorts(empty_db):
             await pilot.press("b", "r", "a", "i", "n")
             await pilot.pause()
             filtered = app.screen.query_one("#skills-table", DataTable).row_count
-            assert 0 < filtered < 37, f"search should narrow the list, got {filtered}"
+            assert 0 < filtered < 5, f"search should narrow the list, got {filtered}"
             await pilot.press("escape")
             await pilot.pause()
-            assert app.screen.query_one("#skills-table", DataTable).row_count == 37
+            assert app.screen.query_one("#skills-table", DataTable).row_count == 5
 
             await pilot.press("r")
             await pilot.pause()

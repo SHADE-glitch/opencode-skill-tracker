@@ -7,15 +7,30 @@ import os
 import skill_db as db
 
 
-def test_scan_finds_all_skills_and_parses_frontmatter():
-    found = db.scan_skills()
-    if not os.path.isdir(db.SKILLS_DIR):
-        return
-    assert len(found) == 37, f"expected 37 SKILL.md, got {len(found)}"
+def test_scan_finds_all_skills_and_parses_frontmatter(temp_skills):
+    found = db.scan_skills(temp_skills)
+    assert len(found) == 5, f"expected the 5 fixture SKILL.md, got {len(found)}"
     assert all(s["parsed_name"] for s in found), "every skill must have a frontmatter name"
     assert all(s["content_hash"] and len(s["content_hash"]) == 64 for s in found)
     cats = {s["category"] for s in found}
     assert cats == {"personal-skills", "open-source-skills"}
+    # The category comes from the path, not from the frontmatter.
+    by_name = {s["name"]: s for s in found}
+    assert by_name["brainstorming"]["category"] == "personal-skills"
+    assert by_name["brainstorming"]["path"] == os.path.join(
+        temp_skills, "personal-skills", "brainstorming"
+    )
+
+
+def test_scan_skills_follows_the_module_attribute(temp_skills):
+    """The default must resolve at call time, not at import.
+
+    A def-time default froze the real ~/.config/opencode/skills into the
+    signature, so repointing db.SKILLS_DIR silently did nothing and tests read
+    the developer's machine.
+    """
+    assert db.scan_skills() == db.scan_skills(temp_skills)
+    assert len(db.scan_skills()) == 5
 
 
 def test_frontmatter_handles_quotes_colons_and_folded():
@@ -30,20 +45,20 @@ def test_frontmatter_handles_quotes_colons_and_folded():
     assert db.parse_frontmatter("\ufeff---\nname: bom\n---\n")["name"] == "bom"
 
 
-def test_sync_baseline_then_noop(empty_db):
+def test_sync_baseline_then_noop(empty_db, temp_skills):
     conn = db.open_db(empty_db, readonly=False)
-    first = db.sync_versions(conn)
-    assert first["scanned"] == 37
-    assert first["baseline"] == 37
+    first = db.sync_versions(conn, skills_dir=temp_skills)
+    assert first["scanned"] == 5
+    assert first["baseline"] == 5
     assert first["changed"] == 0
 
-    second = db.sync_versions(conn)
+    second = db.sync_versions(conn, skills_dir=temp_skills)
     assert second["baseline"] == 0
     assert second["changed"] == 0
-    assert second["unchanged"] == 37
+    assert second["unchanged"] == 5
 
     versions = conn.execute("SELECT COUNT(*) FROM skill_versions").fetchone()[0]
-    assert versions == 37, "one baseline row per skill, no duplicates"
+    assert versions == 5, "one baseline row per skill, no duplicates"
     conn.close()
 
 
@@ -83,14 +98,14 @@ def test_sync_detects_content_change(tmp_path, monkeypatch):
     conn.close()
 
 
-def test_prune_orphan_versions(empty_db):
+def test_prune_orphan_versions(empty_db, temp_skills):
     conn = db.open_db(empty_db, readonly=False)
     db.ensure_schema(conn)
     conn.execute(
         "INSERT INTO skill_versions (skill_name, content_hash) VALUES ('ghost','abc')"
     )
     conn.commit()
-    stats = db.sync_versions(conn, prune_orphans=True)
+    stats = db.sync_versions(conn, skills_dir=temp_skills, prune_orphans=True)
     assert stats["orphan_versions_pruned"] == 1
     assert conn.execute("SELECT COUNT(*) FROM skill_versions WHERE skill_name='ghost'").fetchone()[0] == 0
     conn.close()

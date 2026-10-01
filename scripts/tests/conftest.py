@@ -41,6 +41,34 @@ def _make_db(path: str, migrate: bool = True) -> sqlite3.Connection:
 
 
 @pytest.fixture
+def temp_skills(tmp_path, monkeypatch):
+    """A skills tree of known shape, pointed at by db.SKILLS_DIR.
+
+    Never use the real ~/.config/opencode/skills in a test: it changes whenever
+    a skill is added, and assertions written against it then fail for reasons
+    that have nothing to do with the code under test. Five skills, two
+    categories, so the category derivation is actually exercised.
+    """
+    skills = tmp_path / "skills"
+    layout = [
+        ("personal-skills", "brainstorming"),
+        ("personal-skills", "systematic-debugging"),
+        ("open-source-skills", "code-review-and-quality"),
+        ("open-source-skills", "executing-plans"),
+        ("open-source-skills", "verification-before-completion"),
+    ]
+    for category, name in layout:
+        d = skills / category / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: the {name} skill\n---\nbody of {name}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(db, "SKILLS_DIR", str(skills))
+    return str(skills)
+
+
+@pytest.fixture
 def empty_db(tmp_path):
     """A base-schema DB that has NOT been migrated yet.
 
