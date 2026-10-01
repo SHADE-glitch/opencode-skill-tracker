@@ -548,6 +548,10 @@ OPENCODE_VERSION_TIMEOUT_S = 2
 # invisible in the database — it only ever shows up here.
 TRACKER_LOG_PATH = os.path.join(db.HOME, ".config", "opencode", "logs", "skill-tracker.log")
 
+# Hand-drawn chart geometry, module level because the tests and the CLI must
+# agree on it. Every bar in the advisor detail page is this many columns wide.
+STAGE_CHART_WIDTH = 22
+
 # How stale the newest recorded call may get before doctor says so. A tracker
 # that stopped writing looks exactly like an idle machine from the inside.
 CAPTURE_FRESHNESS_DAYS = 7
@@ -560,6 +564,12 @@ CAPTURE_FRESHNESS_DAYS = 7
 # teardown raise `LookupError: active_app`, which would take the whole suite
 # down with it. See `skillt doctor` capture.freshness for the idle case.
 REFRESH_STALE_AFTER_S = 5
+
+# How many advisor loops the tab lists, and how many the digest re-reads when a
+# row is opened. One constant because the two must agree: a row that opens as
+# "no longer in the store" because the detail read used a smaller limit would be
+# a lie about a file that is still there.
+ADVISOR_ROW_LIMIT = 30
 
 
 def _opencode_version():
@@ -1074,6 +1084,129 @@ def _tui_classes() -> dict:
                     r.get("trigger_type") or "-",
                 )
 
+    # ---- advisor loop detail ------------------------------------------------
+    class AdvisorDetailScreen(Screen):
+        """One advisor loop, explained.
+
+        This screen performs no reading of its own: it is handed the projected
+        dict that `skill_db._project_loop` produced, which names every field it
+        emits. That is why the fields beside these numbers — the task text, the
+        recall query, the stage payloads — cannot appear here: they were never
+        read. Adding a field to the advisor's store cannot widen this screen; only
+        editing it can, and the tests read the rendered text for the sentinels.
+        """
+
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+
+        def __init__(self, loop: dict, timeout_ms: int):
+            super().__init__()
+            self.loop = loop
+            self.timeout_ms = timeout_ms
+
+        def compose(self) -> ComposeResult:
+            loop = self.loop
+            yield Header(show_clock=True)
+            with VerticalScroll(id="detail-body"):
+                yield Static(f"[b]Advisor loop {loop.get('loop_id') or '-'}[/b]",
+                             id="advisor-loop-id")
+                yield Static(self._summary_text(), id="detail-stats")
+                yield Static(self._recall_text(), id="advisor-memory")
+                yield Static(self._usage_text(), id="advisor-usage")
+                yield Label(
+                    "Stage timings — bar length is milliseconds, scaled to this "
+                    "loop's slowest stage",
+                    id="detail-hist-label",
+                )
+                yield Static(self._stage_chart_text(), id="advisor-stage-chart")
+            yield Footer()
+
+        # -- text builders, each naming the fields it reads ------------------
+        def _summary_text(self) -> str:
+            loop = self.loop
+            post = loop.get("postflight") or {}
+            parts = [
+                f"outcome {loop.get('final_status') or '-'}",
+                f"stage reached {loop.get('stage') or '-'}",
+                f"started {db.fmt_time(loop.get('created_at')) or '-'}",
+                f"updated {db.fmt_time(loop.get('updated_at')) or '-'}",
+                f"session {db.short_session(str(loop.get('session_id') or '-'))}",
+                f"memory mode {loop.get('memory_mode') or '-'}",
+                f"provider {loop.get('provider') or '-'}",
+                f"model {loop.get('model') or '-'}",
+            ]
+            if post:
+                parts += [
+                    f"postflight {post.get('aos_status') or '-'}"
+                    f" phase {post.get('phase') or '-'}",
+                    f"warnings {post.get('warnings')}",
+                    "postflight error yes" if post.get("has_error")
+                    else "postflight error none",
+                    f"candidates recorded {post.get('candidates_recorded')}",
+                    f"needs review {post.get('needs_review')}",
+                    f"recovery attempted {post.get('recovery_attempted')}",
+                ]
+            parts.append(f"loop-level errors {loop.get('errors')}")
+            return "[dim]" + "   ·   ".join(parts) + "[/dim]"
+
+        def _recall_text(self) -> str:
+            inj = self.loop.get("injection") or {}
+            if not inj:
+                return ("[dim]recall: this loop recorded no recall result[/dim]")
+            return (
+                f"[dim]recall: searched {inj.get('retrieved')} (the engine's own"
+                f" tally)  →  recalled {inj.get('recalled')} memories selected"
+                f"  →  reached the prompt {inj.get('injected')}"
+                f" ({inj.get('chars')} characters). A hypothesis can be injected on"
+                f" its own, so these stay three numbers.[/dim]"
+            )
+
+        def _usage_text(self) -> str:
+            u = self.loop.get("usage") or {}
+            return (
+                f"[dim]measured calls in this session: {u.get('skill', 0)} skill,"
+                f" {u.get('mcp', 0)} mcp, {u.get('plugin', 0)} plugin — what this"
+                f" tracker recorded, not what the advisor attempted. Zero measured"
+                f" calls is not the same as a loop that never ran.[/dim]"
+            )
+
+        def _stage_chart_text(self) -> str:
+            stages = self.loop.get("stages") or {}
+            if not stages:
+                return "[dim](this loop recorded no stages)[/dim]"
+            # The budget is part of the scale. `bar()` multiplies value/peak by the
+            # width, so a peak taken from the stages alone lets the budget line
+            # overflow the column the moment every stage is fast — measured on a
+            # real loop (slowest stage 18ms, budget 1200ms) it drew 1466 blocks and
+            # wrapped the whole page. The fixture's 4000ms stage hid that.
+            peak = max(
+                [s["ms"] for s in stages.values() if s["ms"]] + [self.timeout_ms],
+                default=0,
+            )
+            if peak <= 0:
+                return "[dim](no stage timings in this loop)[/dim]"
+            width = STAGE_CHART_WIDTH
+            lines = []
+            for name, st in stages.items():
+                ms = st["ms"]
+                # `bar()` compares its value, so a pending stage must not reach it
+                # with None — that raises, and the screen never mounts.
+                field = bar(ms, peak, width) if ms is not None else ""
+                ms_cell = "-" if ms is None else f"{ms}ms"
+                note = st["status"] or "-"
+                if ms is not None and ms > self.timeout_ms:
+                    note += f" · over the {self.timeout_ms}ms budget by {ms - self.timeout_ms}ms"
+                if ms is None:
+                    note = "pending, no timing recorded"
+                if st.get("failed"):
+                    note += ", error recorded"
+                lines.append(f"{name:<10} {field:>{width}} {ms_cell:>9}  {note}")
+            budget_bar = bar(self.timeout_ms, peak, width)
+            lines.append(
+                f"{'budget':<10} {budget_bar:>{width}} {self.timeout_ms:>8}ms"
+                f"  per-call limit (a stage over it never reached the prompt)"
+            )
+            return "\n".join(lines)
+
     # ---- health screen (read-only) ----------------------------------------
     class HealthScreen(Screen):
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
@@ -1511,7 +1644,7 @@ def _tui_classes() -> dict:
             self.render_skills()
 
         def _render_advisor(self, conn) -> None:
-            res = db.agentos_summary(conn, limit=30)
+            res = db.agentos_summary(conn, limit=ADVISOR_ROW_LIMIT)
             label = self.query_one("#advisor-label", Static)
             legend = self.query_one("#advisor-legend", Static)
             table = self.query_one("#advisor-table", DataTable)
@@ -1536,7 +1669,8 @@ def _tui_classes() -> dict:
                 f"Slowest vs budget compares that loop's slowest stage with the "
                 f"advisor's per-call budget of {budget} ms "
                 "(OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS overrides it) — a stage over "
-                "it never reached the prompt.  ·  Read-only: this tab never writes to "
+                "it never reached the prompt.  ·  Enter or double-click a row for that "
+                "loop's per-stage timings.  ·  Read-only: this tab never writes to "
                 "that store and never copies its task text.[/dim]"
             )
             if not res["available"]:
@@ -1553,7 +1687,7 @@ def _tui_classes() -> dict:
                 f" over {res['retrieval'].get('memories')}"
                 f"   ·   loops {res['loops_total']}[/dim]"
             )
-            for loop in res["loops"]:
+            for i, loop in enumerate(res["loops"]):
                 stages = loop.get("stages") or {}
                 done = sum(1 for v in stages.values() if v["status"] == "completed")
                 failed = sum(1 for v in stages.values() if v["failed"])
@@ -1568,6 +1702,13 @@ def _tui_classes() -> dict:
                 reached = "-"
                 if inj:
                     reached = f"{inj.get('injected')} ({inj.get('chars')} chars)"
+                # A positional key, exactly like the Recent timeline: the loop id
+                # travels in `row_targets`, so nothing has to be parsed back out of
+                # a string that a foreign store controls.
+                key = f"advisor#{i}"
+                loop_id = str(loop.get("loop_id") or "")
+                if loop_id:
+                    self.app.row_targets[key] = ("advisor", loop_id)
                 table.add_row(
                     str(loop.get("loop_id") or "-"),
                     db.fmt_time(loop.get("created_at")),
@@ -1582,6 +1723,7 @@ def _tui_classes() -> dict:
                     f" {usage.get('mcp', 0)} mcp,"
                     f" {usage.get('plugin', 0)} plugin",
                     db.short_session(str(loop.get("session_id") or "-")),
+                    key=key,
                 )
 
         def _render_recent_section(self) -> None:
@@ -1942,6 +2084,30 @@ def _tui_classes() -> dict:
             else:
                 self.app.notify(f"No plugin history for {plugin}/{kind}/{item}", severity="warning")
 
+        def _open_advisor_detail(self, loop_id: str) -> None:
+            """Re-read the advisor digest and open one loop's own page.
+
+            The only door into that store is the digest helper, which opens it
+            read-only; the screen is handed an already-projected dict and does no
+            reading of its own. The loop is matched by the id inside the file, not
+            by the file name — the name is not a guaranteed identifier, and
+            assembling a path out of store-supplied text would be a traversal hole
+            bought for nothing.
+            """
+            try:
+                res = db.agentos_summary(self.app.conn, limit=ADVISOR_ROW_LIMIT)
+            except Exception as e:  # noqa: BLE001
+                self.app.notify(f"Could not read the advisor store: {e}", severity="error")
+                return
+            loop = next((l for l in res["loops"] if l.get("loop_id") == loop_id), None)
+            if loop is None:
+                # The store belongs to another process; this row may already be
+                # history by the time it is clicked.
+                self.app.notify("That loop is no longer in the advisor store",
+                                severity="warning")
+                return
+            self.app.push_screen(AdvisorDetailScreen(loop, res["timeout_ms"]))
+
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
             target = self.app.row_targets.get(event.row_key.value)
             if not target:
@@ -1951,8 +2117,15 @@ def _tui_classes() -> dict:
                 self._open_skill_detail(rest[0])
             elif kind == "mcp":
                 self._open_mcp_detail(rest[0], rest[1])
-            else:
+            elif kind == "plugin":
                 self._open_plugin_detail(rest[0], rest[1], rest[2])
+            elif kind == "advisor":
+                self._open_advisor_detail(rest[0])
+            else:
+                # This branch used to be the plugin call: an unknown kind was
+                # handed three positional arguments it never had, and the handler
+                # raised IndexError. New kinds get a branch, never the `else`.
+                return
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             bid = event.button.id
@@ -2016,6 +2189,7 @@ def _tui_classes() -> dict:
                 "tab-cats": "#cats-table",
                 "tab-mcp": "#mcp-table",
                 "tab-plugins": "#plugins-table",
+                "tab-advisor": "#advisor-table",
             }
             sel = mapping.get(tc.active)
             return self.query_one(sel, DataTable) if sel else None
@@ -2222,6 +2396,7 @@ def _tui_classes() -> dict:
             "SkillDetailScreen": SkillDetailScreen,
             "McpDetailScreen": McpDetailScreen,
             "PluginDetailScreen": PluginDetailScreen,
+            "AdvisorDetailScreen": AdvisorDetailScreen,
             "HealthScreen": HealthScreen,
             "MainScreen": MainScreen,
             "SkillTUI": SkillTUI,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
@@ -1567,8 +1568,325 @@ def test_tui_dead_bar_wrapper_is_gone():
     assert not hasattr(st, "uses_bar")
 
 
+# --- Advisor rows must open a detail page, like every other table ----------
+def _enter_advisor_row(seeded_db, tmp_path, monkeypatch, check, which=0):
+    """Mount the app on a stand-in advisor store and Enter one Advisor row.
+
+    `check` runs *inside* `run_test`: after the context exits the app is torn down
+    and `app.screen` raises `ScreenStackError`, which is what the first draft of
+    these tests mistook for a missing screen.
+    """
+    import skill_db as db
+    from test_agentos import _make_store
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            table = app.screen.query_one("#advisor-table", DataTable)
+            table.move_cursor(row=which)
+            table.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            check(app, [k.value for k in table.rows])
+
+    _run(_run_it())
+
+
+def test_tui_advisor_row_has_a_resolvable_key(seeded_db, tmp_path, monkeypatch):
+    """Advisor rows were added without `key=`, so every lookup missed.
+
+    `RowKey(None)` for all of them: Enter and the second click both landed on
+    `if not target: return` — the tab looked interactive and did nothing.
+    """
+    def check(app, keys):
+        assert keys, "no advisor rows rendered"
+        assert all(keys), f"rows still carry no key: {keys}"
+        for key in keys:
+            assert key in app.row_targets, key
+            assert app.row_targets[key][0] == "advisor", app.row_targets[key]
+        # identity travels in the tuple, never parsed back out of the key
+        assert app.row_targets[keys[0]][1] == "LOOP-TEST-1", app.row_targets[keys[0]]
+
+    _enter_advisor_row(seeded_db, tmp_path, monkeypatch, check)
+
+
+def test_tui_advisor_row_enter_opens_detail(seeded_db, tmp_path, monkeypatch):
+    def check(app, keys):
+        assert app.screen.__class__.__name__ == "AdvisorDetailScreen", app.screen
+
+    _enter_advisor_row(seeded_db, tmp_path, monkeypatch, check)
+
+
+def test_tui_advisor_row_double_click_opens_detail(seeded_db, tmp_path, monkeypatch):
+    """The mouse behaviour the other tables already have.
+
+    Textual's `DataTable` posts `RowSelected` when a click lands on the cell that
+    already holds the row cursor, so the *second* click of a double click is the
+    trigger — no timer and no click-chain bookkeeping of ours, which is what keeps
+    this inside the no-app-timers rule. This test is the evidence that the claim
+    holds under the headless pilot; it is not inherited from reading the widget.
+    """
+    import skill_db as db
+    from test_agentos import _make_store
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            table = app.screen.query_one("#advisor-table", DataTable)
+            table.move_cursor(row=0)
+            await pilot.pause()
+            # (4, 1) is the first body cell. A probe showed why the obvious y=2
+            # does not work: the click lands between cells, `DataTable._on_click`
+            # receives an empty style meta and returns without selecting, so a
+            # wrong offset reads as a broken feature. The offset is the test.
+            await pilot.double_click("#advisor-table", offset=(4, 1))
+            await pilot.pause()
+            assert app.screen.__class__.__name__ == "AdvisorDetailScreen", (
+                "double click did nothing: check whether the synthetic click still "
+                "carries the row/column style meta DataTable reads"
+            )
+
+    _run(_run_it())
+
+
+def test_tui_row_dispatch_ignores_unknown_kinds(seeded_db):
+    """The dispatch chain ended in `else: _open_plugin_detail(rest[0..2])`.
+
+    A kind it had never heard of was handed three positional arguments it did not
+    have — an `IndexError` inside a message handler. Registering the advisor kind
+    is what turned that latent bug into a certain one, so the branch order and the
+    terminal `else: return` are pinned here.
+    """
+    from textual.widgets.data_table import RowKey
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            table = screen.query_one("#dash-top", DataTable)
+            app.row_targets["bogus#1"] = ("not-a-known-kind", "x")
+            event = DataTable.RowSelected(table, 0, RowKey("bogus#1"))
+            screen.on_data_table_row_selected(event)      # must not raise
+            await pilot.pause()
+            assert app.screen is screen, "an unknown kind should do nothing"
+
+    _run(_run_it())
+
+
+def test_tui_advisor_detail_dismisses_like_the_other_detail_screens(
+    seeded_db, tmp_path, monkeypatch
+):
+    """Esc and `q` both go back to the Advisor tab — the peers' contract."""
+    import skill_db as db
+    from test_agentos import _make_store
+    from textual.widgets import Static
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            table = app.screen.query_one("#advisor-table", DataTable)
+            table.focus()
+            for key in ("enter", "escape"):
+                await pilot.press(key)
+                await pilot.pause()
+                if key == "enter":
+                    assert app.screen.__class__.__name__ == "AdvisorDetailScreen"
+                else:
+                    assert app.screen.query_one("#advisor-table", DataTable)
+            # `q` on a detail screen is bound to Back too
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("q")
+            await pilot.pause()
+            assert app.screen.query_one("#advisor-legend", Static)
+            assert table.row_count >= 1, "the tab it returns to must still be populated"
+
+    _run(_run_it())
+
+
+def test_tui_advisor_detail_draws_per_stage_bars(seeded_db, tmp_path, monkeypatch):
+    """The detail page is where 'what did it actually do' becomes a shape."""
+    import skill_db as db
+    from test_agentos import _make_store
+    from textual.widgets import Static
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            app.screen.query_one("#advisor-table", DataTable).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            chart = static_text(app.screen.query_one("#advisor-stage-chart", Static))
+            lines = [ln for ln in chart.splitlines() if ln.strip()]
+            by_name = {ln.split()[0]: ln for ln in lines}
+            for stage in ("route", "recall", "execute", "budget"):
+                assert stage in by_name, (stage, chart)
+            blocks = {k: v.count("█") for k, v in by_name.items()}
+            # recall (4000ms) is this loop's own peak, so it fills the column
+            assert blocks["recall"] == max(blocks.values()) == 22, blocks
+            assert blocks["route"] < blocks["recall"], blocks
+            # the budget sits on the same scale so a reader can see the margin
+            assert blocks["budget"] < blocks["recall"], blocks
+            assert blocks["execute"] == 0, by_name["execute"]
+            assert "pending, no timing recorded" in by_name["execute"], by_name["execute"]
+            assert "over" in by_name["recall"], "a 4000ms stage against 1200ms must say so"
+            assert isinstance(app.screen.query_one("#advisor-loop-id", Static), Static)
+
+    _run(_run_it())
+
+
+def test_tui_advisor_detail_budget_row_fits_when_every_stage_is_fast(seeded_db):
+    """Real data, not the fixture: slowest stage 18ms against a 1200ms budget.
+
+    With the peak taken from the stages alone, `bar()` scales the budget as
+    1200/18*22 and that row printed 1466 blocks, wrapping the whole page. The
+    fixture loop has a 4000ms stage, so every earlier test was blind to it.
+    """
+    from rich.text import Text
+
+    loop = {
+        "loop_id": "LOOP-REALISH", "session_id": "ses_f0a1", "stage": "finalize",
+        "final_status": "partial", "created_at": "2026-10-01T05:27:14+00:00",
+        "updated_at": "2026-10-01T05:27:30+00:00", "memory_mode": "enabled",
+        "provider": "host_delegate", "model": "opencode/test-model", "errors": 0,
+        "stage_count": 3, "slowest_stage": {"name": "record", "ms": 18},
+        "over_budget_ms": False, "injection": None, "postflight": None,
+        "usage": {"skill": 0, "mcp": 0, "plugin": 0},
+        "stages": {
+            "route": {"status": "completed", "ms": 16, "failed": False},
+            "record": {"status": "completed", "ms": 18, "failed": False},
+            "execute": {"status": "pending", "ms": None, "failed": False},
+        },
+    }
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.push_screen(st._tui_classes()["AdvisorDetailScreen"](loop, 1200))
+            await pilot.pause()
+            chart = Text.from_markup(
+                str(app.screen.query_one("#advisor-stage-chart", Static).content)
+            ).plain
+            by_name = {ln.split()[0]: ln for ln in chart.splitlines() if ln.strip()}
+            counts = {k: v.count("█") for k, v in by_name.items()}
+            assert max(counts.values()) <= st.STAGE_CHART_WIDTH, counts
+            # the budget is the peak here, so it is the full column and every
+            # stage reads as the small fraction of it that it really is
+            assert counts["budget"] == st.STAGE_CHART_WIDTH, counts
+            assert 0 < counts["record"] < counts["budget"], counts
+            assert counts["execute"] == 0, counts
+
+    _run(_run_it())
+
+
+def test_tui_advisor_detail_never_renders_store_text(seeded_db, tmp_path, monkeypatch):
+    """The four sentinels live in the same files the tab reads. None may surface."""
+    import skill_db as db
+    from test_agentos import (
+        ERROR_PROSE,
+        QUERY_PROSE,
+        STAGE_PROSE,
+        TASK_PROSE,
+        _make_store,
+    )
+    from textual.widgets import Static
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            app.screen.query_one("#advisor-table", DataTable).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            seen = [static_text(w) for w in app.screen.query(Static)]
+            for table in app.screen.query(DataTable):
+                for row_key in table.rows:
+                    for col in table.columns.values():
+                        seen.append(str(table.get_cell(row_key, col.key)))
+            blob = " ".join(seen)
+            for prose in (TASK_PROSE, STAGE_PROSE, QUERY_PROSE, ERROR_PROSE):
+                assert prose not in blob, f"{prose} left the store"
+
+    _run(_run_it())
+
+
+def test_tui_advisor_detail_reads_only_through_the_projection():
+    """Source-level guard: the screen must not gain its own way into the store.
+
+    A sentinel sweep only catches text that is in the fixture. This catches the
+    change that would let anything out: a screen that opens the file or the
+    database itself, or that splats a dict into a widget.
+    """
+    import re
+
+    source = (Path(__file__).resolve().parents[1] / "skill-tui.py").read_text(
+        encoding="utf-8"
+    )
+    start = source.index("class AdvisorDetailScreen")
+    end = source.index("class HealthScreen", start)
+    screen_src = source[start:end]
+    start2 = source.index("def _open_advisor_detail")
+    end2 = source.index("def ", start2 + len("def _open_advisor_detail"))
+    open_src = source[start2:end2]
+
+    for forbidden in ("json.load", "open(", "sqlite3.connect", "loops/", "**loop",
+                      '"task_text"', '"query"', '"data"'):
+        assert forbidden not in screen_src, (forbidden, "in AdvisorDetailScreen")
+        assert forbidden not in open_src, (forbidden, "in _open_advisor_detail")
+    assert re.search(r"agentos_summary\(", open_src), "must read through the digest"
+
+
+def test_tui_advisor_detail_of_a_loop_that_is_gone_notifies(seeded_db, tmp_path, monkeypatch):
+    """The store is written by another process: the row may already be history."""
+    import skill_db as db
+    from test_agentos import _make_store
+    from textual.widgets import Static
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            app.screen._open_advisor_detail("LOOP-THAT-IS-GONE")
+            await pilot.pause()
+            assert app.screen.__class__.__name__ == "MainScreen", app.screen
+            assert isinstance(app.screen.query_one("#advisor-legend", Static), Static)
+
+    _run(_run_it())
+
+
 def test_tui_advisor_tab_says_when_there_is_no_store(seeded_db, monkeypatch):
     import skill_db as db
+    from test_agentos import _make_store
     from textual.widgets import Static
 
     for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
