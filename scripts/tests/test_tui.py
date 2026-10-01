@@ -1186,6 +1186,9 @@ def test_tui_advisor_tab_renders_the_store(seeded_db, tmp_path, monkeypatch):
             # the join: give the loop's session a real usage row, then let the
             # tab activation re-read — no manual refresh
             assert any("1/0/0" == c for c in cells), cells
+            # did the memory reach the prompt: recalled 3, injected 4 (a
+            # hypothesis rides along), 1234 characters
+            assert any("3 → 4 (1234c)" == c for c in cells), cells
             assert TASK_PROSE not in " ".join(cells) and TASK_PROSE not in label
 
     _run(_run_it())

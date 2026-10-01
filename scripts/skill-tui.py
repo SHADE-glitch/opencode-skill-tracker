@@ -266,6 +266,15 @@ def _cli_agentos(conn, args) -> int:
             parts.append(f"{t['event_type']} {t['n']} (last {last})")
         print("  telemetry  " + "  ·  ".join(parts))
     print(f"  per-call budget {res['timeout_ms']} ms — a slower stage never reached the prompt")
+    sized = [l.get("injection") or {} for l in res["loops"] if l.get("injection")]
+    if sized:
+        newest, oldest = sized[0], sized[-1]
+        chars = [c.get("chars") for c in sized if isinstance(c.get("chars"), int)]
+        if chars:
+            print(f"  injected {newest.get('injected')} memories / "
+                  f"{newest.get('chars')} chars in the newest loop"
+                  f"   (oldest shown: {oldest.get('injected')} / {oldest.get('chars')} chars"
+                  f"; peak {max(chars)})")
 
     print()
     print(f"Loops (showing {len(res['loops'])} of {res['loops_total']}, newest first)")
@@ -278,8 +287,13 @@ def _cli_agentos(conn, args) -> int:
         slow = loop.get("slowest_stage") or {}
         slow_txt = f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-"
         flag = "  OVER BUDGET" if loop.get("over_budget_ms") else ""
+        inj = loop.get("injection") or {}
+        inj_txt = ("-" if not inj else
+                   f"recall {inj.get('retrieved')} → injected {inj.get('injected')}"
+                   f" ({inj.get('chars')}c)")
         print(f"  {str(loop.get('loop_id')):<28} {(db.fmt_time(loop.get('created_at')) or '')[5:]:<12}"
-              f" {str(loop.get('final_status')):<9} usage sk/mcp/pl {used}   slowest {slow_txt}{flag}")
+              f" {str(loop.get('final_status')):<9} usage sk/mcp/pl {used}   {inj_txt}"
+              f"   slowest {slow_txt}{flag}")
         cells = []
         for name, st in loop.get("stages", {}).items():
             mark = {"completed": "ok", "pending": "-", "failed": "ERR"}.get(st["status"], st["status"][:3])
@@ -1409,8 +1423,8 @@ def _tui_classes() -> dict:
             table = self.query_one("#advisor-table", DataTable)
             if not table.columns:
                 table.add_columns(
-                    "Loop", "When", "Final", "Stages", "Slowest", "Budget",
-                    "Usage sk/mcp/pl", "Session",
+                    "Loop", "When", "Final", "Stages", "Recall → injected",
+                    "Slowest", "Budget", "Usage sk/mcp/pl", "Session",
                 )
             table.clear(columns=False)
             if not res["available"]:
@@ -1435,11 +1449,16 @@ def _tui_classes() -> dict:
                 slow = loop.get("slowest_stage") or {}
                 usage = loop.get("usage") or {}
                 flag = "  ⚠" if loop.get("over_budget_ms") else ""
+                inj = loop.get("injection") or {}
+                inj_txt = ("-" if not inj else
+                           f"{inj.get('retrieved')} → {inj.get('injected')}"
+                           f" ({inj.get('chars')}c)")
                 table.add_row(
                     str(loop.get("loop_id") or "-"),
                     db.fmt_time(loop.get("created_at")),
                     str(loop.get("final_status") or "-"),
                     f"{done}/{len(stages)} ok" + (f", {failed} err" if failed else ""),
+                    inj_txt,
                     f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-",
                     ("over" if loop.get("over_budget_ms") else "within") + flag,
                     f"{usage.get('skill', 0)}/{usage.get('mcp', 0)}/{usage.get('plugin', 0)}",

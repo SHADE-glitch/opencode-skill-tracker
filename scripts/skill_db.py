@@ -2014,6 +2014,43 @@ def agentos_usage_by_session(conn, session_ids) -> dict:
     return out
 
 
+# The advisor's recall stage reports its own result as integers and id lists.
+# The same dict also holds `query` — a nested object of text derived from the
+# user's task — so only these names are read, and only ever as counts.
+AGENTOS_INJECTION_NAMES = ("retrieved", "memory_ids", "injected_memory_ids",
+                          "injection_chars")
+
+
+def _count_only(value):
+    """A count from an int or a sized collection; anything else is None.
+
+    Text never becomes a number here, which is what keeps `query` unreadable by
+    construction rather than by remembering to filter it out later.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (list, dict)):
+        return len(value)
+    return None
+
+
+def _project_injection(raw: dict) -> dict | None:
+    recall = ((raw.get("stages") or {}).get("recall") or {}).get("data")
+    if not isinstance(recall, dict):
+        return None
+    return {
+        "retrieved": _count_only(recall.get("retrieved")),
+        # `memory_ids` is what recall returned; `injected_memory_ids` is what
+        # actually went into the prompt. They differ (a hypothesis can be
+        # injected on its own), so they are kept apart rather than averaged.
+        "recalled": _count_only(recall.get("memory_ids")),
+        "injected": _count_only(recall.get("injected_memory_ids")),
+        "chars": _count_only(recall.get("injection_chars")),
+    }
+
+
 def _project_loop(raw: dict, limit_ms: int) -> dict:
     """Whitelist projection of one loop file. See the note above: no `**raw`."""
     stages = {}
@@ -2054,6 +2091,7 @@ def _project_loop(raw: dict, limit_ms: int) -> dict:
         "stage_count": len(stages),
         "slowest_stage": {"name": slowest[1], "ms": slowest[0]} if slowest else None,
         "over_budget_ms": bool(slowest and slowest[0] > limit_ms),
+        "injection": _project_injection(raw),
         "postflight": post or None,
     }
 

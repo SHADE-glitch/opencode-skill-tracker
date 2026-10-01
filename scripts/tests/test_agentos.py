@@ -21,6 +21,7 @@ import skill_db as db
 
 TASK_PROSE = "TASK-TEXT-MUST-NEVER-LEAVE-THE-STORE"
 STAGE_PROSE = "STAGE-PAYLOAD-MUST-NEVER-LEAVE-THE-STORE"
+QUERY_PROSE = "QUERY-DICT-MUST-NEVER-BE-READ"
 ERROR_PROSE = "ENGINE-ERROR-TEXT-MUST-NEVER-LEAVE-THE-STORE"
 
 
@@ -95,7 +96,15 @@ def _make_store(tmp_path, *, with_loops=True, drop_retrieval=False):
                 "recall": {"status": "completed",
                            "started_at": "2026-10-01T05:00:00.060000+00:00",
                            "completed_at": "2026-10-01T05:00:04.060000+00:00",
-                           "error": "", "data": {"memories": [TASK_PROSE]}},
+                           "error": "",
+                           "data": {"memories": [TASK_PROSE],
+                                    "retrieved": 3,
+                                    "memory_ids": ["m1", "m2", "m3"],
+                                    "injected_memory_ids": ["m1", "m2", "m3", "h1"],
+                                    "injection_chars": 1234,
+                                    "query": {"text": QUERY_PROSE,
+                                              "terms": [QUERY_PROSE]},
+                                    "ranking": [{"why": QUERY_PROSE}]}},
                 "execute": {"status": "pending", "started_at": "",
                             "completed_at": "", "error": ""},
             },
@@ -172,7 +181,7 @@ def test_task_text_and_payloads_are_never_read(tmp_path, tracker):
     res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
     assert res["available"] is True
     blob = json.dumps(res, ensure_ascii=False, default=str)
-    for prose in (TASK_PROSE, STAGE_PROSE, ERROR_PROSE):
+    for prose in (TASK_PROSE, STAGE_PROSE, ERROR_PROSE, QUERY_PROSE):
         assert prose not in blob, f"{prose} left the store"
     # ...while the facts that make the view useful are all still there.
     loop = res["loops"][0]
@@ -183,6 +192,41 @@ def test_task_text_and_payloads_are_never_read(tmp_path, tracker):
     assert loop["postflight"]["has_error"] is True, "an error must be visible as a flag"
     assert loop["postflight"]["candidates_recorded"] == 2
     assert "task_text" not in loop and "cwd" not in loop and "data" not in loop
+
+
+def test_the_recall_counts_surface_and_the_query_dict_does_not(tmp_path, tracker):
+    """"Did the memory actually reach the prompt" is two integers, not a text read."""
+    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
+    inj = res["loops"][0]["injection"]
+    assert inj == {"retrieved": 3, "recalled": 3, "injected": 4, "chars": 1234}, inj
+    # recalled 3 but injected 4 is real: a hypothesis can be injected on its own,
+    # so the two counts must not be collapsed into one number.
+    assert QUERY_PROSE not in json.dumps(res, ensure_ascii=False, default=str)
+
+
+def test_a_loop_without_recall_data_degrades_to_none(tmp_path, tracker):
+    store = _make_store(tmp_path)
+    # drop the recall stage's data entirely
+    path = os.path.join(os.path.dirname(store), "loops", "LOOP-TEST-1.json")
+    raw = json.load(open(path))
+    raw["stages"]["recall"]["data"].pop("retrieved")
+    raw["stages"]["recall"]["data"].pop("injection_chars")
+    json.dump(raw, open(path, "w"))
+    res = db.agentos_summary(tracker, db_path=store)
+    inj = res["loops"][0]["injection"]
+    assert inj["retrieved"] is None and inj["chars"] is None
+    assert inj["injected"] == 4, "the fields still present must keep working"
+
+
+def test_a_text_valued_count_field_is_never_counted(tmp_path, tracker):
+    """A renamed or mistyped field must yield None, not a character count."""
+    store = _make_store(tmp_path)
+    path = os.path.join(os.path.dirname(store), "loops", "LOOP-TEST-1.json")
+    raw = json.load(open(path))
+    raw["stages"]["recall"]["data"]["retrieved"] = "three memories"
+    json.dump(raw, open(path, "w"))
+    res = db.agentos_summary(tracker, db_path=store)
+    assert res["loops"][0]["injection"]["retrieved"] is None
 
 
 def test_stage_timings_and_the_budget_flag(tmp_path, tracker):
@@ -251,7 +295,9 @@ def test_cli_agentos_text_and_json(tmp_path, tracker, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "AgentOS advisor" in out and "LOOP-TEST-1" in out
     assert "OVER BUDGET" in out
-    assert TASK_PROSE not in out, "the CLI printed the task text"
+    assert "recall 3 → injected 4 (1234c)" in out, out
+    for prose in (TASK_PROSE, QUERY_PROSE):
+        assert prose not in out, "the CLI printed text from the store"
 
     args.json = True
     assert st._cli_agentos(tracker, args) == 0
