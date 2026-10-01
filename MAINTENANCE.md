@@ -21,7 +21,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Rows | 39 skills · 21 skill_usage · 550 mcp_usage · 48 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
-| Test suite | 287 passed, 0 failed (`python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`) |
+| Test suite | 289 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **not installed** — `systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`; newest backup 2026-09-23 |
 
@@ -120,7 +120,9 @@ check `log.errors` and whether OpenCode restarted without reloading the plugin.
 ```bash
 systemctl --user is-enabled skillt-auto-backup.timer   # must print: enabled
 sqlite3 -readonly ~/.local/share/opencode/skill-usage.db "PRAGMA integrity_check;"
+python3 -m pytest scripts/tests -q                     # no venv needed
 .venv/bin/python -m pytest scripts/tests -q            # full suite incl. TUI
+OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/nope python3 -m pytest scripts/tests -q   # hermetic proof
 bash -n bin/skillt                                     # dispatcher still parses
 ```
 

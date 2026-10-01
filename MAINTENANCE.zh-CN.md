@@ -17,7 +17,7 @@
 | 行数 | 39 skills · 21 skill_usage · 550 mcp_usage · 48 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
-| 测试 | 287 passed / 0 failed（`python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿） |
+| 测试 | 289 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
 | 备份定时器 | **未安装**：`systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`；最新备份停在 2026-09-23 |
 
@@ -100,7 +100,9 @@ sqlite3 -readonly "file:$HOME/.local/share/opencode/opencode.db?mode=ro" \
 ```bash
 systemctl --user is-enabled skillt-auto-backup.timer   # 必须输出：enabled
 sqlite3 -readonly ~/.local/share/opencode/skill-usage.db "PRAGMA integrity_check;"
-.venv/bin/python -m pytest scripts/tests -q
+python3 -m pytest scripts/tests -q                     # 不需要 venv
+.venv/bin/python -m pytest scripts/tests -q            # 含 TUI 全量
+OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/nope python3 -m pytest scripts/tests -q   # 封闭性证明
 bash -n bin/skillt                                     # dispatcher 语法
 ```
 
