@@ -25,6 +25,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
+| Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots) — that deletion happens on the next nightly run |
 | Metadata scrub | Applied 2026-10-01: `scrub-metadata --yes` stripped 40 rows (17 skill / 10 mcp / 13 plugin), usage rows and all 46 `error` texts kept; 3 loose backups still holding the text were deleted and the live DB vacuumed. `skillt scrub-metadata` must now report 0, and `grep -l '<一段已知原文>' ~/.local/share/opencode/skill-usage.db*` must find nothing |
 
 Install layout — all four are **symlinks back into this repo**, so editing the
@@ -101,8 +102,9 @@ marker you know is in an old row:
 grep -l '一段你确定写过的原文' ~/.local/share/opencode/skill-usage.db*   # must print nothing
 ```
 
-Then look at the backups that retention cannot reach (M19) — these are the ones
-holding pre-scrub data:
+Then confirm nothing is hiding outside the directory retention can reach. There
+should be **no** matches (M19 fixed the default, and the older strays were dealt
+with on 2026-10-01):
 
 ```bash
 for f in ~/.local/share/opencode/skill-usage-backup-*.db; do
@@ -210,8 +212,9 @@ M1–M19, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制) /
 [README.md](README.md#known-limitations).
 The ones most likely to bite during maintenance: **M14** (historical prompt text
-in rows — scrubbed 2026-10-01, still present in the older backups), **M19**
-(those older backups are outside `BACKUP_DIR` and retention never reaches them),
+in rows — scrubbed 2026-10-01, and the backups predating it were deleted),
+**M19** (fixed: backups had two destinations and retention only reached one —
+re-check that no `skill-usage-backup-*.db` sits beside the database again),
 **M15** (calls that never completed leave no row), **M16** (one failed git
 lookup silences `branch` for a directory), **M17** (no log rotation), **M18** (a
 late error text can be dropped by the `COALESCE` on metadata).
@@ -220,7 +223,6 @@ late error text can be dropped by the `COALESCE` on metadata).
 
 | Item | Cost | Why deferred |
 |---|---|---|
-| `backup_db()`'s default writes next to the DB, outside the retention sweep (M19) | small | one-line change (`base = db.BACKUP_DIR`) plus a test that `skillt backup` lands in `BACKUP_DIR`; it changes where users find their backups, so it needs a deliberate decision, not a drive-by fix |
 | `branchByDir` negative cache has no TTL (M16) | small | touches the capture path; AGENTS.md requires tests for capture changes, and the dominant cause of nulls here is non-git session dirs |
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |

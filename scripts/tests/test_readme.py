@@ -71,7 +71,7 @@ def test_english_readme_documents_every_known_limitation():
         "prompt",              # M14
         "no row at all",       # M15
         "COALESCE",            # M18
-        "never touched by",    # M19
+        "The default now writes into",   # M19, fixed — must say where it goes
     ):
         assert keyword in text, f"English limitation detail missing: {keyword}"
 
@@ -164,6 +164,22 @@ def test_readme_does_not_claim_message_text_is_stored():
         assert "branch / summary" not in text, f"{name} still lists summary in metadata"
         assert "message body" in text or "消息正文" in text, (
             f"{name} should state that message text is never stored"
+        )
+
+
+def test_docs_cross_link_so_no_file_is_an_orphan():
+    """A checklist nobody links to is a checklist nobody reads.
+
+    Regression: MAINTENANCE.md / .zh-CN.md were added with the English README
+    never mentioning them, and the Chinese one only citing them in passing.
+    """
+    for name in ("README.md", "README.zh-CN.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert "MAINTENANCE.md" in text, f"{name} never points at the checklist"
+    for path in MAINTENANCE:
+        text = path.read_text(encoding="utf-8")
+        assert "README.md" in text and "README.zh-CN.md" in text, (
+            f"{path.name} does not point back at the documentation"
         )
 
 

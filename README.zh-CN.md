@@ -77,10 +77,14 @@ OpenCode 运行
 | `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
 | `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |
 | `~/.config/opencode/scripts/tests/` | pytest 测试 |
+
+> **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：
+> 每日 / 每周 / 每月该查什么、把 tracker 与 `opencode.db` 对账的方法、每条不变量对应哪个测试、
+> 以及哪些缺陷是**刻意不修**的（别顺手改回去）。
 | `~/.config/opencode/skill-tracker/` | **本目录**：文档 + systemd 单元 |
 | `~/.local/bin/skillt` | 统一入口（bash 分发器；`skill-tracker` 是它的软链接） |
 | `~/.local/share/opencode/skill-usage.db` | 主数据库（WAL 模式，0600） |
-| `~/.local/share/opencode/backups/` | 备份专用目录（0700），由 `auto-backup` 维护 |
+| `~/.local/share/opencode/backups/` | 备份专用目录（0700），`auto-backup`、`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份**都写这里**（M19 已修，之前有两条路径写到了库旁边） |
 | `~/.local/share/opencode/skillt-venv/` | 给 TUI 用的 Python 虚拟环境（含 textual） |
 
 ---
@@ -244,7 +248,7 @@ skillt auto-backup --dry-run   # 先看会做什么
 skillt auto-backup             # 真正执行
 ```
 
-- 备份写入 `~/.local/share/opencode/backups/`（0700），命名固定为 `skill-usage-backup-YYYYMMDD-HHMMSS.db`。
+- 备份写入 `~/.local/share/opencode/backups/`（0700），命名固定为 `skill-usage-backup-YYYYMMDD-HHMMSS.db`；所有备份路径都指向这一个目录（M19）。
 - 保留策略：**最近 30 个每日**（每天留最新一个）+ **最近 12 个月每月**（每月留最新一个），其余删除。
 - 安全护栏：
   - 只处理**名称完全匹配** `skill-usage-backup-<8位日期>-<6位时间>.db` 的文件；
@@ -355,7 +359,7 @@ rm -rf ~/.local/share/opencode/backups
 ### 备份
 
 - **M4 备份权限窗口。** `VACUUM INTO` 完成**之后**才 `chmod 0600`，存在极短的宽松权限窗口；若 VACUUM 失败，可能留下**未清理的半成品文件**（需手工删除）。
-- **M19 两种备份的存放位置不同，保留策略只覆盖其中一个。** `auto-backup`（定时器走的那条）写进 `BACKUP_DIR`（`~/.local/share/opencode/backups/`）并按 30 每日 + 12 每月清理；而 `skillt backup` 以及 `scrub-metadata --yes` / `cleanup-selftest --yes` 前自动写的回滚备份用的是 `backup_db()` 默认路径——**写在数据库旁边**（`~/.local/share/opencode/`）。那些文件**永远不会被保留策略碰到**（`BACKUP_RE` 只在 `BACKUP_DIR` 里生效），会一直堆积。2026-10-01 实测该处散落 5 个文件，其中 3 个仍含 M14 的原文。清理它们要手工确认。
+- **M19 两种备份的存放位置不同，保留策略只覆盖其中一个（已修复）。** 旧版里 `auto-backup`（定时器走的那条）写进 `BACKUP_DIR`（`~/.local/share/opencode/backups/`）并按 30 每日 + 12 每月清理，而 `skillt backup`、TUI 的 `b`、以及 `scrub-metadata --yes` / `cleanup-selftest --yes` 前自动写的回滚备份用的是 `backup_db()` 的默认路径——**写在数据库旁边**。那些文件永远不会被保留策略碰到，而且 `doctor backups.latest` 只扫 `BACKUP_DIR`，于是"备份存在"和"体检说没有备份"同时成立。默认路径现已改为 `BACKUP_DIR`，并由 `test_default_backup_lands_in_the_retention_directory` 钉住。此前散落在外的旧文件仍需手工收拢：`mv ~/.local/share/opencode/skill-usage-backup-*.db ~/.local/share/opencode/backups/`。
 
 ### 界面
 

@@ -350,7 +350,9 @@ skillt auto-backup             # do it
   files younger than 120 seconds are never deleted; unparsable names are never
   deleted; same-second name collisions **error instead of overwrite**; a
   `.lock` file prevents concurrent runs (stale after 10 minutes).
-- Manual: `skillt backup` (legacy CLI) or `b` in the TUI.
+- Manual: `skillt backup` (legacy CLI) or `b` in the TUI. They land in the
+  **same directory**, so retention reaches them too (it used to write beside the
+  database, where nothing would prune or report them — see M19).
 
 ### Daily timer (optional)
 
@@ -421,15 +423,18 @@ The full audit — M1 through M19, with reproduction notes — lives in
 - **M4** Backups `chmod 0600` **after** `VACUUM INTO`, leaving a brief
   permissive window; a failed VACUUM can leave a **half-written file** behind
   that must be deleted by hand.
-- **M19** The two ways a backup is made write to **two different places**, and
-  retention only covers one. `auto-backup` (the timer) writes into `BACKUP_DIR`
-  (`~/.local/share/opencode/backups/`) and prunes it to 30 daily + 12 monthly;
-  `skillt backup` and the automatic pre-write backup taken by
-  `scrub-metadata --yes` / `cleanup-selftest --yes` use `backup_db()`'s default
-  path — **next to the database**. Those files are **never touched by
-  retention**, so they accumulate indefinitely (measured 5 loose files, 3 of
-  them still carrying the M14 text, on 2026-10-01). Clearing them is a manual,
-  deliberate decision.
+- **M19** (fixed) The two ways a backup was made wrote to **two different
+  places**, and retention only covered one: `auto-backup` (the timer) wrote into
+  `BACKUP_DIR` (`~/.local/share/opencode/backups/`) and pruned it to 30 daily +
+  12 monthly, while `skillt backup`, the TUI's `b`, and the automatic pre-write
+  backup of `scrub-metadata --yes` / `cleanup-selftest --yes` used `backup_db()`'s
+  default — **beside the database**. Nothing pruned those, and `doctor
+  backups.latest` could not even see them, so "backups exist" and "the backup
+  check says none" were both true at once. The default now writes into
+  `BACKUP_DIR`; `test_default_backup_lands_in_the_retention_directory` pins it.
+  Strays left outside it are still there until moved by hand:
+  `mv ~/.local/share/opencode/skill-usage-backup-*.db
+     ~/.local/share/opencode/backups/`
 - **M5** `VACUUM` / backup / export / refresh run on the UI thread, so a very
   large database briefly freezes the TUI.
 - **M6** (mitigated) Non-UTF-8 locales forced `UnicodeEncodeError`; stdout and
@@ -545,6 +550,8 @@ If the database was polluted historically, clean it with
 opencode-skill-tracker/
 ├── README.md                     # this file (English)
 ├── README.zh-CN.md               # full documentation, Chinese
+├── MAINTENANCE.md                # operating checklist (English)
+├── MAINTENANCE.zh-CN.md          # operating checklist, Chinese
 ├── LICENSE                       # MIT
 ├── install.sh                    # idempotent installer
 ├── requirements.txt              # textual
@@ -570,6 +577,12 @@ uv pip install --python .venv/bin/python -r requirements-dev.txt   # once
 
 Tests resolve their own paths with `Path(__file__).resolve()`, so the suite
 passes both from this repo and through the symlinked install locations.
+
+**Before operating this on a machine you care about**, read
+[MAINTENANCE.md](MAINTENANCE.md) (Chinese: `MAINTENANCE.zh-CN.md`): the
+daily / weekly / monthly checks, the procedure that reconciles recorded rows
+against OpenCode's own `part` table, the invariants with the test guarding each
+one, and the deviations that must not be "fixed" back.
 
 ---
 

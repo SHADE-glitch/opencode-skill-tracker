@@ -21,6 +21,7 @@
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
 | 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
+| 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份），这个删除会在下一次夜间任务发生 |
 | metadata 清理 | 2026-10-01 已执行 `scrub-metadata --yes`，剥掉 40 行（skill 17 / mcp 10 / plugin 13），用量行与 46 条 `error` 文本全部保留；另外删除 3 个仍含原文的散落备份，并对生产库做了 VACUUM。此后 `skillt scrub-metadata` 必须报 0 行，且 `grep -l '<一段已知原文>' ~/.local/share/opencode/skill-usage.db*` 必须什么都搜不到 |
 
 安装布局——四个位置都是**指回本仓库的符号链接**，所以改仓库即生效、无需重装；但改插件必须**重启 OpenCode**：
@@ -85,7 +86,7 @@ wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
 grep -l '一段你确定写过的原文' ~/.local/share/opencode/skill-usage.db*   # 必须无输出
 ```
 
-再查一遍保留策略够不着的那些备份（M19）——清理前的原文就留在这些文件里：
+再确认没有备份躲在保留策略够不着的目录外。M19 已修、旧散落文件已于 2026-10-01 处理，所以这里应当**一个都不剩**：
 
 ```bash
 for f in ~/.local/share/opencode/skill-usage-backup-*.db; do
@@ -161,13 +162,12 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 ## 7. 已知限制
 
 M1–M19 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
-维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（那些更早的备份在 `BACKUP_DIR` 之外，保留策略永远够不着）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）。
+维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修
 
 | 项 | 成本 | 为什么先不修 |
 |---|---|---|
-| `backup_db()` 默认写在数据库旁边，落在保留策略之外（M19） | 小 | 一行改动（`base = db.BACKUP_DIR`）+ 一个"`skillt backup` 应落进 `BACKUP_DIR`"的测试；但它会改变用户找备份的位置，该由你明确决定，不该顺手改掉 |
 | `branchByDir` 负缓存无 TTL（M16） | 小 | 动采集路径；AGENTS.md 要求改采集必须带测试，且当前 null 的主因是会话目录本身不是 git 仓库 |
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
