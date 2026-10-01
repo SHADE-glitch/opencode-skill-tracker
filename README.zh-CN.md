@@ -160,7 +160,7 @@ skillt scrub-metadata [--yes] [--json] [--limit N]
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（三张用量表里最新一条距今多少天，阈值 `--freshness-days`，默认 7）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）。这三项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
-- `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（同样先备份）。背景见 M14。
+- `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
 
 参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
 所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。
@@ -377,7 +377,8 @@ rm -rf ~/.local/share/opencode/backups
 
 ### 本轮审计新增（M14–M18）
 
-- **M14 历史行里可能仍有用户提示词原文（写入与导出已封住；库里数据已清理，备份文件仍有）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`）。2026-10-01 已用 `skillt scrub-metadata --yes` 清掉生产库里命中的 **40 行**（skill 17 / mcp 10 / plugin 13，用量行保留、`error` 文本 46 条保留）。**但清理之前形成的备份文件里仍是原文**——包括本次 `--yes` 之前自动写的那份回滚备份。检查方法见 MAINTENANCE §3，删除与否由你决定。任何时候都可以重跑 `skillt scrub-metadata` 验证：应当报告 0 行命中。
+- **M14 历史行里可能仍有用户提示词原文（写入与导出已封住；库里数据已清理，备份文件仍有）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`）。2026-10-01 已用 `skillt scrub-metadata --yes` 清掉生产库里命中的 **40 行**（skill 17 / mcp 10 / plugin 13，用量行保留、`error` 文本 46 条保留）。**但清理之前形成的备份文件里仍是原文**——包括本次 `--yes` 之前自动写的那份回滚备份。2026-10-01 已把 3 个仍含原文的散落备份删除，并对生产库做了 VACUUM；`grep` 你的原话在 tracker 的所有文件里已经搜不到。任何时候都可以重跑 `skillt scrub-metadata` 验证：应当报告 0 行命中。
+  另一个容易漏掉的事实：**删掉值不等于删掉字节**。WAL 模式下被替换的旧内容会留在 `-wal` 文件里直到 checkpoint，所以 `--yes` 结束时执行 `wal_checkpoint(TRUNCATE)`；库正忙时会明确告知，此时关掉 OpenCode 再跑一次 `skillt vacuum`。检查方法见 MAINTENANCE §3。
 - **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
 - **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
 - **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。

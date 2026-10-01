@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -270,4 +271,54 @@ def test_delete_skill_is_atomic_on_failure(seeded_db):
         conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0],
     )
     assert after == before, "a failed delete must not partially apply"
+    conn.close()
+
+
+def test_scrub_metadata_clears_the_wal_so_the_text_leaves_disk(tmp_path):
+    """A redaction that only rewrites the row has not removed the text.
+
+    Under WAL the replaced pages live on in the -wal file until a checkpoint, so
+    without one `scrub-metadata --yes` leaves the redacted prompt readable with
+    `grep` on the file it was supposedly removed from.
+    """
+    path = str(tmp_path / "wal.db")
+    conn = db.open_db(path, readonly=False)
+    db.ensure_schema(conn)
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+    marker = b"MARKER-MUST-NOT-SURVIVE" + b" padding" * 400
+    for i in range(200):
+        conn.execute(
+            "INSERT INTO skill_usage (skill_name, session_id, trigger_type,"
+            " status, call_id, metadata) VALUES ('s',?,'tool_call','success',?,?)",
+            (f"z{i}", f"c{i}", '{"model":"p/m","summary":"' + marker.decode() + '"}'),
+        )
+    conn.commit()
+
+    wal = path + "-wal"
+    assert os.path.exists(wal), "fixture must still be holding uncheckpointed pages"
+    assert marker in open(wal, "rb").read(), "fixture must leave the text in the WAL"
+
+    res = db.scrub_metadata(conn, dry_run=False)
+    assert res["matched"] == 200
+    assert res["checkpointed"] is True, "a declined checkpoint must be reported"
+    assert marker not in open(path, "rb").read(), "text still in the main file"
+    assert not os.path.exists(wal) or marker not in open(wal, "rb").read(), \
+        "text still in the -wal file"
+    conn.close()
+
+
+def test_scrub_metadata_reports_checkpointed_none_when_nothing_changed(tmp_path):
+    """An untouched database must not be checkpointed, and must say so as None."""
+    path = str(tmp_path / "clean.db")
+    conn = db.open_db(path, readonly=False)
+    db.ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO skill_usage (skill_name, session_id, trigger_type, status,"
+        " call_id, metadata) VALUES ('s','z','tool_call','success','c1',"
+        " '{\"model\":\"p/m\"}')"
+    )
+    conn.commit()
+    res = db.scrub_metadata(conn, dry_run=False)
+    assert res["matched"] == 0 and res["checkpointed"] is None
     conn.close()

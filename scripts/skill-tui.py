@@ -229,6 +229,12 @@ def _cli_scrub_metadata(conn, args) -> int:
         print("Re-run with --yes to apply (a backup is taken first by the caller).")
         return 0
     print(f"Stripped {res['matched']} row(s): {counts}")
+    if res["checkpointed"] is False:
+        print("  warning: the write could not be folded out of the WAL, so the "
+              "redacted text is still in the -wal file. Close OpenCode and run "
+              "`skillt vacuum`.")
+    elif res["checkpointed"]:
+        print("  WAL checkpointed: the removed text is no longer on disk.")
     return 0
 
 

@@ -244,7 +244,8 @@ skillt scrub-metadata [--yes] [--json] [--limit N]
   (`summary`, `title`) from historical `metadata` rows. **The rows themselves
   are kept** — usage is the point of this database, leaked prompt text is not.
   Dry-run by default and lists what it would touch; `--yes` applies (backup
-  taken first). See M14.
+  taken first, then the WAL is checkpointed so the text really leaves the disk).
+  See M14.
 
 Argument validation: `--days ≥ 1`, `--min-uses ≥ 0`, `--limit ≥ 1`,
 `--freshness-days ≥ 1`; invalid values fail fast with exit code 2. Every
@@ -466,9 +467,13 @@ The full audit — M1 through M19, with reproduction notes — lives in
   written, but **rows already in your database do not remove themselves**, nor
   do the backups taken of it. Run `skillt scrub-metadata` to see them, then
   `--yes` to strip the keys. Measured 40 such rows in a real 8-day database;
-  they were stripped with `scrub-metadata --yes` on 2026-10-01 — but the backups
-  taken **before** that still hold the text, so re-check with
-  `skillt scrub-metadata` (it must report 0) and see M19.
+  they were stripped with `scrub-metadata --yes` on 2026-10-01, and the three
+  loose backups that still held it were deleted. Re-check with
+  `skillt scrub-metadata` (it must report 0) and see M19. Note that removing the
+  value is not the same as removing the bytes: under WAL the replaced text keeps
+  living in the `-wal` file until a checkpoint, so `--yes` ends with
+  `wal_checkpoint(TRUNCATE)` and reports when the database is too busy to
+  checkpoint (then close OpenCode and run `skillt vacuum`).
 - **M15** A call that never completes leaves **no row at all**. Usage is written
   at `tool.execute.after` or from `message.part.updated`; `tool.execute.before`
   only parks the start time in memory. So an aborted, crashed or

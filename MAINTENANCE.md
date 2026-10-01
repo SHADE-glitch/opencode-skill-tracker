@@ -25,7 +25,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
-| Metadata scrub | Applied 2026-10-01: `scrub-metadata --yes` stripped 40 rows (17 skill / 10 mcp / 13 plugin), usage rows and all 46 `error` texts kept. `skillt scrub-metadata` must now report 0 |
+| Metadata scrub | Applied 2026-10-01: `scrub-metadata --yes` stripped 40 rows (17 skill / 10 mcp / 13 plugin), usage rows and all 46 `error` texts kept; 3 loose backups still holding the text were deleted and the live DB vacuumed. `skillt scrub-metadata` must now report 0, and `grep -l '<一段已知原文>' ~/.local/share/opencode/skill-usage.db*` must find nothing |
 
 Install layout — all four are **symlinks back into this repo**, so editing the
 repo is live (no reinstall needed) except that OpenCode must be restarted to
@@ -90,6 +90,15 @@ skillt cleanup-selftest          # dry run; must report no synthetic rows
 skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
 skillt sync --dry-run            # scanned == skills row count, changed == 0
 wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
+```
+
+A redaction removes the *value*; under WAL the *bytes* stay in the `-wal` file
+until a checkpoint, which is why `scrub-metadata --yes` ends with
+`wal_checkpoint(TRUNCATE)` and says so if the database is busy. Prove it with the
+marker you know is in an old row:
+
+```bash
+grep -l '一段你确定写过的原文' ~/.local/share/opencode/skill-usage.db*   # must print nothing
 ```
 
 Then look at the backups that retention cannot reach (M19) — these are the ones

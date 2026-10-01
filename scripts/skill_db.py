@@ -1509,6 +1509,22 @@ def cleanup_selftest(conn, dry_run: bool = True) -> dict:
 METADATA_SCRUB_KEYS = ("summary", "title")
 
 
+def checkpoint_wal(conn) -> bool:
+    """Fold the WAL back into the main file and truncate it. Returns True if the
+    WAL is fully checkpointed.
+
+    Why this exists: under WAL, values that a write just replaced keep living in
+    the `-wal` file until a checkpoint. For a redaction that is the difference
+    between "the row no longer holds it" and "the file no longer holds it" —
+    scrubbing metadata without checkpointing leaves the redacted text on disk.
+    A busy database declines (busy_timeout already applies); callers treat that
+    as "retry later", never as an error.
+    """
+    row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    # (busy, log size, checkpointed size); busy=0 and log==checkpoint means done.
+    return bool(row) and row[0] == 0
+
+
 def scrub_metadata(conn, keys=METADATA_SCRUB_KEYS, dry_run: bool = True) -> dict:
     """Drop disallowed keys from stored metadata, keeping every usage row.
 
@@ -1525,6 +1541,7 @@ def scrub_metadata(conn, keys=METADATA_SCRUB_KEYS, dry_run: bool = True) -> dict
 
     hits: list[dict] = []
     updates: list[tuple[str, int, str]] = []
+    checkpointed = None  # None = nothing was written, so no checkpoint was needed
     for table, name_expr in streams:
         # `table`/`name_expr` come from the fixed list above, never from input.
         for r in rows_to_dicts(
@@ -1545,6 +1562,9 @@ def scrub_metadata(conn, keys=METADATA_SCRUB_KEYS, dry_run: bool = True) -> dict
         with _write_txn(conn):
             for table, rid, payload in updates:
                 conn.execute(f"UPDATE {table} SET metadata = ? WHERE id = ?", (payload, rid))
+        # The point of a redaction is that the bytes stop being on disk, and
+        # under WAL they survive in the -wal file until a checkpoint.
+        checkpointed = checkpoint_wal(conn)
 
     return {
         "dry_run": dry_run,
@@ -1552,6 +1572,7 @@ def scrub_metadata(conn, keys=METADATA_SCRUB_KEYS, dry_run: bool = True) -> dict
         "keys": sorted(wanted),
         "by_table": {t: sum(1 for h in hits if h["table"] == t) for t, _ in streams},
         "rows": hits,
+        "checkpointed": checkpointed,
     }
 
 
