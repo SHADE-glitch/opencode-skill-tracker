@@ -146,8 +146,9 @@ skillt health  [--json] [--limit N]
 skillt mcp     [--json] [--limit N]
 skillt plugins [--json] [--limit N]
 skillt auto-backup [--dry-run] [--json]
-skillt doctor  [--json]
+skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
+skillt scrub-metadata [--yes] [--json] [--limit N]
 ```
 
 - `insight`：最常使用 / 增长最快 / **从未使用** / 长期未使用 / 失败率最高，并附观察样本（session 数与天数）。
@@ -157,10 +158,11 @@ skillt cleanup-selftest [--yes]
 - `mcp`：MCP 工具使用情况——按 server 汇总，再列出调用最多的工具（次数、成功率、最近使用）。**只读。**
 - `plugins`：插件清单（来源、版本、工具/命令面、排除状态）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
-- `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。
+- `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（三张用量表里最新一条距今多少天，阈值 `--freshness-days`，默认 7）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）。这三项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
+- `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（同样先备份）。背景见 M14。
 
-参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`；非法值直接报错并以退出码 2 结束。
+参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
 所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。
 
 ### 4.3 旧版 CLI（委托给 `skill-stats.py`）
@@ -342,7 +344,7 @@ rm -rf ~/.local/share/opencode/backups
 
 ## 9. 已知限制
 
-以下问题在审计中确认存在。此前几轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等）；本轮又修掉了 **M1 / M7 / M8 / M9**（下文标注"已修复"）。其余如实记录、**本次不修**。多数是边界情况，不影响日常使用。
+以下问题在审计中确认存在。此前几轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等）；一轮又修掉了 **M1 / M7 / M8 / M9**（下文标注"已修复"）。**本轮（对采集与界面的全面实测）修掉了：dashboard 三张表 Enter 无效、Plugins 页对 `@scope/name` 型插件 Enter 无效、Recent 时间线对含 `:` 的名字 Enter 静默失效、导出泄露历史提示词、`on_mount` 开库无保护、一次失败让半屏数据停在旧值、以及测试对本机 skills 目录的依赖**；并给 `doctor` 加了 `capture.freshness` / `log.errors` / `env.opencode_version` 三项，新增 `skillt scrub-metadata`。其余如实记录、**本次不修**（M14–M18 为本轮新登记）。多数是边界情况，不影响日常使用。
 
 ### 数据与时间
 
@@ -371,6 +373,14 @@ rm -rf ~/.local/share/opencode/backups
 ### 编码
 
 - **M6 非 UTF-8 locale 乱码（已缓解）。** `--cli` 与 TUI 启动时会把 `stdout`/`stderr` 重设为 UTF-8（`errors="replace"`），因此**不再**抛 `UnicodeEncodeError`。但 `█ ⚠ … Δ` 等字符在极端 locale 下仍可能显示为替代字符；设 `LANG=C.UTF-8` 可完全避免。
+
+### 本轮审计新增（M14–M18）
+
+- **M14 历史行里可能仍有用户提示词原文（已封住写入与导出，库里数据需自清）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`），但**已经落库的历史行不会自己消失**，备份文件同理。清理：`skillt scrub-metadata`（先看 dry-run 清单）→ `skillt scrub-metadata --yes`（自动先备份）。本轮实测生产库仍有 40 行命中。
+- **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
+- **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
+- **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。
+- **M18 后到的错误文本可能被丢弃。** 三条 UPSERT 都用 `metadata = COALESCE(已存在, 新来的)`：若 `after` 钩子先写了一行、随后事件路径带着真正的报错文本到达，`status` 会被纠正为 `error`（单调规则），但 `metadata.error` **不会**被补进去。承载去重不变量，本轮不动。
 
 ### 插件自测（重要）
 

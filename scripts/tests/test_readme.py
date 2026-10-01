@@ -8,6 +8,11 @@ ROOT = Path(__file__).resolve().parents[2]      # repo root
 README = ROOT / "README.zh-CN.md"
 SYSTEMD = ROOT / "skill-tracker" / "systemd"
 
+# Every documented limitation, in both languages. M14-M18 came out of the
+# full capture/UI audit; the English README used to stop at M11, so the
+# landing page quietly disagreed with the reference doc.
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 19))
+
 
 def _text():
     assert README.is_file(), f"missing README at {README}"
@@ -25,11 +30,8 @@ def test_readme_has_all_sections():
 
 def test_readme_documents_every_known_limitation():
     text = _text()
-    for marker in (
-        "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10",
-        "M11", "M12", "M13",
-    ):
-        assert marker in text, f"README does not mention {marker}"
+    for marker in LIMITATIONS:
+        assert marker in text, f"README.zh-CN does not mention {marker}"
     for keyword in (
         "UTC",                          # M1
         "读写方式打开",                  # M2
@@ -48,6 +50,67 @@ def test_readme_documents_every_known_limitation():
         assert keyword in text, f"known-limitation detail missing: {keyword}"
 
 
+def test_english_readme_documents_every_known_limitation():
+    """The landing page must not fall behind the reference doc.
+
+    Regression: README.md listed "M1 through M11" while README.zh-CN.md had
+    M1-M13, and nothing compared them, so an English reader was told a shorter
+    story about the same database.
+    """
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    for marker in LIMITATIONS:
+        assert marker in text, f"README.md does not mention {marker}"
+    for keyword in (
+        "UTC",                 # M1
+        "half-written",        # M4
+        "UI thread",           # M5
+        "UnicodeEncodeError",  # M6
+        "static scan",         # M12
+        "allowlist",           # M13
+        "prompt",              # M14
+        "no row at all",       # M15
+        "COALESCE",            # M18
+    ):
+        assert keyword in text, f"English limitation detail missing: {keyword}"
+
+
+# --- maintenance checklists -----------------------------------------------
+MAINTENANCE = (ROOT / "MAINTENANCE.md", ROOT / "MAINTENANCE.zh-CN.md")
+
+
+def test_maintenance_checklists_exist_and_cover_the_same_ground():
+    """Two languages, one checklist — and it must name the checks it depends on."""
+    for path in MAINTENANCE:
+        assert path.is_file(), f"missing {path.name}"
+
+    en = MAINTENANCE[0].read_text(encoding="utf-8")
+    zh = MAINTENANCE[1].read_text(encoding="utf-8")
+
+    # Everything a reader needs to notice capture has decayed.
+    for needle in (
+        "skillt doctor", "skillt cleanup-selftest", "skillt sync --dry-run",
+        "skillt scrub-metadata", "capture.freshness", "log.errors",
+        "env.opencode_version", "backups.latest", "integrity_check",
+        "skillt-auto-backup.timer", "pytest scripts/tests", "bash -n bin/skillt",
+    ):
+        assert needle in en, f"MAINTENANCE.md missing: {needle}"
+        assert needle in zh, f"MAINTENANCE.zh-CN.md missing: {needle}"
+
+    # The load-bearing invariants, by the name a future editor will grep for.
+    for needle in ("UNIQUE(session_id, call_id)", "SCHEMA_VERSION", "export default",
+                   "Object.keys()", "TABLES_SQL"):
+        assert needle in en, f"MAINTENANCE.md dropped an invariant: {needle}"
+        assert needle in zh, f"MAINTENANCE.zh-CN.md dropped an invariant: {needle}"
+
+    # Deviations must be written down where the next reader will look, not in
+    # a commit message.
+    for needle in ("set_interval", "active_app", "row_targets", "schema_version"):
+        assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
+
+    assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"
+    assert "M14" in zh and "M16" in zh, "MAINTENANCE.zh-CN.md must point at the limitations"
+
+
 def test_readme_documents_selftest_isolation_and_duplicates():
     text = _text()
     assert "OPENCODE_SKILL_TRACKER_DB" in text
@@ -61,8 +124,13 @@ def test_readme_documents_commands_and_backup_ops():
     for cmd in (
         "skillt health", "skillt auto-backup", "skillt doctor", "skillt sync",
         "skillt insight", "skillt export", "skillt cleanup-selftest",
+        "skillt scrub-metadata",
     ):
         assert cmd in text, f"command not documented: {cmd}"
+    # the new headless surface must be documented where readers look for it
+    en = (ROOT / "README.md").read_text(encoding="utf-8")
+    for cmd in ("skillt scrub-metadata", "skillt doctor", "--freshness-days"):
+        assert cmd in en, f"README.md does not document: {cmd}"
     assert "enable-linger" in text
     assert "120 秒" in text or "120" in text
     assert "最近 30 个每日" in text

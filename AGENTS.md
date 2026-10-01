@@ -84,9 +84,27 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **Code and user-facing output are English** (identifiers, comments,
   docstrings, CLI/TUI text, `skill_db` health suggestions).
 - **Docs are bilingual**: `README.md` (English, the landing page) and
-  `README.zh-CN.md` (Chinese, the exhaustive reference).   `scripts/tests/test_readme.py`
-  asserts that `README.zh-CN.md` documents every section and limitation
-  M1–M13 — update the Chinese README when behaviour changes, or the suite fails.
+  `README.zh-CN.md` (Chinese, the exhaustive reference), plus
+  `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
+  `scripts/tests/test_readme.py` asserts that **both** READMEs document every
+  limitation M1–M18, that `README.zh-CN.md` documents every section, and that
+  both maintenance checklists name the same checks, commands and invariants —
+  update all four when behaviour changes, or the suite fails.
+- **No `set_interval`/`set_timer` in the TUI.** On textual 8.2.8, any app timer
+  created after the screens mount makes `run_test`'s teardown raise
+  `LookupError: <ContextVar name='active_app'>` (empty callback, App or Screen,
+  even after `timer.stop()`), which fails all 47 TUI tests at once. Refresh is
+  event-driven: keystroke (throttled by `REFRESH_STALE_AFTER_S`), tab
+  activation, and `r`; the dashboard prints `data as of HH:MM:SS`.
+  `test_tui_creates_no_app_timers` pins it.
+- **Never parse a row's identity out of its `key`.** Names contain the
+  separators: `@scope/pkg@1.0/tool`, `conductor:newTrack`, server names with
+  `_`. Each table registers `(kind, …parts)` in `app.row_targets` at render
+  time and Enter looks that up.
+- **Export allowlists metadata** (`EXPORT_METADATA_KEYS` in `skill_db.py`).
+  Older builds stored the user's prompt text as `metadata.summary`; the writer
+  is gone but rows in real databases are not (`skillt scrub-metadata`). The
+  export document is `schema_version = 4` — bump it with any shape change.
 - Commit messages follow Conventional Commits (`feat:`, `docs:`, `chore:`,
   `fix:`), code before docs.
 - The test suite must be green before pushing. Tests locate files via

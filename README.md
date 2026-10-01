@@ -210,8 +210,9 @@ skillt sync    [--dry-run] [--prune-orphans] [--json]
 skillt health  [--json] [--limit N]
 skillt mcp     [--json] [--limit N]
 skillt auto-backup [--dry-run] [--json]
-skillt doctor  [--json]
+skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
+skillt scrub-metadata [--yes] [--json] [--limit N]
 ```
 
 - `insight` — most used / fastest growing / **never used** / dormant / highest
@@ -229,13 +230,26 @@ skillt cleanup-selftest [--yes]
 - `auto-backup` — snapshot into the backup directory and prune by retention
   policy (see [Backups](#backups)).
 - `doctor` — health check printing PASS/WARN/FAIL; **exit code 1 if any FAIL**.
+  Besides the structural checks (database, skills, plugin file, environment,
+  backups) it checks the **capture pipeline itself**: `capture.freshness` (how
+  long ago the newest row in each usage table is, against `--freshness-days`,
+  default 7), `log.errors` (count of `[err]` lines in the plugin's own log, with
+  the last one quoted) and `env.opencode_version` (installed version versus the
+  one the builtin-tool allowlist is pinned to, see M13). Those three **WARN,
+  never FAIL** — a quiet week is not a fault.
 - `cleanup-selftest` — remove synthetic rows left by `__selftest()`
   (`project_path = /tmp/selftest-proj`). Dry-run by default; `--yes` deletes for
   real (after taking a backup).
+- `scrub-metadata` — strip free-text keys that must not be stored
+  (`summary`, `title`) from historical `metadata` rows. **The rows themselves
+  are kept** — usage is the point of this database, leaked prompt text is not.
+  Dry-run by default and lists what it would touch; `--yes` applies (backup
+  taken first). See M14.
 
-Argument validation: `--days ≥ 1`, `--min-uses ≥ 0`, `--limit ≥ 1`; invalid
-values fail fast with exit code 2. Every headless subcommand also works when
-stdout is **not** a TTY (pipes, redirection), emitting plain text or JSON.
+Argument validation: `--days ≥ 1`, `--min-uses ≥ 0`, `--limit ≥ 1`,
+`--freshness-days ≥ 1`; invalid values fail fast with exit code 2. Every
+headless subcommand also works when stdout is **not** a TTY (pipes,
+redirection), emitting plain text or JSON.
 
 ### Legacy CLI (delegates to `skill-stats.py`)
 
@@ -390,7 +404,7 @@ The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 
 ## Known limitations
 
-The full audit — M1 through M11, with reproduction notes — lives in
+The full audit — M1 through M18, with reproduction notes — lives in
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制). Highlights:
 
 - **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
@@ -399,8 +413,18 @@ The full audit — M1 through M11, with reproduction notes — lives in
 - **M2** Some read commands (`insight`, `export`, `doctor`) open the DB
   read-write; `open_db(readonly=True)` creates an empty DB instead of erroring
   when the path does not exist.
+- **M3** `ensure_schema`'s `executescript` commits any pending transaction
+  implicitly; in its result dict `created_base` is never set and
+  `created_versions` is always true. Semantics of that dict only — the tables
+  themselves are created correctly.
+- **M4** Backups `chmod 0600` **after** `VACUUM INTO`, leaving a brief
+  permissive window; a failed VACUUM can leave a **half-written file** behind
+  that must be deleted by hand.
 - **M5** `VACUUM` / backup / export / refresh run on the UI thread, so a very
   large database briefly freezes the TUI.
+- **M6** (mitigated) Non-UTF-8 locales forced `UnicodeEncodeError`; stdout and
+  stderr are now reconfigured to UTF-8, though exotic glyphs may still render
+  as substitutes. `LANG=C.UTF-8` avoids it entirely.
 - **M7** (fixed) `resolveBranch`'s 500 ms timeout did not kill the `git` child
   process or clear its timer, leaking one process per call on a bad mount
   point. It now spawns git directly and aborts it.
@@ -416,6 +440,41 @@ The full audit — M1 through M11, with reproduction notes — lives in
   recorded — until then those calls are invisible (they are never misrecorded,
   just skipped). Detection fails **closed**: if no server can be identified,
   nothing is written rather than guessing which tools are MCP.
+- **M12** The plugin inventory and attribution are also resolved **once, at
+  init** by a best-effort **static scan** of each plugin's source. New,
+  upgraded or renamed plugins (and the tools/commands they register) need an
+  OpenCode restart to appear. An unattributable tool is recorded as
+  `(unknown)`; an unattributable command is **not recorded** (fail closed, so
+  builtin commands like `/init` never land in the table).
+- **M13** The builtin-tool `allowlist` is hardcoded and pinned to OpenCode
+  1.18.33. A builtin added by a later release would be attributed to a plugin
+  as `(unknown)` until the list is refreshed — or set
+  `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` yourself. `skillt doctor`
+  `env.opencode_version` now warns when the installed version drifts.
+- **M14** Older builds stored a session summary — the user's **own prompt
+  text** — in `metadata.summary`. That writer is gone, the export path now
+  emits only an allowlist of keys, and `__selftest` asserts it is never
+  written, but **rows already in your database do not remove themselves**, nor
+  do the backups taken of it. Run `skillt scrub-metadata` to see them, then
+  `--yes` to strip the keys. Measured 40 such rows in a real 8-day database.
+- **M15** A call that never completes leaves **no row at all**. Usage is written
+  at `tool.execute.after` or from `message.part.updated`; `tool.execute.before`
+  only parks the start time in memory. So an aborted, crashed or
+  after-hook-less call is not misrecorded — it is invisible. `trigger_type`
+  means "which path wrote this row first", not "how the call was detected".
+- **M16** One failed git lookup caches `branch = null` for that directory
+  **forever** (the tradeoff that fixed M7/M8), until `vcs.branch.updated` or a
+  process restart. A 500 ms timeout on a healthy repo therefore silences branch
+  for the rest of that OpenCode process.
+- **M17** The plugin log is never rotated: `~/.config/opencode/logs/skill-tracker.log`
+  only grows (measured ~69 lines/day, one per init and one per dispose). It is
+  also the only place capture errors appear, which is what
+  `doctor log.errors` reads — clearing it erases that history.
+- **M18** All three upserts keep `metadata = COALESCE(existing, incoming)`. If
+  the hook path wrote a row first and the event path arrives later carrying the
+  actual error text, `status` is corrected to `error` (the monotonic rule) but
+  `metadata.error` is **not** filled in. Left alone deliberately: that clause is
+  the load-bearing dedup invariant.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 
