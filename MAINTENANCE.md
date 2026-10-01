@@ -207,6 +207,19 @@ state.
   `LookupError: <ContextVar name='active_app'>` — reproduced with an empty
   callback, on both App and Screen, and after `timer.stop()`. That takes 47 TUI
   tests down. `test_tui_creates_no_app_timers` pins this.
+- **A ranking bar is scaled to its own stream, on purpose.** The `vs top` column
+  measures against that stream's busiest row; `rank_bar_width(columns,
+  term_width)` is the only width knob (14 / 12 / 10 blocks at 100 columns,
+  10 / 8 / 6 at 80). Do not introduce a shared peak across skills / MCP / plugins:
+  the volumes differ by an order of magnitude and a shared scale makes the
+  quieter stream read as zero.
+  `test_tui_dash_bars_scale_to_each_stream_not_a_shared_peak` pins it with a
+  40-call skill stream next to a 1-call plugin stream.
+- **A visual assertion must not ask the widget's own helper what it returned.**
+  The first draft compared every rendered bar to `rank_bar_width(...)`; flattening
+  that ladder to a constant left all of them green — an expectation derived from
+  the thing under test is not a guard. The tests now name absolute block counts
+  and the helper test uses strict inequalities.
 - **A drawn chart row must not depend on its data for width.** The trend rows
   are a fixed `TREND_ROW_WIDTH` (20) and `.trend` pins the height to
   `TREND_LINES`; `fmt_count` caps a count at five characters. Neither leg is

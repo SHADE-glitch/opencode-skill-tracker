@@ -165,6 +165,14 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 ## 6. 刻意为之的偏离（别"顺手修回去"）
 
 - **TUI 里没有后台定时器。** 屏幕在按键（5 秒节流）、切页、`r` 时重读，并显示 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会一次带走 47 个 TUI 测试。`test_tui_creates_no_app_timers` 把这条钉住。
+- **排名柱各自按自己那个流的峰值缩放，这是有意的。** `vs top` 量的是“相对本流第一名”，
+  `rank_bar_width(columns, term_width)` 是唯一的宽度旋钮（100 列时 14 / 12 / 10 格，
+  80 列时 10 / 8 / 6）。不要把 skill / MCP / plugin 合成一个共享峰值：三者量级差一个数量级，
+  共用刻度会让较安静的流看起来是零。
+  `test_tui_dash_bars_scale_to_each_stream_not_a_shared_peak` 用 40 次 skill 调用配 1 次插件调用钉住这点。
+- **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** 第一版把每根渲染出来的柱和
+  `rank_bar_width(...)` 比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫
+  不是守卫。现在断言的是绝对的格子数，辅助函数那条用严格不等式。
 - **手画的图表行，宽度不许依赖数据。** 趋势行固定为 `TREND_ROW_WIDTH`（20），
   `.trend` 把高度钉到 `TREND_LINES`，`fmt_count` 把计数压到 5 字符以内。两条腿都不是摆设：
   只撤一条时另一条会把错位藏起来；钉高是**故意用"裁切"换"错位"**——窄于 70 列时三张一起裁（这个 70 是实测的，不是估的）。
