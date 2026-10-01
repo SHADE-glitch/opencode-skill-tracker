@@ -892,3 +892,134 @@ def test_excluded_and_self_plugins_are_listed_but_not_attributed(tmp_path):
         assert "(unknown)" not in owners, owners
     finally:
         c.close()
+
+
+# ---------------------------------------------------------------------------
+# Permission rejection — shapes taken verbatim from a live OpenCode 1.18.33
+# session on 2026-10-01 (`/tmp/st-live-20261001/probe.log`):
+#
+#   permission.asked   {always, id, metadata, patterns, permission, sessionID,
+#                       tool: {messageID, callID}}
+#   permission.replied {reply: "reject", requestID, sessionID}
+#
+# The tracker used to listen for `permission.updated` and read `permissionID` /
+# `response` — none of which exist — so every real rejection fell through and
+# the `denied` status was never written by any OpenCode, however many denials
+# happened. These tests pin the real shape so that cannot come back.
+# ---------------------------------------------------------------------------
+PERMISSION_REJECT_SCRIPT = """
+const mod = await import(process.env.PLUGIN_PATH);
+const plugin = await mod.default.server(
+  { directory: '/tmp/x', worktree: '/tmp/x', client: {} }, {}
+);
+const sid = 'sess-perm', cid = 'call-perm';
+
+// An MCP call in flight, then rejected.
+await plugin['tool.execute.before'](
+  { tool: 'test-server_read_note', sessionID: sid, callID: cid },
+  { args: { identifier: 'x' } }
+);
+await plugin.event({ event: { type: 'permission.asked', properties: {
+  id: 'per_a1', sessionID: sid, permission: 'mcp',
+  patterns: ['mcp:test-server:*'], always: ['mcp:test-server:*'],
+  tool: { messageID: 'msg_a1', callID: cid },
+  metadata: {}, time: { created: 1 }
+}}});
+await plugin.event({ event: { type: 'permission.replied', properties: {
+  sessionID: sid, requestID: 'per_a1', reply: 'reject'
+}}});
+
+// A builtin (bash) rejection must stay unrecorded: the tracker measures skills,
+// MCP and plugins only, and bash is none of those.
+const bsid = 'sess-bash', bcid = 'call-bash';
+await plugin['tool.execute.before'](
+  { tool: 'bash', sessionID: bsid, callID: bcid }, { args: { command: 'echo hi' } }
+);
+await plugin.event({ event: { type: 'permission.asked', properties: {
+  id: 'per_b2', sessionID: bsid, permission: 'bash',
+  patterns: ['echo hi'], always: ['echo *'],
+  tool: { messageID: 'msg_b2', callID: bcid },
+  metadata: { command: 'echo hi' }, time: { created: 2 }
+}}});
+await plugin.event({ event: { type: 'permission.replied', properties: {
+  sessionID: bsid, requestID: 'per_b2', reply: 'reject'
+}}});
+
+// An approval must not be mistaken for a rejection.
+const asid = 'sess-allow', acid = 'call-allow';
+await plugin['tool.execute.before'](
+  { tool: 'test-server_ping', sessionID: asid, callID: acid }, { args: {} }
+);
+await plugin.event({ event: { type: 'permission.asked', properties: {
+  id: 'per_c3', sessionID: asid, permission: 'mcp',
+  patterns: ['mcp:test-server:*'], always: [],
+  tool: { messageID: 'msg_c3', callID: acid },
+  metadata: {}, time: { created: 3 }
+}}});
+await plugin.event({ event: { type: 'permission.replied', properties: {
+  sessionID: asid, requestID: 'per_c3', reply: 'always'
+}}});
+console.log('DONE');
+"""
+
+
+@requires_bun
+def test_permission_rejection_writes_a_denied_row(tmp_path):
+    r = _run_bun(PERMISSION_REJECT_SCRIPT, _isolated(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DONE" in r.stdout, r.stdout + r.stderr
+
+    c = sqlite3.connect(str(tmp_path / "iso.db"))
+    try:
+        mcp = c.execute(
+            "SELECT server_name, tool_name, trigger_type, status, session_id "
+            "FROM mcp_usage ORDER BY id"
+        ).fetchall()
+        assert ("test-server", "read_note", "permission_denied", "denied", "sess-perm") in mcp, mcp
+        # the approved call was not recorded as a denial
+        assert not [
+            r for r in mcp if r[4] == "sess-allow" and r[3] in ("denied",)
+        ], mcp
+        # ...and the builtin rejection produced nothing anywhere
+        assert c.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0] == 0, "a bash denial leaked in"
+        assert c.execute("SELECT COUNT(*) FROM plugin_usage").fetchone()[0] == 0, "a bash denial leaked in"
+        assert not [r for r in mcp if r[4] == "sess-bash"], f"bash is not measurable: {mcp}"
+    finally:
+        c.close()
+
+
+@requires_bun
+def test_permission_events_still_supported_under_the_old_names(tmp_path):
+    """`permission.updated` is what the SDK types declare, so keep accepting it.
+
+    Whatever the host calls it, a rejection must land: the old spelling is
+    handled alongside the one this OpenCode actually emits.
+    """
+    script = """
+    const mod = await import(process.env.PLUGIN_PATH);
+    const plugin = await mod.default.server(
+      { directory: '/tmp/x', worktree: '/tmp/x', client: {} }, {}
+    );
+    const sid = 'sess-old', cid = 'call-old';
+    await plugin['tool.execute.before'](
+      { tool: 'test-server_read_note', sessionID: sid, callID: cid }, { args: {} }
+    );
+    await plugin.event({ event: { type: 'permission.updated', properties: {
+      id: 'per_old', sessionID: sid, type: 'mcp', pattern: ['mcp:test-server:*'],
+      callID: cid, metadata: {}, time: { created: 1 }
+    }}});
+    await plugin.event({ event: { type: 'permission.replied', properties: {
+      sessionID: sid, permissionID: 'per_old', response: 'reject'
+    }}});
+    console.log('DONE');
+    """
+    r = _run_bun(script, _isolated(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    c = sqlite3.connect(str(tmp_path / "iso.db"))
+    try:
+        rows = c.execute(
+            "SELECT server_name, tool_name, status FROM mcp_usage"
+        ).fetchall()
+        assert ("test-server", "read_note", "denied") in rows, rows
+    finally:
+        c.close()

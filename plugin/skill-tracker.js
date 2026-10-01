@@ -16,7 +16,15 @@
  *     so MCP tools are observed through exactly the same hooks as skills.
  *   - Detection therefore uses `tool.execute.before` / `tool.execute.after`
  *     as the primary path, `event` -> `message.part.updated` as a fallback,
- *     and `permission.ask` for config-level denials.
+ *     and the permission events for denials: OpenCode 1.18.33 emits
+ *     `permission.asked` (id at `id`, the refused call at `tool.callID`) then
+ *     `permission.replied` (`requestID` + `reply: "reject"`), measured live
+ *     on 2026-10-01; the SDK's `permission.updated` / `permissionID` /
+ *     `response` spellings are handled alongside. The `permission.ask` hook was
+ *     never invoked by `opencode run`. Boundary: the host gates only edit /
+ *     bash / webfetch / doom_loop / external_directory, none of which this
+ *     tracker measures, so a `denied` row cannot appear on 1.18.33 even though
+ *     the plumbing now works.
  *
  * Hard rule: no hook may ever throw into OpenCode, and no hook mutates the
  * `output` object it receives. Every body is wrapped in try/catch, and
@@ -406,6 +414,36 @@ function callKey(sessionID, callID) {
 const callCtx = new Map(); // callKey(sessionID, callID) -> { sessionID, startMs, kind, skillName, server, tool, argNames }
 const branchByDir = new Map(); // dir       -> branch | null
 const pendingPerms = new Map(); // permissionID -> { kind, name, server, tool, callID }
+
+// Replies that mean "no". OpenCode 1.18.33 sends `reject`; other spellings are
+// kept because the value is a host-side string, not a type.
+const DENIED_REPLIES = [
+  "reject", "rejected", "deny", "denied", "no", "cancel", "cancelled",
+];
+
+// What did a permission reply actually refuse?
+//
+// Two sources disagree in precision. The permission payload names the
+// *permission* — for MCP that is only the server, for a builtin it is a tool
+// the tracker deliberately does not measure. The in-flight call, still parked
+// from `tool.execute.before`, names the real tool id. The call wins when it is
+// there; otherwise fall back to the payload, and to nothing when neither points
+// at a measurable category.
+function attributeDenial(perm, sessionID) {
+  const sid = sessionID || perm.sessionID || null;
+  const ctx = perm.callID ? callCtx.get(callKey(sid, perm.callID)) : null;
+  if (!ctx) return perm.kind ? perm : null;
+  return {
+    kind: ctx.kind,
+    itemKind: ctx.itemKind || (ctx.kind === "plugin" ? "tool" : "tool"),
+    name: ctx.skillName || ctx.item || perm.name,
+    server: ctx.server ?? perm.server ?? null,
+    tool: ctx.tool ?? perm.tool ?? null,
+    item: ctx.item ?? perm.item ?? null,
+    plugin: ctx.plugin ?? perm.plugin ?? null,
+    callID: perm.callID,
+  };
+}
 
 // Git branch lookup spawns a real subprocess so the timeout can actually kill
 // it — Bun's `$` shell exposes no kill/abort handle, so a slow git would
@@ -1662,74 +1700,97 @@ async function skillTrackerPlugin(input) {
           return;
         }
 
+        // OpenCode 1.18.33 emits `permission.asked`; `permission.updated` is the
+        // name the SDK types declare. Both are parked: a rejection can only be
+        // attributed once the reply arrives, and a builtin refusal must stay
+        // unrecorded — so parking cannot depend on the payload classifying.
+        //
+        // The call being refused is at `tool.callID` (an object) on the 1.18.33
+        // event and at `callID` on the SDK's shape; read both.
+        case "permission.asked":
         case "permission.updated": {
           const perm = props; // properties is the Permission object
+          const id = perm.id ?? perm.permissionID;
+          if (!id) return;
           const c = classifyPermission(perm);
-          if (!c) return;
-          const raw = perm.pattern || (perm.metadata && perm.metadata.name) || "unknown";
-          setCapped(pendingPerms, perm.id, {
-            kind: c.kind,
-            itemKind: c.itemKind ?? "tool",
-            name: String(Array.isArray(raw) ? raw[0] : raw),
-            server: c.server ?? null,
-            tool: c.tool ?? null,
-            item: c.item ?? null,
-            plugin: c.plugin ?? null,
-            callID: perm.callID ?? null,
+          const raw =
+            perm.pattern ?? perm.patterns ??
+            (perm.metadata && perm.metadata.name) ?? "unknown";
+          const name = String(Array.isArray(raw) ? raw[0] : raw);
+          setCapped(pendingPerms, id, {
+            kind: c ? c.kind : null,
+            itemKind: c && c.itemKind ? c.itemKind : "tool",
+            name: name,
+            server: (c && c.server) ?? null,
+            tool: (c && c.tool) ?? null,
+            item: (c && c.item) ?? null,
+            plugin: (c && c.plugin) ?? null,
+            callID: (perm.tool && perm.tool.callID) ?? perm.callID ?? null,
+            sessionID: perm.sessionID ?? null,
           });
           return;
         }
 
         case "permission.replied": {
-          const perm = pendingPerms.get(props.permissionID);
-          if (!perm) return;
-          pendingPerms.delete(props.permissionID);
-          const response = String(props.response || "").toLowerCase();
-          const denied = ["reject", "rejected", "deny", "denied", "no", "cancel", "cancelled"].includes(
-            response
-          );
+          // 1.18.33 replies with `requestID` + `reply`; the older spelling is
+          // `permissionID` + `response`. A miss here used to be silent, which is
+          // how every real rejection went unrecorded.
+          const id = props.requestID ?? props.permissionID;
+          const parked = id ? pendingPerms.get(id) : null;
+          if (!parked) return;
+          pendingPerms.delete(id);
+          const response = String(props.reply ?? props.response ?? "").toLowerCase();
+          const denied = DENIED_REPLIES.includes(response);
           debug(`permission.replied response=${response} denied=${denied}`);
-          if (denied) {
-            if (perm.kind === "mcp") {
-              await recordMcpUsage({
-                server: perm.server,
-                tool: perm.tool,
-                sessionID: props.sessionID,
-                triggerType: "permission_denied",
-                status: "denied",
-                callID: perm.callID,
-                durationMs: null,
-                argNames: null,
-                meta: { source: "permission.replied" },
-              });
-              return;
-            }
-            if (perm.kind === "plugin") {
-              await recordPluginUsage({
-                plugin: perm.plugin,
-                kind: perm.itemKind || "tool",
-                item: perm.item,
-                sessionID: props.sessionID,
-                triggerType: "permission_denied",
-                status: "denied",
-                callID: perm.callID,
-                durationMs: null,
-                meta: { source: "permission.replied" },
-              });
-              return;
-            }
-            await recordUsage(
-              {
-                skillName: perm.name,
-                sessionID: props.sessionID,
-                triggerType: "permission_denied",
-                status: "denied",
-                callID: perm.callID,
-                durationMs: null,
-                meta: { source: "permission.replied" },
-              }
-            );
+          if (!denied) return;
+
+          const sid = props.sessionID ?? parked.sessionID ?? null;
+          const perm = attributeDenial(parked, sid);
+          if (!perm || !perm.kind) return; // builtin, or nothing attributable
+
+          // Terminal: the tool never ran, so `tool.execute.after` will not come
+          // and the parked start time has no further use.
+          if (parked.callID) callCtx.delete(callKey(sid, parked.callID));
+
+          if (perm.kind === "mcp") {
+            await recordMcpUsage({
+              server: perm.server,
+              tool: perm.tool,
+              sessionID: sid,
+              triggerType: "permission_denied",
+              status: "denied",
+              callID: perm.callID,
+              durationMs: null,
+              argNames: null,
+              meta: { source: "permission.replied" },
+            });
+            return;
           }
+          if (perm.kind === "plugin") {
+            await recordPluginUsage({
+              plugin: perm.plugin,
+              kind: perm.itemKind || "tool",
+              item: perm.item,
+              sessionID: sid,
+              triggerType: "permission_denied",
+              status: "denied",
+              callID: perm.callID,
+              durationMs: null,
+              meta: { source: "permission.replied" },
+            });
+            return;
+          }
+          await recordUsage(
+            {
+              skillName: perm.name,
+              sessionID: sid,
+              triggerType: "permission_denied",
+              status: "denied",
+              callID: perm.callID,
+              durationMs: null,
+              meta: { source: "permission.replied" },
+            }
+          );
           return;
         }
 
