@@ -14,7 +14,7 @@ import skill_db as db
 def test_export_document_shape(seeded_db):
     conn = db.open_db(seeded_db)
     doc = db.export_document(conn)
-    assert doc["schema_version"] == 3
+    assert doc["schema_version"] == 4
     assert doc["generated_at"].endswith("Z")
     assert len(doc["skills"]) == 6
     assert len(doc["usage"]) == 21
@@ -33,6 +33,34 @@ def test_export_metadata_is_parsed_object(seeded_db):
     for row in doc["usage"]:
         assert isinstance(row["metadata"], dict)
     assert doc["usage"][0]["metadata"].get("model") == "p/m"
+    conn.close()
+
+
+def test_export_scrubs_metadata_keys_that_are_not_allowlisted(seeded_db, seeded_mcp_db,
+                                                              seeded_plugin_db):
+    """Export is the one path that leaves the machine, so it emits an allowlist.
+
+    Regression: older builds wrote the user's prompt text as `metadata.summary`.
+    The writer is gone but the rows are not, and a `SELECT *` export shipped them
+    verbatim.
+    """
+    for path in (seeded_db, seeded_mcp_db, seeded_plugin_db):
+        conn = db.open_db(path)
+        doc = db.export_document(conn)
+        for key in ("usage", "mcp_usage", "plugin_usage"):
+            for row in doc[key]:
+                extra = set(row["metadata"]) - set(db.EXPORT_METADATA_KEYS)
+                assert not extra, f"{key}: {extra} leaked from {path}"
+                assert "summary" not in row["metadata"]
+                assert "title" not in row["metadata"]
+        conn.close()
+
+    # The allowlisted keys must survive, or this is just data loss.
+    conn = db.open_db(seeded_db)
+    row = db.export_document(conn)["usage"][0]
+    assert row["metadata"]["model"] == "p/m"
+    assert row["metadata"]["agent"] == "build"
+    assert row["metadata"]["branch"] == "main"
     conn.close()
 
 
@@ -80,7 +108,7 @@ def test_export_mcp_key_exists_on_an_unmigrated_db(empty_db):
     assert doc["mcp_usage"] == []
     assert doc["plugin_usage"] == []
     assert doc["plugin_inventory"] == []
-    assert doc["schema_version"] == 3
+    assert doc["schema_version"] == 4
     conn.close()
 
 
@@ -99,7 +127,7 @@ def test_write_private_json_permissions_and_guard(tmp_path, seeded_db):
 
     # force allows overwrite
     db.write_private_json(str(out), doc, force=True)
-    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 3
+    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 4
     conn.close()
 
 

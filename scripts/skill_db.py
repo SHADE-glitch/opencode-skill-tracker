@@ -1191,13 +1191,37 @@ def _load_meta(raw):
         return {}
 
 
+# Keys the plugin has ever written. `summary` (a verbatim snippet of the user's
+# prompt, written by older builds and still present in historical rows) and
+# `title` (a permission title that echoes the same text) are deliberately NOT
+# here: export is the one path that leaves the machine, so it emits an
+# allowlist rather than whatever happens to be in the column.
+EXPORT_METADATA_KEYS = (
+    "tool",
+    "call_id",
+    "agent",
+    "model",
+    "branch",
+    "source",
+    "error",
+)
+
+
+def _export_metadata(raw):
+    meta = _load_meta(raw)
+    return {k: v for k, v in meta.items() if k in EXPORT_METADATA_KEYS}
+
+
 def export_document(conn, include_usage: bool = True, include_insight: bool = True) -> dict:
     doc = {
         # 2 added the `mcp_usage` key; 3 added `plugin_usage` and
         # `plugin_inventory`. Both changes are additive — a v1 consumer that
         # iterates `skills`/`usage` is unaffected — but the document shape did
         # change, so the version says so.
-        "schema_version": 3,
+        # 4 narrows `metadata` to EXPORT_METADATA_KEYS. Older builds wrote the
+        # user's prompt text as `summary`, and those rows are still in existing
+        # databases, so a v4 document is not a superset of a v3 one.
+        "schema_version": 4,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "db_path": db_file_of(conn),
         "skills": [],
@@ -1239,7 +1263,7 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
     if include_usage:
         for r in conn.execute("SELECT * FROM skill_usage ORDER BY timestamp DESC"):
             row = dict(r)
-            row["metadata"] = _load_meta(row.get("metadata"))
+            row["metadata"] = _export_metadata(row.get("metadata"))
             doc["usage"].append(row)
 
     try:
@@ -1256,14 +1280,14 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
     if _mcp_available(conn):
         for r in conn.execute("SELECT * FROM mcp_usage ORDER BY timestamp DESC"):
             row = dict(r)
-            row["metadata"] = _load_meta(row.get("metadata"))
+            row["metadata"] = _export_metadata(row.get("metadata"))
             doc["mcp_usage"].append(row)
 
     # Absent on a DB that predates the plugin tables.
     if _plugin_available(conn):
         for r in conn.execute("SELECT * FROM plugin_usage ORDER BY timestamp DESC"):
             row = dict(r)
-            row["metadata"] = _load_meta(row.get("metadata"))
+            row["metadata"] = _export_metadata(row.get("metadata"))
             doc["plugin_usage"].append(row)
     if _plugin_inventory_available(conn):
         for r in conn.execute("SELECT * FROM plugin_inventory ORDER BY plugin_name"):
