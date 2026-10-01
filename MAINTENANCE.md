@@ -228,6 +228,34 @@ state.
   `test_tui_advisor_searched_recalled_and_reached_are_three_numbers` pins it with
   a fixture loop whose three numbers differ (`_make_store(extra_loop=True)`),
   because with one loop they coincide by accident and no test could tell.
+- **Advisor rows are keyed positionally, and dispatch is an explicit kind list.**
+  `advisor#<n>` in the table, `("advisor", loop_id)` in `app.row_targets`.
+  `on_data_table_row_selected` ends in `else: return` — it used to end in the plugin
+  call, so any kind it had not heard of was handed three positional arguments it did
+  not have and the handler raised `IndexError`. A new kind needs a branch, never the
+  `else`.
+- **A screen that shows an advisor loop receives the projected dict and does no I/O
+  of its own**: no `open`, no `json.load`, no `sqlite3.connect`, and no path
+  assembled from a store-supplied id (the digest lists the directory and reads the id
+  out of the content, so a file name is not an identifier).
+  `test_tui_advisor_detail_reads_only_through_the_projection` greps the source for
+  exactly that, because a sentinel sweep only catches text the fixture happens to
+  contain.
+- **The stage chart's scale includes the budget, on purpose.** `bar()` multiplies
+  `value / peak * width`; with the peak taken from the stages alone, a real loop
+  (slowest stage 18 ms against a 1200 ms budget) drew **1467 blocks** and wrapped the
+  page. The fixture loop has a 4000 ms stage, which hid it completely.
+  `test_tui_advisor_detail_budget_row_fits_when_every_stage_is_fast` uses the real
+  numbers. Related: `bar()` compares its value, so a pending stage's `None` must
+  never reach it — TypeError, and the screen fails to mount.
+- **Double-click needs no new code, but does need the right coordinate.** Textual
+  posts `RowSelected` when a click lands on the cell that already holds the row
+  cursor, i.e. the second click; no click-chain timer, so the no-app-timers rule
+  still holds. Measured by instrumenting `_on_click` under the headless pilot:
+  `offset=(4, 1)` arrives with `meta={'row': 0, 'column': 0}` and opens the page,
+  while `(4, 2)` arrives with **empty meta** because it falls between cells. A wrong
+  offset looks exactly like a broken feature, so the test states why its offset is
+  what it is.
 - **A drawn chart row must not depend on its data for width.** The trend rows
   are a fixed `TREND_ROW_WIDTH` (20) and `.trend` pins the height to
   `TREND_LINES`; `fmt_count` caps a count at five characters. Neither leg is
@@ -253,7 +281,7 @@ state.
 
 ## 7. Known limitations
 
-M1–M19, with reproduction notes:
+M1–M21, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制) /
 [README.md](README.md#known-limitations).
 The ones most likely to bite during maintenance: **M14** (historical prompt text
@@ -272,6 +300,7 @@ late error text can be dropped by the `COALESCE` on metadata).
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
 | No log rotation (M17) | small | needs a policy decision (rotate vs. cap vs. rely on journald) |
+| The Advisor tab re-reads up to 30 loop files on every refresh, and opening a row reads them again | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns |
 | The Advisor tab reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one blanks those cells instead of breaking anything, and `_count_only` refuses to count text. A column that used to hold numbers showing `-` is the signal |
 | `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
 | `skill_versions` grows without bound | small | needs a retention decision; no pruning exists today |

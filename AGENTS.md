@@ -110,9 +110,21 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   `README.zh-CN.md` (Chinese, the exhaustive reference), plus
   `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
   `scripts/tests/test_readme.py` asserts that **both** READMEs document every
-  limitation M1–M19, that `README.zh-CN.md` documents every section, and that
+  limitations M1–M21 (the range `test_readme.py` pins), that `README.zh-CN.md`
+  documents every section, and that
   both maintenance checklists name the same checks, commands and invariants —
   update all four when behaviour changes, or the suite fails.
+- **The advisor store is reached only through `skill_db.agentos_*`.** No UI-layer
+  I/O against it: a screen that shows a loop is handed the dict `_project_loop`
+  produced, and must not open the file, open the database, or assemble a path from
+  a store-supplied id. `test_tui_advisor_detail_reads_only_through_the_projection`
+  scans the source for that, because a sentinel sweep only catches text the
+  fixture happens to contain.
+- **A hand-drawn bar is scaled against a peak that includes every value it
+  prints.** `bar()` multiplies `value / peak * width`, so a reference line (the
+  advisor's per-call budget) that can exceed the data's own maximum overflows the
+  column — real loops run 0–20 ms against a 1200 ms budget and drew 1467 blocks.
+  Fold the reference into the peak, and never hand `bar()` a `None`.
 - **No `set_interval`/`set_timer` in the TUI.** On textual 8.2.8, any app timer
   created after the screens mount makes `run_test`'s teardown raise
   `LookupError: <ContextVar name='active_app'>` (empty callback, App or Screen,

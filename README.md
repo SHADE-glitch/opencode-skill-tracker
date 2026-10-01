@@ -207,11 +207,20 @@ that. A legend under the table says all of this on the screen itself. The tab
 never writes to that store and never copies the task text stored beside these
 numbers.
 
+Enter (or a second click on the same row) opens that loop's own page: outcome and
+the stage it reached, start and last update, memory mode / provider / model, the
+postflight counters (warnings, whether an error was reported, candidates recorded,
+whether a human review is pending), the three recall numbers written out as one
+sentence, the measured-calls join, and a **per-stage bar chart**. The chart's scale
+includes the advisor's per-call budget, so a loop whose every stage is fast shows
+that margin instead of drawing a bar off the screen; a pending stage prints
+`pending, no timing recorded` rather than pretending 0 ms. `Esc` or `q` returns.
+
 | Key | Action |
 |---|---|
 | `Tab` | switch page |
 | `↑` `↓` / `j` `k` | move cursor |
-| `Enter` | open the selected row's detail page |
+| `Enter` / double-click | open the selected row's detail page (on Advisor, its per-stage timings) |
 | `/` | jump to the Skills page and focus search |
 | `s` / `ctrl+s` | cycle sort (uses ↓ / recently used ↓ / success rate ↓ / name ↑) |
 | `Esc` | clear search and unfocus |

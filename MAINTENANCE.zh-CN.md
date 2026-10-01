@@ -179,6 +179,25 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
   不是风格问题——`test_tui_advisor_searched_recalled_and_reached_are_three_numbers`
   用一个三者互不相等的 fixture loop（`_make_store(extra_loop=True)`）钉住它，因为只有一个
   loop 时三个数恰好相等，任何测试都分辨不出来。
+- **Advisor 行用位置式 key，分派是显式的 kind 列表。** 表里放 `advisor#<n>`，
+  `app.row_targets` 里放 `("advisor", loop_id)`。`on_data_table_row_selected` 以
+  `else: return` 收尾——它以前收尾在插件调用上，于是任何它没听过的 kind 都会被塞进三个它没有的
+  位置参数，处理器抛 `IndexError`。新增 kind 要加分支，不许落到 `else`。
+- **展示顾问 loop 的 screen 只接收投影好的 dict，自己不做任何 I/O**：不许 `open`、
+  `json.load`、`sqlite3.connect`，也不许用存储里给的 id 拼路径（聚合层是列目录后从文件内容里读
+  id 的，文件名并不是标识符）。
+  `test_tui_advisor_detail_reads_only_through_the_projection` 就是扫源码查这件事——哨兵文本
+  只能抓住 fixture 里恰好有的东西。
+- **阶段图的比例尺刻意把预算算进峰值。** `bar()` 是 `value / peak * width`，峰值只取阶段的话，
+  一个真实 loop（最慢阶段 18ms、预算 1200ms）会画出 **1467 格**并把整页折行；fixture 里那个
+  4000ms 的阶段把这个问题完全遮住了。
+  `test_tui_advisor_detail_budget_row_fits_when_every_stage_is_fast` 用的是真实数字。
+  相关：`bar()` 会拿值做比较，所以未跑完阶段的 `None` 绝不能传进去（TypeError，页面挂不起来）。
+- **双击不需要新代码，但需要正确的坐标。** Textual 在点击落在“已经持有行光标的那一格”时发
+  `RowSelected`，也就是第二击；不引入点击链计时器，所以“不许用 app timer”仍然成立。给
+  `_on_click` 装探针在 headless pilot 下实测：`offset=(4, 1)` 带着
+  `meta={'row': 0, 'column': 0}` 到达并打开详情页，而 `(4, 2)` 收到的是**空 meta**，因为它落在格子之间。
+  坐标选错和功能坏掉看起来一模一样，所以用例写明了它的落点为什么是这个。
 - **手画的图表行，宽度不许依赖数据。** 趋势行固定为 `TREND_ROW_WIDTH`（20），
   `.trend` 把高度钉到 `TREND_LINES`，`fmt_count` 把计数压到 5 字符以内。两条腿都不是摆设：
   只撤一条时另一条会把错位藏起来；钉高是**故意用"裁切"换"错位"**——窄于 70 列时三张一起裁（这个 70 是实测的，不是估的）。
@@ -194,7 +213,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 7. 已知限制
 
-M1–M19 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
+M1–M21 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
 维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修
@@ -205,6 +224,7 @@ M1–M19 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [REA
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
 | 日志不轮转（M17） | 小 | 需要先定策略（轮转 / 截断 / 交给 journald） |
+| Advisor 页每次刷新最多重读 30 个 loop 文件，按 Enter 进详情会再读一遍 | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态 |
 | Advisor 页读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那两格变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的列变成 `-` 就是信号 |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
 | `skill_versions` 无上限增长 | 小 | 需要保留策略；目前没有任何清理 |
