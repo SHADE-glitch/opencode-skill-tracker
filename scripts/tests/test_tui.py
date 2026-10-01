@@ -850,6 +850,89 @@ def test_tui_dashboard_trend_has_all_three_charts(seeded_mcp_db):
     _run(_run_it())
 
 
+# --- the three trend charts must stay on one horizontal line ---------------
+# They are `Static`s of different data. As long as a row's length depends on the
+# number printed at its end, one big count word-wraps *that* chart only, it grows
+# a line taller, and the three day-rows that used to share a line no longer do.
+def test_fmt_count_stays_five_chars_or_less():
+    """The fixed row width is only fixed because the count field is capped."""
+    for n in (0, 1, 999, 9_999, 10_000, 99_999, 100_000, 999_999, 1_000_000,
+              1_234_567, 40_000_000, 99_999_999, 999_999_999, 1_000_000_000):
+        assert len(st.fmt_count(n)) <= 5, (n, st.fmt_count(n))
+    assert st.fmt_count(99_999) == "99999"
+    assert st.fmt_count(123_456) == "123k"
+    assert st.fmt_count(4_000_000) == "4.0M"
+
+
+def test_tui_trend_rows_are_a_fixed_width(seeded_mcp_db):
+    """Every day line of every chart has the same rendered length.
+
+    Measured on the *unmarked-up* text: `Static.content` keeps the markup, and it
+    is the parsed string that gets laid out, so `[cyan]…[/cyan]` must not count.
+    """
+    from rich.text import Text
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test(size=(80, 40)) as pilot:
+            await pilot.pause()
+            for wid in ("#trend-skills", "#trend-mcp", "#trend-plugins"):
+                raw = static_text(app.screen.query_one(wid, Static)).splitlines()[1:]
+                assert len(raw) == st.TREND_DAYS, (wid, raw)
+                lines = [Text.from_markup(line).plain for line in raw]
+                assert {len(line) for line in lines} == {st.TREND_ROW_WIDTH}, (wid, lines)
+
+    _run(_run_it())
+
+
+def test_tui_trend_charts_share_one_line_when_a_series_is_huge(seeded_mcp_db, monkeypatch):
+    """A six-digit count in one series must not push that chart off the line.
+
+    Measured before the fix: heights 9 / 8 / 8 — the skills chart had wrapped its
+    own day rows, which is exactly what the owner sees as "the bars are not on
+    the same level".
+    """
+    days = [f"2026-09-{27 + i}" for i in range(7)]
+    counts = [123_456, 1, 2, 3, 4, 5, 6]
+
+    def big_skills(conn, n=7):
+        return [{"date": d, "count": c} for d, c in zip(days, counts)]
+
+    def small(conn, n=7):
+        return [{"date": d, "count": 3} for d in days]
+
+    monkeypatch.setattr(st.db, "daily_activity", big_skills)
+    monkeypatch.setattr(st.db, "daily_mcp_activity", small)
+    monkeypatch.setattr(st.db, "daily_plugin_activity", small)
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test(size=(80, 40)) as pilot:
+            await pilot.pause()
+            regions = [
+                app.screen.query_one(wid, Static).region
+                for wid in ("#trend-skills", "#trend-mcp", "#trend-plugins")
+            ]
+            assert {r.height for r in regions} == {st.TREND_LINES}, regions
+            assert len({r.y for r in regions}) == 1, regions
+
+    _run(_run_it())
+
+
+def test_tui_trend_css_height_matches_the_line_count():
+    """The pinned height is tied to the number of lines, not a magic 8.
+
+    Bump TREND_DAYS alone and this goes red: the CSS would then clip a chart that
+    grew, which is the failure mode the pinned height is here to make loud.
+    """
+    import re
+
+    css = st.get_app_class().CSS
+    match = re.search(r"\.trend\s*\{[^}]*?height:\s*(\d+)", css)
+    assert match, ".trend has no pinned height — the charts can drift apart again"
+    assert int(match.group(1)) == st.TREND_LINES
+
+
 def test_tui_dashboard_tables_size_to_content(seeded_db):
     """Dashboard tables must show all their rows, not collapse to headers.
 

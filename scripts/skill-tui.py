@@ -105,6 +105,39 @@ def bar(value, peak, width=24):
     return "█" * n
 
 
+# The Dashboard trend row: a date, two spaces, a padded bar field, and a count
+# capped to five characters. `TREND_ROW_WIDTH` is only a constant because
+# `fmt_count` is one — see the note in `_render_trends` about why a trailing
+# field that grows with its data moves one chart off the line the others hold.
+TREND_DAYS = 7
+TREND_LINES = TREND_DAYS + 1          # seven day rows under the chart's title
+TREND_BARW = 8
+TREND_ROW_WIDTH = 5 + 2 + TREND_BARW + 5
+
+
+def fmt_count(n) -> str:
+    """A call count in at most five characters: 99999, 123k, 4.0M.
+
+    Not decoration. The trend rows are compared by length by a test precisely so
+    that a six-digit day count cannot silently wrap only its own chart — the
+    defect this caps against.
+    """
+    try:
+        value = int(n or 0)
+    except (TypeError, ValueError):
+        return "-"
+    if value < 0:
+        value = 0
+    if value < 100_000:
+        return str(value)
+    if value < 1_000_000:
+        return f"{round(value / 1_000)}k"          # 100k … 1000k
+    if value < 1_000_000_000:
+        text = f"{value / 1_000_000:.1f}M"
+        return text if len(text) <= 5 else f"{round(value / 1_000_000)}M"
+    return f"{round(value / 1_000_000_000)}G"
+
+
 # ===========================================================================
 # CLI mode (no textual)
 # ===========================================================================
@@ -1340,21 +1373,30 @@ def _tui_classes() -> dict:
             # Three 7-day charts side by side, each scaled to its own peak:
             # MCP and plugin volumes are usually an order of magnitude
             # below skill calls, so a shared peak would flatten them
-            # invisible. Bars are narrow (10) so all three fit in 80 cols.
+            # invisible.
+            #
+            # Every day line is exactly TREND_ROW_WIDTH characters — date(5) +
+            # two spaces + a padded bar + a count capped by `fmt_count`. A
+            # trailing field printed at its natural length makes one line longer
+            # than its neighbours whenever a count gains a digit, that chart
+            # word-wraps on its own, and the three no longer share a horizontal
+            # line. `.trend` pins the height for the same reason: below about 74
+            # columns all three clip alike instead of drifting apart.
             for wid, label, color, data in (
-                ("#trend-skills", "skill calls", "cyan", db.daily_activity(conn, 7)),
-                ("#trend-mcp", "MCP calls", "magenta", db.daily_mcp_activity(conn, 7)),
-                ("#trend-plugins", "plugin calls", "yellow", db.daily_plugin_activity(conn, 7)),
+                ("#trend-skills", "skill calls", "cyan",
+                 db.daily_activity(conn, TREND_DAYS)),
+                ("#trend-mcp", "MCP calls", "magenta",
+                 db.daily_mcp_activity(conn, TREND_DAYS)),
+                ("#trend-plugins", "plugin calls", "yellow",
+                 db.daily_plugin_activity(conn, TREND_DAYS)),
             ):
                 peak = max((d["count"] for d in data), default=0)
                 chart = [f"[b]{label}[/b]"]
                 for d in data:
-                    # Pad *inside* the markup so the trailing gutter still
-                    # counts; without it the count runs into the next
-                    # chart's date at 80 columns.
-                    cells = f"{bar(d['count'], peak, 8):<8}"
+                    cells = f"{bar(d['count'], peak, TREND_BARW):<{TREND_BARW}}"
                     chart.append(
-                        f"{d['date'][5:]}  [{color}]{cells}[/{color}]  {d['count']}"
+                        f"{d['date'][5:]}  [{color}]{cells}[/{color}]"
+                        f"{fmt_count(d['count']):>5}"
                     )
                 self.query_one(wid, Static).update("\n".join(chart))
 
@@ -2030,7 +2072,11 @@ def _tui_classes() -> dict:
         #dash-top, #dash-mcp, #dash-plugins { height: auto; max-height: 13; }
         #recent-label { padding: 1 2 0 2; height: auto; }
         #trend-row { height: auto; border: round $primary-muted; margin: 0 2; padding: 0 1; }
-        .trend { width: 1fr; height: auto; }
+        /* height is pinned to TREND_LINES (skill-tui.py) so one chart that has
+           to clip cannot stand taller than the two beside it. Keep the two in
+           step: test_tui_trend_css_height_matches_the_line_count fails if they
+           drift. */
+        .trend { width: 1fr; height: 8; }
         .section { padding: 1 2 0 2; }
         #sort-label, #mcp-label, #plugins-label { padding: 0 2; height: auto; }
         #search, #mcp-search, #plugins-search { margin: 0 2; }
