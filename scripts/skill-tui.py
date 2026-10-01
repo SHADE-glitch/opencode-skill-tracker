@@ -1256,8 +1256,22 @@ def _tui_classes() -> dict:
             if not table.columns:
                 table.add_columns("Time", "Kind", "Name", "Project", "Status", "Duration")
             table.clear(columns=False)
-            for r in rows:
+            for i, r in enumerate(rows):
                 kind = r.get("kind") or "-"
+                # Keyed by position in the cache rendered just above, and the
+                # detail target is taken from real columns. The old key was
+                # "kind:name:timestamp" and was split back apart on Enter —
+                # which broke on every name carrying a ":" (a plugin command is
+                # `conductor:newTrack`) and on the timestamp's own colons.
+                key = f"recent#{i}"
+                if kind == "skill":
+                    self.app.row_targets[key] = ("skill", r["skill_name"])
+                elif kind == "mcp":
+                    self.app.row_targets[key] = ("mcp", r["server_name"], r["tool_name"])
+                elif kind == "plugin":
+                    self.app.row_targets[key] = (
+                        "plugin", r["plugin_name"], r["item_kind"], r["item_name"],
+                    )
                 table.add_row(
                     db.fmt_time(r["timestamp"]),
                     KIND_LABELS.get(kind, kind),
@@ -1265,7 +1279,7 @@ def _tui_classes() -> dict:
                     db.short_path(r["project_path"], 28),
                     status_cell(r.get("status")),
                     f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "-",
-                    key=f"{r.get('kind')}:{r.get('name')}:{r['timestamp']}",
+                    key=key,
                 )
 
         def render_mcp(self, rows=None) -> None:
@@ -1478,40 +1492,7 @@ def _tui_classes() -> dict:
             else:
                 self.app.notify(f"No plugin history for {plugin}/{kind}/{item}", severity="warning")
 
-        def _open_recent_detail(self, row_key: str | None) -> None:
-            """Route a unified-timeline row to its skill/MCP/plugin page."""
-            if not row_key or ":" not in row_key:
-                return
-            kind, rest, _ts = row_key.split(":", 2)
-            try:
-                if kind == "skill":
-                    detail = db.skill_detail(self.app.conn, rest)
-                    if detail:
-                        self.app.push_screen(SkillDetailScreen(rest, detail))
-                elif kind == "mcp":
-                    # Unified names are "server.tool" (first dot separates).
-                    if "." in rest:
-                        server, tool = rest.split(".", 1)
-                        detail = db.mcp_tool_detail(self.app.conn, server, tool)
-                        if detail:
-                            self.app.push_screen(McpDetailScreen(server, tool, detail))
-                    else:
-                        self.app.notify(f"No MCP history for {rest}", severity="warning")
-                elif kind == "plugin":
-                    # Right-anchored because a scoped npm plugin name carries a
-                    # "/" of its own; replaced wholesale once rows carry targets.
-                    parts = rest.rsplit("/", 2)
-                    if len(parts) == 3:
-                        self._open_plugin_detail(*parts)
-            except Exception as e:  # noqa: BLE001
-                self.app.notify(f"Could not open detail: {e}", severity="error")
-
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-            tid = event.data_table.id
-            if tid == "recent-table":
-                # Still key-parsed until the timeline rows carry a target.
-                self._open_recent_detail(event.row_key.value)
-                return
             target = self.app.row_targets.get(event.row_key.value)
             if not target:
                 return

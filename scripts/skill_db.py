@@ -802,7 +802,12 @@ def unified_recent_rows(conn, limit: int = 100) -> list[dict]:
     """One timeline across skills + MCP + plugins, newest first.
 
     Read-only. Each row: {timestamp, kind, name, project_path, session_id,
-    status, duration_ms, trigger_type}. `kind` is one of
+    status, duration_ms, trigger_type} plus the columns needed to reopen that
+    row's detail page: `skill_name`, or `server_name` + `tool_name`, or
+    `plugin_name` + `item_kind` + `item_name`. The pieces are returned as real
+    columns because `name` is a display string — a plugin command is
+    `conductor:newTrack` and a scoped npm plugin is `@scope/pkg@1.0`, so
+    splitting `name` apart again is ambiguous by construction. `kind` is one of
     "skill" / "mcp" / "plugin". Tables that do not exist yet (unmigrated DB)
     are skipped, so a skills-only DB simply returns skill rows.
 
@@ -814,16 +819,17 @@ def unified_recent_rows(conn, limit: int = 100) -> list[dict]:
     """
     sources: list[str] = [
         "SELECT timestamp, 'skill' AS kind, skill_name AS name, project_path,"
-        "       session_id, status, duration_ms, trigger_type FROM skill_usage"
-        " ORDER BY timestamp DESC LIMIT ?"
+        "       session_id, status, duration_ms, trigger_type, skill_name"
+        " FROM skill_usage ORDER BY timestamp DESC LIMIT ?"
     ]
     params: list[int] = [limit]
     if _mcp_available(conn):
         sources.append(
             "SELECT timestamp, 'mcp' AS kind,"
             "       server_name || '.' || tool_name AS name, project_path,"
-            "       session_id, status, duration_ms, trigger_type FROM mcp_usage"
-            " ORDER BY timestamp DESC LIMIT ?"
+            "       session_id, status, duration_ms, trigger_type,"
+            "       server_name, tool_name"
+            " FROM mcp_usage ORDER BY timestamp DESC LIMIT ?"
         )
         params.append(limit)
     if _plugin_available(conn):
@@ -831,8 +837,8 @@ def unified_recent_rows(conn, limit: int = 100) -> list[dict]:
             "SELECT timestamp, 'plugin' AS kind,"
             "       plugin_name || '/' || kind || '/' || item_name AS name,"
             "       project_path, session_id, status, duration_ms,"
-            "       trigger_type FROM plugin_usage"
-            " ORDER BY timestamp DESC LIMIT ?"
+            "       trigger_type, plugin_name, kind AS item_kind, item_name"
+            " FROM plugin_usage ORDER BY timestamp DESC LIMIT ?"
         )
         params.append(limit)
 

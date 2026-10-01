@@ -978,3 +978,31 @@ def test_tui_dashboard_plugin_row_enter_opens_detail(seeded_plugin_db):
                 await pilot.pause()
 
     _run(_run_it())
+
+
+def test_tui_recent_row_with_colon_in_name_opens_detail(seeded_plugin_db):
+    """A plugin command name carries ":" — the timeline key used to split on it.
+
+    Regression: the Recent row key was "kind:name:timestamp" and Enter parsed it
+    with split(":", 2), so `conductor:status` mis-parsed and Enter did nothing
+    at all: no page, no warning, no trace of the promise in the label.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-recent"
+            await pilot.pause()
+            table = app.screen.query_one("#recent-table", DataTable)
+            idx = next(
+                i for i, r in enumerate(app.recent_rows_cache)
+                if ":" in (r["name"] or "") and r["kind"] == "plugin"
+            )
+            table.move_cursor(row=idx)
+            table.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.screen.__class__.__name__ == "PluginDetailScreen"
+
+    _run(_run_it())
