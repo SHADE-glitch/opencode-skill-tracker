@@ -2,9 +2,85 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import skill_db as db
+
+
+LEAKED = '{"model":"p/m","agent":"build","summary":"the user prompt","title":"bash: ls"}'
+
+
+def test_scrub_metadata_dry_run_leaves_the_database_untouched(seeded_db):
+    conn = db.open_db(seeded_db, readonly=False)
+    leaked = "SELECT COUNT(*) FROM skill_usage WHERE json_extract(metadata,'$.summary') IS NOT NULL"
+    assert conn.execute(leaked).fetchone()[0] == 21
+
+    res = db.scrub_metadata(conn)  # dry-run is the default
+    assert res["dry_run"] is True
+    assert res["matched"] == 21
+    assert res["by_table"]["skill_usage"] == 21
+    assert res["rows"][0]["keys"] == ["summary"]
+    assert conn.execute(leaked).fetchone()[0] == 21, "a dry run must write nothing"
+    conn.close()
+
+
+def test_scrub_metadata_apply_strips_keys_from_all_three_tables(seeded_db):
+    conn = db.open_db(seeded_db, readonly=False)
+    conn.execute(
+        "INSERT INTO mcp_usage (server_name, tool_name, session_id, project_path,"
+        " trigger_type, status, timestamp, call_id, metadata) "
+        "VALUES ('s','t','m1','/p','tool_call','success',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'c-leak', ?)",
+        (LEAKED,),
+    )
+    conn.execute(
+        "INSERT INTO plugin_usage (plugin_name, kind, item_name, session_id,"
+        " project_path, trigger_type, status, timestamp, duration_ms, call_id, metadata) "
+        "VALUES ('plug','tool','thing','m2','/p','tool_call','success',"
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now'), 5, 'c-leak-p', ?)",
+        (LEAKED,),
+    )
+    conn.commit()
+
+    res = db.scrub_metadata(conn, dry_run=False)
+    assert res["matched"] == 23
+    assert res["by_table"] == {"skill_usage": 21, "mcp_usage": 1, "plugin_usage": 1}
+
+    for table in ("skill_usage", "mcp_usage", "plugin_usage"):
+        left = conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+            " WHERE json_extract(metadata,'$.summary') IS NOT NULL"
+            "    OR json_extract(metadata,'$.title') IS NOT NULL"
+        ).fetchone()[0]
+        assert left == 0, f"{table} still carries a disallowed key"
+
+    # Rows are the point of this database: nothing is deleted, and the keys the
+    # views and the TUI actually read survive.
+    assert conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0] == 21
+    kept = json.loads(
+        conn.execute("SELECT metadata FROM mcp_usage WHERE call_id='c-leak'").fetchone()[0]
+    )
+    assert kept == {"model": "p/m", "agent": "build"}
+    assert db.scrub_metadata(conn, dry_run=False)["matched"] == 0, "must be idempotent"
+    conn.close()
+
+
+def test_scrub_metadata_tolerates_malformed_and_empty_metadata(seeded_db):
+    conn = db.open_db(seeded_db, readonly=False)
+    conn.execute(
+        "INSERT INTO skill_usage (skill_name, session_id, trigger_type, status,"
+        " call_id, metadata) VALUES ('grow','junk','tool_call','success','c-junk','{not json')"
+    )
+    conn.execute(
+        "INSERT INTO skill_usage (skill_name, session_id, trigger_type, status,"
+        " call_id, metadata) VALUES ('grow','null','tool_call','success','c-null', NULL)"
+    )
+    conn.commit()
+    res = db.scrub_metadata(conn)
+    assert res["matched"] == 21, "unparsable and NULL metadata must not count as hits"
+    conn.close()
 
 
 def test_clear_usage_keeps_skills(seeded_db):

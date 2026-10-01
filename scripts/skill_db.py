@@ -1490,6 +1490,60 @@ def cleanup_selftest(conn, dry_run: bool = True) -> dict:
     }
 
 
+# Free-text metadata keys that must not stay in the database. `summary` held a
+# snippet of the user's own prompt: older builds wrote it, the writer has since
+# been removed, but the historical rows are still here. `title` is a permission
+# title, which routinely echoes the same input. Both are already excluded from
+# export by EXPORT_METADATA_KEYS; this closes the other half of the path.
+METADATA_SCRUB_KEYS = ("summary", "title")
+
+
+def scrub_metadata(conn, keys=METADATA_SCRUB_KEYS, dry_run: bool = True) -> dict:
+    """Drop disallowed keys from stored metadata, keeping every usage row.
+
+    The rows are the point of this database; the leaked text is not. So this
+    rewrites the JSON blob rather than deleting anything, and reports exactly
+    which keys came off. Read-only unless `dry_run` is False.
+    """
+    wanted = set(keys)
+    streams = [("skill_usage", "skill_name")]
+    if _mcp_available(conn):
+        streams.append(("mcp_usage", "server_name || '.' || tool_name"))
+    if _plugin_available(conn):
+        streams.append(("plugin_usage", "plugin_name || '/' || kind || '/' || item_name"))
+
+    hits: list[dict] = []
+    updates: list[tuple[str, int, str]] = []
+    for table, name_expr in streams:
+        # `table`/`name_expr` come from the fixed list above, never from input.
+        for r in rows_to_dicts(
+            conn.execute(f"SELECT id, timestamp, metadata, {name_expr} AS name FROM {table}")
+        ):
+            meta = _load_meta(r["metadata"])
+            off = sorted(k for k in meta if k in wanted)
+            if not off:
+                continue
+            hits.append(
+                {"table": table, "id": r["id"], "name": r["name"],
+                 "timestamp": r["timestamp"], "keys": off}
+            )
+            kept = {k: v for k, v in meta.items() if k not in wanted}
+            updates.append((table, r["id"], json.dumps(kept, ensure_ascii=False)))
+
+    if not dry_run and updates:
+        with _write_txn(conn):
+            for table, rid, payload in updates:
+                conn.execute(f"UPDATE {table} SET metadata = ? WHERE id = ?", (payload, rid))
+
+    return {
+        "dry_run": dry_run,
+        "matched": len(hits),
+        "keys": sorted(wanted),
+        "by_table": {t: sum(1 for h in hits if h["table"] == t) for t, _ in streams},
+        "rows": hits,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Health report (read-only) — active / stale / unused + risk flags
 # ---------------------------------------------------------------------------

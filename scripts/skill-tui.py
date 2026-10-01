@@ -6,7 +6,8 @@ Two modes in one file:
   * TUI   (default)      requires `textual` (installed in the skillt venv)
   * --cli <subcommand>   stdlib only; works on the system python3
                          subcommands: insight | export | sync | cleanup-selftest
-                                      | health | mcp | plugins | auto-backup | doctor
+                                      | scrub-metadata | health | mcp | plugins
+                                      | auto-backup | doctor
 
 `textual` is imported lazily so the --cli path never depends on the venv.
 
@@ -201,6 +202,31 @@ def _cli_cleanup_selftest(conn, args) -> int:
         print("\nRe-run with --yes to delete (a backup is taken first by the caller).")
         return 0
     print(f"Deleted {res['matched']} synthetic row(s).")
+    return 0
+
+
+def _cli_scrub_metadata(conn, args) -> int:
+    res = db.scrub_metadata(conn, dry_run=not args.yes)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    if not res["matched"]:
+        print(f"No rows carry the disallowed metadata keys {res['keys']}.")
+        return 0
+    counts = "  ".join(f"{t}={n}" for t, n in res["by_table"].items() if n)
+    if res["dry_run"]:
+        print(f"[dry-run] would strip {res['matched']} row(s): {counts}")
+        for r in res["rows"][: args.limit]:
+            print(
+                f"  {r['table']:<13} id={r['id']:<6} {','.join(r['keys']):<16} "
+                f"{db.fmt_time(r['timestamp'])}  {str(r['name'])[:44]}"
+            )
+        if res["matched"] > args.limit:
+            print(f"  ... {res['matched'] - args.limit} more (use --limit N)")
+        print("\nUsage rows are kept; only the listed keys come off the metadata.")
+        print("Re-run with --yes to apply (a backup is taken first by the caller).")
+        return 0
+    print(f"Stripped {res['matched']} row(s): {counts}")
     return 0
 
 
@@ -526,9 +552,9 @@ def cli_main(args) -> int:
         print(f"skillt: --db must be a file, not a directory: {args.db}", file=sys.stderr)
         return 2
 
-    # sync / cleanup-selftest / doctor need write access (migration); health,
-    # mcp and plugins are pure reads and open read-only so they can never alter
-    # the DB.
+    # sync / cleanup-selftest / scrub-metadata / doctor need write access
+    # (migration); health, mcp and plugins are pure reads and open read-only so
+    # they can never alter the DB.
     try:
         conn = db.open_db(
             args.db, readonly=(args.command in ("health", "mcp", "plugins"))
@@ -537,7 +563,7 @@ def cli_main(args) -> int:
         print(f"skillt: cannot open database {args.db}: {e}", file=sys.stderr)
         return 1
     try:
-        if args.command in ("sync", "cleanup-selftest", "doctor"):
+        if args.command in ("sync", "cleanup-selftest", "scrub-metadata", "doctor"):
             try:
                 db.ensure_schema(conn)
             except Exception as e:  # noqa: BLE001 - never hard-fail the CLI
@@ -570,6 +596,19 @@ def cli_main(args) -> int:
                     print(f"warning: backup failed, aborting: {e}", file=sys.stderr)
                     return 1
             return _cli_cleanup_selftest(conn, args)
+        if args.command == "scrub-metadata":
+            if args.yes:
+                # Same discipline as cleanup-selftest: probe first so a clean DB
+                # never produces a pointless backup file.
+                if not db.scrub_metadata(conn, dry_run=True)["rows"]:
+                    return _cli_scrub_metadata(conn, args)
+                try:
+                    path = db.backup_db(conn)
+                    print(f"Backup written to {path}")
+                except Exception as e:  # noqa: BLE001
+                    print(f"warning: backup failed, aborting: {e}", file=sys.stderr)
+                    return 1
+            return _cli_scrub_metadata(conn, args)
         if args.command == "doctor":
             return _cli_doctor(conn, args)
         print(f"unknown --cli command: {args.command}", file=sys.stderr)
@@ -1762,8 +1801,8 @@ class Args:
 
 
 CLI_COMMANDS = {
-    "insight", "export", "sync", "cleanup-selftest", "health", "mcp", "plugins",
-    "auto-backup", "doctor",
+    "insight", "export", "sync", "cleanup-selftest", "scrub-metadata", "health",
+    "mcp", "plugins", "auto-backup", "doctor",
 }
 
 
@@ -1870,7 +1909,8 @@ def main(argv):
         if not args.command:
             raise SystemExit(
                 "--cli requires a subcommand: "
-                "insight|export|sync|cleanup-selftest|health|mcp|plugins|auto-backup|doctor"
+                "insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|"
+                "plugins|auto-backup|doctor"
             )
         return cli_main(args)
 

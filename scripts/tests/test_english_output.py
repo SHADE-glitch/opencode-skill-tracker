@@ -71,6 +71,8 @@ def _run_cli(seeded_db, *args):
         ("sync", "--dry-run"),
         ("auto-backup", "--dry-run"),
         ("cleanup-selftest",),
+        ("scrub-metadata",),
+        ("scrub-metadata", "--json"),
     ],
 )
 def test_cli_output_is_english(seeded_db, args):
