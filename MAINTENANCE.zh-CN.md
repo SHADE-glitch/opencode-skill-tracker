@@ -17,7 +17,7 @@
 | 行数 | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
-| 测试 | 336 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| 测试 | 344 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。目前所有阶段都在 15–172ms，预算是 1200ms。**那 5 个 loop 是 live 测试样本**（`model=opencode/space-bunny-free`），不是真实用量 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
@@ -53,6 +53,7 @@
 | schema 有两份副本：插件 `TABLES_SQL`/`VIEWS_SQL` 与 Python `SCHEMA_SQL`，必须同一提交里一起改 | `test_plugin_and_python_schema_do_not_drift` |
 | 改视图必须升 `SCHEMA_VERSION`，否则老库继续用旧视图（`CREATE VIEW IF NOT EXISTS` 不更新） | `test_migration.py`、`test_schema_sync.py` |
 | 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`，也不得读真实插件日志 | `temp_skills` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch |
+| 表格列宽由 `fit_columns()` 在渲染时算定；Textual 自己的自动列宽跑在 `_on_idle`，永远晚一帧，第一帧每列都只有表头那么宽 | `test_tui_dashboard_tables_fit_their_content_before_idle`、`test_tui_page_tables_cover_every_tab` |
 | 推送前测试全绿，**两条文档里的命令都要跑** | `AGENTS.md` |
 
 ## 2. 每日（在相信任何数字之前）
@@ -191,6 +192,12 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
   `_on_click` 装探针在 headless pilot 下实测：`offset=(4, 1)` 带着
   `meta={'row': 0, 'column': 0}` 到达并打开详情页，而 `(4, 2)` 收到的是**空 meta**，因为它落在格子之间。
   坐标选错和功能坏掉看起来一模一样，所以用例写明了它的落点为什么是这个。
+- **表格列宽在这里算，不交给 Textual 去发现。** `DataTable` 在 `_on_idle` 里重算自动列宽，
+  所以第一帧每列恰好是表头的宽度（`frozen-gnome-fork-maintenance` 显示成 `froze`），之后每一帧
+  都滞后一帧的内容。`fit_columns()` 用手里的单元格算宽并把 `auto_width` 关掉；`_PAGE_TABLES`
+  声明每个页拥有哪些表，于是只重测刚画过的那一页（九张表合计 3.1 ms，其中 100 行的 Recent 占
+  1.6 ms；`plain_len` 的“没有方括号就不解析”快路把这一趟从约 21 ms 降到约 3 ms）。
+  用例读宽度时**故意不**先 `pilot.pause()`——一 pause，idle 就把那一帧修好了，坏代码也会绿。
 - **手画的图表行，宽度不许依赖数据。** 趋势行固定为 `TREND_ROW_WIDTH`（20），
   `.trend` 把高度钉到 `TREND_LINES`，`fmt_count` 把计数压到 5 字符以内。两条腿都不是摆设：
   只撤一条时另一条会把错位藏起来；钉高是**故意用"裁切"换"错位"**——窄于 70 列时三张一起裁（这个 70 是实测的，不是估的）。

@@ -125,6 +125,13 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   advisor's per-call budget) that can exceed the data's own maximum overflows the
   column — real loops run 0–20 ms against a 1200 ms budget and drew 1467 blocks.
   Fold the reference into the peak, and never hand `bar()` a `None`.
+- **Column widths are ours to compute, not Textual's to discover.**
+  `DataTable` re-measures auto-width columns in `_on_idle`, one message-pump
+  cycle after the rows arrive: the first frame renders every column exactly as
+  wide as its header, and each later frame shows the previous content's widths.
+  Every table this app populates must go through `fit_columns()` (the per-page
+  refresh does it via `_PAGE_TABLES`, the detail shell does it after
+  `populate()`), or names get cut to `froze`.
 - **No `set_interval`/`set_timer` in the TUI.** On textual 8.2.8, any app timer
   created after the screens mount makes `run_test`'s teardown raise
   `LookupError: <ContextVar name='active_app'>` (empty callback, App or Screen,

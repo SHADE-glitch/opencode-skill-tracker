@@ -21,7 +21,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Rows | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
-| Test suite | 336 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| Test suite | 344 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Every stage so far has been 15–172 ms against a 1200 ms budget. **The 5 loops are live-test samples** (`model=opencode/space-bunny-free`), not production usage |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
@@ -66,6 +66,10 @@ not the test, is what changed.
 | The schema lives in two copies: `TABLES_SQL`/`VIEWS_SQL` (plugin) and `SCHEMA_SQL` (Python). Change both in the same commit. | `test_plugin_and_python_schema_do_not_drift` |
 | A view change requires a `SCHEMA_VERSION` bump, or existing databases keep the old view (`CREATE VIEW IF NOT EXISTS` never updates). | `test_migration.py`, `test_schema_sync.py` |
 | Capture tests are hermetic: nothing may read the real `~/.config/opencode/skills` or the real plugin log. | `temp_skills` fixture, `_isolated()` env, `test_doctor.py` monkeypatches |
+| Tables are sized by `fit_columns()` at render time; Textual's own auto-width pass
+  runs in `_on_idle` and is one frame late, which truncates every column to its
+  header width. | `test_tui_dashboard_tables_fit_their_content_before_idle`,
+  `test_tui_page_tables_cover_every_tab` |
 | The suite is green before pushing, on **both** documented commands. | `AGENTS.md` |
 
 ## 2. Daily (before trusting the numbers)
@@ -252,6 +256,15 @@ state.
   while `(4, 2)` arrives with **empty meta** because it falls between cells. A wrong
   offset looks exactly like a broken feature, so the test states why its offset is
   what it is.
+- **Table column widths are measured here, not by Textual.** `DataTable` recomputes
+  auto widths in `_on_idle`, so the first painted frame gives every column its
+  header's width (`frozen-gnome-fork-maintenance` → `froze`) and later frames lag by
+  one. `fit_columns()` measures the cells it already has and sets `auto_width = False`;
+  `_PAGE_TABLES` says which tables each page owns so only the page just written is
+  re-measured (3.1 ms for all nine tables, 1.6 ms of that being the 100-row Recent
+  table; `plain_len`'s no-bracket fast path is what took it from ~21 ms to ~3 ms).
+  The tests read widths **without** a `pilot.pause()` first — pausing lets the idle
+  pass repair the frame and the assertion would pass on broken code.
 - **A drawn chart row must not depend on its data for width.** The trend rows
   are a fixed `TREND_ROW_WIDTH` (20) and `.trend` pins the height to
   `TREND_LINES`; `fmt_count` caps a count at five characters. Neither leg is
