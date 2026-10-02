@@ -963,6 +963,124 @@ def advisor_cell(table, label: str, row: int = 0) -> str:
     return str(table.get_cell(list(table.rows)[row], column.key))
 
 
+# --- column widths must be right on the first frame, not one idle later ----
+def test_plain_len_counts_markup_as_what_it_renders():
+    assert st.plain_len("[green]100%[/]") == 4
+    assert st.plain_len("plain text") == 10
+    # An unclosed tag is auto-closed by rich and rendered without it, so measuring
+    # it the same way is the truth about the painted width.
+    assert st.plain_len("[green]never closed") == 12
+    # A stray closing tag is not markup at all: measure it literally, do not raise.
+    assert st.plain_len("skill[/weird]") == 13
+
+
+def test_tui_dashboard_tables_fit_their_content_before_idle(seeded_mcp_db):
+    """The bug the user sees: names cut to the width of the column header.
+
+    `DataTable` measures auto-width columns in `_on_idle`, so the first frame
+    renders every column exactly as wide as its header and each later frame shows
+    the *previous* content's widths. Asserting after `pilot.pause()` would be
+    worthless — the pump has already fixed itself. This reads the widths in the
+    same synchronous breath as the refresh, which is the frame that gets painted.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.refresh_all()
+            for wid in ("#dash-top", "#dash-mcp", "#dash-plugins"):
+                table = app.screen.query_one(wid, DataTable)
+                if not table.row_count:
+                    continue
+                for column in table.columns.values():
+                    longest = max(st.plain_len(cell) for cell in table.get_column(column.key))
+                    longest = max(longest, st.plain_len(column.label))
+                    assert column.get_render_width(table) >= longest, (
+                        wid, str(column.label), column.get_render_width(table), longest
+                    )
+
+    _run(_run_it())
+
+
+def test_tui_advisor_table_fits_before_idle(seeded_db, tmp_path, monkeypatch):
+    """The Advisor table has the longest headers and the longest ids."""
+    import skill_db as db
+    from test_agentos import _make_store
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path, extra_loop=True))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            table = app.screen.query_one("#advisor-table", DataTable)
+            for column in table.columns.values():
+                longest = max(st.plain_len(cell) for cell in table.get_column(column.key))
+                longest = max(longest, st.plain_len(column.label))
+                assert column.get_render_width(table) >= longest, (
+                    str(column.label), column.get_render_width(table), longest
+                )
+
+    _run(_run_it())
+
+
+def test_tui_detail_page_table_fits_before_idle(seeded_db):
+    """The shared DetailScreen shell must size the tables its pages fill."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            detail = {
+                "name": "grow", "source": "personal", "category": "personal-skills",
+                "path": "/s/grow", "content_hash": "0" * 64, "description": "d",
+                "total": 5, "success": 5, "errors": 0, "denied": 0, "uses_30d": 5,
+                "last_used": "2026-10-01T00:00:00.000Z",
+                "versions": [],
+                "history": [{"timestamp": "2026-10-01T00:00:00.000Z",
+                             "project_path": "/home/shade/Public/some-quite-long-project",
+                             "session_id": "ses_abcdefghijklmnop", "status": "success",
+                             "duration_ms": 1234, "model": "provider/a-very-long-model-name",
+                             "agent": "build", "branch": "feature/a-long-branch-name"}],
+            }
+            app.push_screen(st._tui_classes()["SkillDetailScreen"]("grow", detail))
+            await pilot.pause()
+            table = app.screen.query_one("#detail-history", DataTable)
+            assert table.row_count == 1
+            for column in table.columns.values():
+                longest = max(st.plain_len(cell) for cell in table.get_column(column.key))
+                longest = max(longest, st.plain_len(column.label))
+                assert column.get_render_width(table) >= longest, (
+                    str(column.label), column.get_render_width(table), longest
+                )
+
+    _run(_run_it())
+
+
+def test_tui_page_tables_cover_every_tab(seeded_db):
+    """`_PAGE_TABLES` must list the tabs the screen actually composes.
+
+    The fit pass is driven by that map and the re-render by `_page_sections`; a
+    tab added to only one of them goes back to header-wide columns on the first
+    frame with no other test noticing. Compared against the real TabPane ids, not
+    a second hardcoded list that could drift the same way.
+    """
+    from textual.widgets import TabPane
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            tab_ids = {pane.id for pane in app.screen.query(TabPane)}
+            assert tab_ids, "no tabs found; the comparison would be vacuous"
+            assert set(app.screen._PAGE_TABLES) == tab_ids, (
+                sorted(set(app.screen._PAGE_TABLES) ^ tab_ids)
+            )
+
+    _run(_run_it())
+
+
 def test_tui_dashboard_tables_size_to_content(seeded_db):
     """Dashboard tables must show all their rows, not collapse to headers.
 

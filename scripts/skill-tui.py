@@ -134,6 +134,55 @@ def fmt_count(n) -> str:
     return f"{round(value / 1_000_000_000)}G"
 
 
+def plain_len(value) -> int:
+    """Visible length of a cell: markup counts as what it renders to.
+
+    Most cells are plain, but the rate and status columns carry markup
+    (`[green]100%[/]` is 4 characters on screen, not 14). A name can also contain
+    a stray closing tag, which is not markup and makes the parser raise — that is
+    measured literally rather than skipped. An unclosed *opening* tag is not an
+    error: rich closes it silently, and the table renders it that way too, so
+    measuring it the same way is the truth about the painted width.
+    """
+    text = str(value)
+    if "[" not in text:
+        # The fast path, and the common one: names, timestamps and paths carry no
+        # markup, and skipping rich's parser is most of the cost of a fit pass.
+        return len(text)
+    try:
+        from rich.text import Text
+        return len(Text.from_markup(text).plain)
+    except Exception:  # noqa: BLE001 - invalid markup is data, not an error
+        return len(text)
+
+
+def fit_columns(table) -> None:
+    """Size every column to its content *now*, instead of one idle cycle later.
+
+    `DataTable` measures auto-width columns in `_on_idle`, i.e. only once the
+    message pump goes quiet. The first frame therefore renders every column
+    exactly as wide as its header — `frozen-gnome-fork-maintenance` as `froze` —
+    and each later frame shows the widths of the *previous* content. Measured on
+    the live database: immediately after a refresh the render widths are
+    [3, 7, 6, 14, 11], and only after the pump idles do they become
+    [4, 32, 6, 14, 18].
+
+    The cells are already in hand, so measure them here and turn auto width off
+    for these columns. The cost is one pass over the cells per refresh (the
+    largest table is 100 rows × 6 columns), which is what the tests measure
+    *without* a `pilot.pause()` afterwards — a paused test would pass either way.
+    """
+    for column in table.columns.values():
+        widest = plain_len(column.label)
+        for cell in table.get_column(column.key):
+            length = plain_len(cell)
+            if length > widest:
+                widest = length
+        column.width = widest
+        column.auto_width = False
+    table.refresh()
+
+
 # ===========================================================================
 # CLI mode (no textual)
 # ===========================================================================
@@ -956,6 +1005,10 @@ def _tui_classes() -> dict:
 
         def on_mount(self) -> None:
             self.populate()
+            # The pages fill their tables here, so the sizing belongs here too:
+            # one place, and every subclass gets a first frame that fits.
+            for table in self.query(DataTable):
+                fit_columns(table)
 
         def populate(self) -> None:
             """Fill the page's tables. Pages without a table do nothing."""
@@ -1258,6 +1311,7 @@ def _tui_classes() -> dict:
                     s["skill_name"], s["bucket"], str(s["total"]), fr,
                     str(s["versions"] or 0), ",".join(s["flags"]) or "-",
                 )
+            fit_columns(table)
 
     # ---- main screen -------------------------------------------------------
     class MainScreen(Screen):
@@ -1517,6 +1571,21 @@ def _tui_classes() -> dict:
             cards.styles.grid_size_rows = 1 if wide else 2
 
         # -- rendering ------------------------------------------------------
+        # Which tables belong to which page, so a per-page refresh sizes only
+        # what it just wrote. Kept beside `_page_sections`, which owns the same
+        # page list: a new tab needs an entry in both or its tables stay
+        # header-wide until the pump idles.
+        _PAGE_TABLES = {
+            "tab-dash": ("#dash-top", "#dash-mcp", "#dash-plugins"),
+            "tab-skills": ("#skills-table",),
+            "tab-mcp": ("#mcp-table",),
+            "tab-plugins": ("#plugins-table",),
+            "tab-advisor": ("#advisor-table",),
+            "tab-recent": ("#recent-table",),
+            "tab-cats": ("#cats-table",),
+            "tab-data": (),
+        }
+
         def _page_sections(self) -> dict:
             """The sections each tab owns, by tab id.
 
@@ -1582,6 +1651,14 @@ def _tui_classes() -> dict:
                         render()
                     except Exception as e:  # noqa: BLE001
                         failures.append((page, f"{label}: {e}"))
+            # Size the tables that were just written. Textual would do this in
+            # `_on_idle`, one frame too late — see `fit_columns`.
+            for page in pages:
+                for wid in self._PAGE_TABLES.get(page, ()):
+                    try:
+                        fit_columns(self.query_one(wid, DataTable))
+                    except Exception as e:  # noqa: BLE001
+                        failures.append((page, f"{wid} widths: {e}"))
             self._last_refresh = now
             if failures:
                 for page, message in failures:
