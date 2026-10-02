@@ -192,6 +192,82 @@ def test_doctor_warns_when_capture_has_stalled(tmp_path, monkeypatch):
     conn.close()
 
 
+# --- per-stream freshness --------------------------------------------------
+# Taking the newest row across the three tables means one live stream hides two
+# dead ones: the check cannot go red, so it stops meaning anything.
+def _insert(conn, table, when, call_id):
+    if table == "skill_usage":
+        conn.execute(
+            "INSERT INTO skill_usage (skill_name, session_id, trigger_type, status,"
+            f" timestamp, call_id) VALUES ('alpha','s1','tool_call','success',{when},?)",
+            (call_id,),
+        )
+    elif table == "plugin_usage":
+        conn.execute(
+            "INSERT INTO plugin_usage (plugin_name, kind, item_name, session_id,"
+            " trigger_type, status, timestamp, call_id)"
+            f" VALUES ('p','tool','t','s1','tool_call','success',{when},?)",
+            (call_id,),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO mcp_usage (server_name, tool_name, session_id, trigger_type,"
+            " status, timestamp, call_id)"
+            f" VALUES ('s','t','s1','tool_call','success',{when},?)",
+            (call_id,),
+        )
+
+
+def test_doctor_warns_about_a_stalled_stream_that_is_not_the_newest(tmp_path, monkeypatch):
+    """plugin_usage recorded today, mcp_usage stopped a month ago.
+
+    The old check reported the newest row and passed. The stalled stream is the
+    only news here, so it must be named.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    _insert(conn, "plugin_usage", "strftime('%Y-%m-%dT%H:%M:%fZ','now')", "p1")
+    _insert(conn, "mcp_usage", "strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')", "m1")
+    conn.commit()
+    status, detail = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    assert status == "WARN", detail
+    assert "mcp_usage" in detail, detail
+    assert "stalled" in detail, detail
+    # the healthy stream is still reported, so the reader sees the whole picture
+    assert "plugin_usage" in detail, detail
+    conn.close()
+
+
+def test_doctor_does_not_nag_about_a_stream_that_never_recorded(tmp_path, monkeypatch):
+    """Zero rows is 'never used', which is not a stalled pipeline."""
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    _insert(conn, "skill_usage", "strftime('%Y-%m-%dT%H:%M:%fZ','now')", "s1")
+    _insert(conn, "plugin_usage", "strftime('%Y-%m-%dT%H:%M:%fZ','now')", "p1")
+    conn.commit()
+    status, detail = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    assert status == "PASS", detail
+    assert "mcp_usage: no rows" in detail, detail
+    conn.close()
+
+
+def test_doctor_stream_allowlist_silences_a_stream_on_purpose(tmp_path, monkeypatch):
+    """The owner removed MCP servers; a month-old mcp_usage row is then expected.
+
+    Declaring which streams to judge is honest only if the excluded one is still
+    printed — a silent exclusion is the same false silence this check exists to
+    remove.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    _insert(conn, "plugin_usage", "strftime('%Y-%m-%dT%H:%M:%fZ','now')", "p1")
+    _insert(conn, "mcp_usage", "strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')", "m1")
+    conn.commit()
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_STREAMS", "skill,plugin")
+    status, detail = checks_by_name(conn, Args(db_path))["capture.freshness"]
+    assert status == "PASS", detail
+    assert "mcp_usage" in detail, "an excluded stream must still be shown"
+    assert "excluded" in detail, detail
+    conn.close()
+
+
 def test_doctor_survives_a_database_without_the_new_tables(tmp_path, monkeypatch):
     """A pre-migration DB must WARN, not raise out of doctor."""
     conn, db_path = _healthy_setup(tmp_path, monkeypatch)

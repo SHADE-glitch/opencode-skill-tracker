@@ -584,6 +584,9 @@ STAGE_CHART_WIDTH = 22
 # that stopped writing looks exactly like an idle machine from the inside.
 CAPTURE_FRESHNESS_DAYS = 7
 
+# The three streams the plugin writes, in the order the report lists them.
+STREAM_TABLES = ("skill_usage", "mcp_usage", "plugin_usage")
+
 # The TUI is a monitor: the writer is another process (the OpenCode plugin), so
 # a screen that only updates on manual `r` shows numbers the user must not trust
 # as current. Every interaction re-reads, and the age of what is on screen is
@@ -745,27 +748,52 @@ def _doctor_checks(conn, args) -> list:
         ).fetchone() is not None
 
     limit = getattr(args, "freshness_days", CAPTURE_FRESHNESS_DAYS)
+    # Which streams the check is allowed to call stale. A stream with zero rows is
+    # "never used", not "stopped"; and a stream the owner removed on purpose is
+    # neither — but both are still printed, because an exclusion nobody can see is
+    # the same false silence this check exists to remove.
+    wanted = {s.strip() for s in
+              os.environ.get("OPENCODE_SKILL_TRACKER_STREAMS", "").split(",") if s.strip()}
+    judged = {f"{s}_usage" for s in wanted} if wanted else {t for t in STREAM_TABLES}
     try:
-        newest = None
-        for table in ("skill_usage", "mcp_usage", "plugin_usage"):
+        parts, stalled, excluded, seen_any, rows_any = [], [], False, False, False
+        for table in STREAM_TABLES:
             if not has_table(table):
                 continue
-            ts = conn.execute(f"SELECT MAX(timestamp) FROM {table}").fetchone()[0]
-            # ISO-8601 UTC of fixed width sorts as text.
-            if ts and (newest is None or ts > newest[0]):
-                newest = (ts, table)
-        if newest is None:
-            add("capture.freshness", False, "no usage rows in any table", warn=True)
-        else:
+            seen_any = True
+            newest = conn.execute(f"SELECT MAX(timestamp) FROM {table}").fetchone()[0]
+            if not newest:
+                parts.append(f"{table}: no rows")
+                continue
+            rows_any = True
+            # ISO-8601 UTC of fixed width, so julianday is the only parse needed.
             age = conn.execute(
-                "SELECT julianday('now') - julianday(?)", (newest[0],)
+                "SELECT julianday('now') - julianday(?)", (newest,)
             ).fetchone()[0]
-            add(
-                "capture.freshness", age <= limit,
-                f"newest {newest[1]} {db.fmt_time(newest[0])} ({age:.1f}d ago,"
-                f" want <= {limit}d)",
-                warn=True,
-            )
+            if table not in judged:
+                parts.append(f"{table} {age:.1f}d (excluded)")
+                excluded = True
+                continue
+            parts.append(f"{table} {age:.1f}d")
+            if age > limit:
+                stalled.append((table, age))
+        if not seen_any:
+            add("capture.freshness", False,
+                "no usage tables at all (database not migrated?)", warn=True)
+        elif not rows_any:
+            add("capture.freshness", False,
+                "no usage rows in any table  ·  " + "  ·  ".join(parts), warn=True)
+        elif stalled:
+            worst = ", ".join(f"{t} {a:.1f}d" for t, a in stalled)
+            add("capture.freshness", False,
+                f"stalled: {worst}  ·  want <= {limit}d  ·  " + "  ·  ".join(parts),
+                warn=True)
+        else:
+            detail = "  ·  ".join(parts) + f"  ·  want <= {limit}d"
+            if excluded:
+                detail += ("  ·  OPENCODE_SKILL_TRACKER_STREAMS excludes a stream;"
+                           " it is shown above but not judged")
+            add("capture.freshness", True, detail)
     except Exception as e:  # noqa: BLE001
         add("capture.freshness", False, f"error: {e}", warn=True)
 
