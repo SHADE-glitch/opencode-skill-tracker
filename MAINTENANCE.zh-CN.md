@@ -13,11 +13,11 @@
 | 插件 SDK | `@opencode-ai/plugin` 1.18.4 |
 | 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
 | TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
-| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL，582 KiB |
-| 行数 | 39 skills · 21 skill_usage · 550 mcp_usage · 48 plugin_usage · 76 skill_versions · 5 plugin_inventory |
+| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL，548 KiB |
+| 行数 | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
-| 测试 | 289 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| 测试 | 336 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。目前所有阶段都在 15–172ms，预算是 1200ms。**那 5 个 loop 是 live 测试样本**（`model=opencode/space-bunny-free`），不是真实用量 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
@@ -165,14 +165,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 ## 6. 刻意为之的偏离（别"顺手修回去"）
 
 - **TUI 里没有后台定时器。** 屏幕在按键（5 秒节流）、切页、`r` 时重读，并显示 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会一次带走 47 个 TUI 测试。`test_tui_creates_no_app_timers` 把这条钉住。
-- **排名柱各自按自己那个流的峰值缩放，这是有意的。** `vs top` 量的是“相对本流第一名”，
-  `rank_bar_width(columns, term_width)` 是唯一的宽度旋钮（100 列时 14 / 12 / 10 格，
-  80 列时 10 / 8 / 6）。不要把 skill / MCP / plugin 合成一个共享峰值：三者量级差一个数量级，
-  共用刻度会让较安静的流看起来是零。
-  `test_tui_dash_bars_scale_to_each_stream_not_a_shared_peak` 用 40 次 skill 调用配 1 次插件调用钉住这点。
-- **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** 第一版把每根渲染出来的柱和
-  `rank_bar_width(...)` 比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫
-  不是守卫。现在断言的是绝对的格子数，辅助函数那条用严格不等式。
+- **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** Dashboard 排名柱那版把每根渲染出来的柱都和 `rank_bar_width(...)` 的返回值比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫不是守卫。那一列后来按他的要求撤掉了，但这条教训留下：现在`test_tui_trend_rows_are_a_fixed_width` 断言的是绝对宽度（20），顾问阶段图的用例断言的也是绝对的格子数。
 - **顾问的三个召回计数绝不合并。** `Searched` 是引擎自报，`Recalled` 是
   `len(memory_ids)`，`Reached the prompt` 是 `len(injected_memory_ids)`；假说可以被单独注入，
   合并就把一件真实的事藏起来了。以前在写着"recall"的列里打印 `retrieved` 是**报告错误**，

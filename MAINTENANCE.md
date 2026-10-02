@@ -17,11 +17,11 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Plugin SDK | `@opencode-ai/plugin` 1.18.4 |
 | Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
 | TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
-| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 582 KiB |
-| Rows | 39 skills · 21 skill_usage · 550 mcp_usage · 48 plugin_usage · 76 skill_versions · 5 plugin_inventory |
+| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 548 KiB |
+| Rows | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
-| Test suite | 289 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| Test suite | 336 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Every stage so far has been 15–172 ms against a 1200 ms budget. **The 5 loops are live-test samples** (`model=opencode/space-bunny-free`), not production usage |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
@@ -207,19 +207,13 @@ state.
   `LookupError: <ContextVar name='active_app'>` — reproduced with an empty
   callback, on both App and Screen, and after `timer.stop()`. That takes 47 TUI
   tests down. `test_tui_creates_no_app_timers` pins this.
-- **A ranking bar is scaled to its own stream, on purpose.** The `vs top` column
-  measures against that stream's busiest row; `rank_bar_width(columns,
-  term_width)` is the only width knob (14 / 12 / 10 blocks at 100 columns,
-  10 / 8 / 6 at 80). Do not introduce a shared peak across skills / MCP / plugins:
-  the volumes differ by an order of magnitude and a shared scale makes the
-  quieter stream read as zero.
-  `test_tui_dash_bars_scale_to_each_stream_not_a_shared_peak` pins it with a
-  40-call skill stream next to a 1-call plugin stream.
 - **A visual assertion must not ask the widget's own helper what it returned.**
-  The first draft compared every rendered bar to `rank_bar_width(...)`; flattening
-  that ladder to a constant left all of them green — an expectation derived from
-  the thing under test is not a guard. The tests now name absolute block counts
-  and the helper test uses strict inequalities.
+  When the Dashboard ranking bars were being built, every rendered bar was
+  compared to `rank_bar_width(...)` itself; flattening that ladder to a constant
+  left all of them green — an expectation derived from the thing under test is not
+  a guard. The column was later removed at the owner's request, and the lesson
+  stays: today `test_tui_trend_rows_are_a_fixed_width` names the absolute width
+  (20), and the advisor stage-chart tests name absolute block counts.
 - **The advisor's three recall counts are never collapsed into one.** `Searched`
   is the engine's self-report, `Recalled` is `len(memory_ids)`, `Reached the
   prompt` is `len(injected_memory_ids)`; a hypothesis can be injected on its own,

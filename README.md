@@ -179,13 +179,7 @@ fits (measured: the cells are exactly 20 wide at 70, and 18/19/19 at 66) and all
 three clip alike instead of staggering. Counts beyond five
 characters are compacted (`123456` → `123k`), which is what keeps the row a
 constant length. Below them, top-10 tables mirror the three kinds: **Top
-Skills**, **Top MCP tools** and **Top Plugins**, each with a `vs top` column
-whose bar length **is** the call count. Every stream is scaled to its own
-busiest row, never to a shared maximum — a shared peak would make a quiet stream
-read as "nothing happened" when its top row actually leads that stream. The bar
-is the only column whose width the app controls, so it shrinks on narrow
-terminals and on the busier tables: 14 / 12 / 10 blocks at 100 columns for the
-six-, seven- and eight-column tables, 10 / 8 / 6 at 80 columns.
+Skills**, **Top MCP tools** and **Top Plugins**.
 
 The **MCP** page lists one row per `(server, tool)` pair with call count,
 30-day calls, sessions, success rate, average duration and last use. Each of
