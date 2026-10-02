@@ -179,6 +179,23 @@ def test_readmes_list_every_tab_page_including_advisor():
             assert page in segment, f"{label} page list omits {page}: {segment[:120]!r}"
 
 
+def test_readmes_say_the_tracker_cannot_record_the_advisor():
+    """The Advisor page invites one wrong belief: that these numbers were measured.
+
+    Each language must say, in its own words, that the advisor registers no tool
+    and no command, so no usage row can ever name it — and that every number on
+    the page was written by the advisor into its own store. A translation that
+    drops the sentence drops the build.
+    """
+    en = (ROOT / "README.md").read_text(encoding="utf-8")
+    zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+    for phrase in ("no tool and no command", "zero usage rows", "its own store"):
+        assert phrase in en, f"README.md does not say: {phrase}"
+    for phrase in ("不注册任何工具", "不注册任何命令", "0 行", "它自己的库"):
+        assert phrase in zh, f"README.zh-CN.md does not say: {phrase}"
+
+
 def test_readme_documents_top_limit_alias():
     text = _text()
 

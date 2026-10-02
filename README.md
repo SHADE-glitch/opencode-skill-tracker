@@ -207,6 +207,15 @@ that. A legend under the table says all of this on the screen itself. The tab
 never writes to that store and never copies the task text stored beside these
 numbers.
 
+One thing this page is **not**: tracker measurements. The advisor registers no
+tool and no command, so it produces **zero usage rows** — nothing in
+`skill_usage`, `mcp_usage` or `plugin_usage` can name it, and `plugin_inventory`
+carries a single row for it with both the tool list and the command list empty.
+Every number on the page was written by the advisor itself, into **its own
+store**, and this tab only reads it back. That is also why the join column is
+worth reading: it says what the tracker *did* measure for the same session, which
+may well be nothing while the loop still ran.
+
 Enter (or a second click on the same row) opens that loop's own page: outcome and
 the stage it reached, start and last update, memory mode / provider / model, the
 postflight counters (warnings, whether an error was reported, candidates recorded,
