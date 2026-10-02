@@ -105,6 +105,23 @@ def test_tui_detail_screen_opens(seeded_db):
     _run(_run_it())
 
 
+def test_tui_detail_screens_share_one_shell():
+    """The four detail pages are one page: same shell, same back binding.
+
+    Skill/MCP/plugin/advisor detail were four hand-copied screens. Converging
+    them means a subclass cannot quietly diverge from the shared escape/q
+    binding or the #detail-body shell the CSS styles.
+    """
+    classes = st._tui_classes()
+    base = classes["DetailScreen"]
+    for name in ("SkillDetailScreen", "McpDetailScreen",
+                 "PluginDetailScreen", "AdvisorDetailScreen"):
+        assert issubclass(classes[name], base), name
+        assert classes[name] is not base
+    bindings = {b.key: b.action for b in base.BINDINGS}
+    assert bindings.get("escape,q") == "app.pop_screen", base.BINDINGS
+
+
 def test_tui_confirm_cancel_does_not_write(seeded_db):
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)
@@ -1691,7 +1708,9 @@ def test_tui_advisor_detail_draws_per_stage_bars(seeded_db, tmp_path, monkeypatc
             assert blocks["execute"] == 0, by_name["execute"]
             assert "pending, no timing recorded" in by_name["execute"], by_name["execute"]
             assert "over" in by_name["recall"], "a 4000ms stage against 1200ms must say so"
-            assert isinstance(app.screen.query_one("#advisor-loop-id", Static), Static)
+            # The advisor page shares the detail shell, so its title is the
+            # shared #detail-title (the loop id text is unchanged).
+            assert isinstance(app.screen.query_one("#detail-title", Static), Static)
 
     _run(_run_it())
 

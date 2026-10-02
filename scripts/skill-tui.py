@@ -919,49 +919,83 @@ def _tui_classes() -> dict:
         def key_y(self) -> None:
             self.dismiss(True)
 
-    # ---- skill detail screen ----------------------------------------------
-    class SkillDetailScreen(Screen):
+    # ---- detail screens ----------------------------------------------------
+    class DetailScreen(Screen):
+        """Shared shell for the four row-detail pages.
+
+        Skill, MCP, plugin and advisor detail are one page: a Header, a
+        scrolling body, a bold title, the page's own sections, and a Footer,
+        with the same escape/q back binding. Only the title and the sections
+        differ, so the shell and the binding live here once instead of in four
+        hand-copied screens that can drift apart.
+        """
+
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
 
-        def __init__(self, skill: str, detail: dict):
+        # The title Static's id; the shared CSS styles it. Reused by every
+        # subclass so the four pages stay one page visually.
+        TITLE_ID = "detail-title"
+
+        def __init__(self, title: str):
             super().__init__()
+            self._title = title
+
+        def title_text(self) -> str:
+            return f"[b]{self._title}[/b]"
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=True)
+            with VerticalScroll(id="detail-body"):
+                yield Static(self.title_text(), id=self.TITLE_ID)
+                yield from self.sections()
+            yield Footer()
+
+        def sections(self) -> ComposeResult:
+            """The page's own widgets, below the title."""
+            raise NotImplementedError
+
+        def on_mount(self) -> None:
+            self.populate()
+
+        def populate(self) -> None:
+            """Fill the page's tables. Pages without a table do nothing."""
+
+    class SkillDetailScreen(DetailScreen):
+        def __init__(self, skill: str, detail: dict):
+            super().__init__(detail["name"])
             self.skill = skill
             self.detail = detail
 
-        def compose(self) -> ComposeResult:
+        def sections(self) -> ComposeResult:
             d = self.detail
-            yield Header(show_clock=True)
-            with VerticalScroll(id="detail-body"):
-                yield Static(f"[b]{d['name']}[/b]", id="detail-title")
-                yield Static(
-                    f"[dim]source[/dim]   {d.get('source')}\n"
-                    f"[dim]category[/dim] {d.get('category')}\n"
-                    f"[dim]path[/dim]     {d.get('path')}\n"
-                    f"[dim]hash[/dim]     {(d.get('content_hash') or '-')[:16]}"
-                    f"  ({len(d.get('versions') or [])} versions)\n\n"
-                    f"[dim]description[/dim]\n{d.get('description') or '(none)'}",
-                    id="detail-meta",
-                )
-                sr = db.success_rate(d.get("total"), d.get("success"))
-                yield Static(
-                    f"[b]Stats[/b]\n"
-                    f"  total {d.get('total', 0)}   success {d.get('success', 0)}   "
-                    f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
-                    f"  success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
-                    f"last 30d {d.get('uses_30d', 0)}   last used {db.fmt_time(d.get('last_used'))}",
-                    id="detail-stats",
-                )
-                yield Label("Usage history", id="detail-hist-label")
-                table = DataTable(id="detail-history", zebra_stripes=True)
-                table.cursor_type = "row"
-                yield table
-                if d.get("versions"):
-                    yield Label("Version history (SKILL.md content changes)", id="detail-ver-label")
-                    vt = DataTable(id="detail-versions", zebra_stripes=True)
-                    yield vt
-            yield Footer()
+            yield Static(
+                f"[dim]source[/dim]   {d.get('source')}\n"
+                f"[dim]category[/dim] {d.get('category')}\n"
+                f"[dim]path[/dim]     {d.get('path')}\n"
+                f"[dim]hash[/dim]     {(d.get('content_hash') or '-')[:16]}"
+                f"  ({len(d.get('versions') or [])} versions)\n\n"
+                f"[dim]description[/dim]\n{d.get('description') or '(none)'}",
+                id="detail-meta",
+            )
+            sr = db.success_rate(d.get("total"), d.get("success"))
+            yield Static(
+                f"[b]Stats[/b]\n"
+                f"  total {d.get('total', 0)}   success {d.get('success', 0)}   "
+                f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
+                f"  success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
+                f"last 30d {d.get('uses_30d', 0)}   last used {db.fmt_time(d.get('last_used'))}",
+                id="detail-stats",
+            )
+            yield Label("Usage history", id="detail-hist-label")
+            table = DataTable(id="detail-history", zebra_stripes=True)
+            table.cursor_type = "row"
+            yield table
+            if d.get("versions"):
+                yield Label("Version history (SKILL.md content changes)", id="detail-ver-label")
+                vt = DataTable(id="detail-versions", zebra_stripes=True)
+                yield vt
 
-        def on_mount(self) -> None:
+        def populate(self) -> None:
             table = self.query_one("#detail-history", DataTable)
             table.add_columns("Time", "Project", "Session", "Status", "Duration", "Model", "Agent", "Branch")
             for r in self.detail.get("history", []):
@@ -982,42 +1016,36 @@ def _tui_classes() -> dict:
                     vt.add_row(db.fmt_time(v["recorded_at"]), (v["content_hash"] or "")[:16], str(v["size_bytes"] or "-"))
 
     # ---- mcp / plugin detail screens ------------------------------------
-    class McpDetailScreen(Screen):
-        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
-
+    class McpDetailScreen(DetailScreen):
         def __init__(self, server: str, tool: str, detail: dict):
-            super().__init__()
+            super().__init__(f"{server}.{tool}")
             self.server = server
             self.tool = tool
             self.detail = detail
 
-        def compose(self) -> ComposeResult:
+        def sections(self) -> ComposeResult:
             d = self.detail
-            yield Header(show_clock=True)
-            with VerticalScroll(id="detail-body"):
-                yield Static(f"[b]{self.server}.{self.tool}[/b]", id="detail-title")
-                sr = db.success_rate(d.get("total"), d.get("success"))
-                # Keep `avg` out of the conditional: an inline `... if x else ...`
-                # here binds to the whole concatenated string, which silently
-                # dropped "last used" when avg was present and the entire stats
-                # block when it was absent.
-                avg = d.get("avg_ms")
-                avg_part = f"avg {round(avg)}ms   " if avg is not None else ""
-                yield Static(
-                    f"[dim]server[/dim] {self.server}   [dim]tool[/dim] {self.tool}\n"
-                    f"total {d.get('total', 0)}   success {d.get('success', 0)}   "
-                    f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
-                    f"success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
-                    f"{avg_part}last used {db.fmt_time(d.get('last_used'))}",
-                    id="detail-stats",
-                )
-                yield Label("Call history (Enter on the MCP tab opens this page)", id="detail-hist-label")
-                table = DataTable(id="detail-history", zebra_stripes=True)
-                table.cursor_type = "row"
-                yield table
-            yield Footer()
+            sr = db.success_rate(d.get("total"), d.get("success"))
+            # Keep `avg` out of the conditional: an inline `... if x else ...`
+            # here binds to the whole concatenated string, which silently
+            # dropped "last used" when avg was present and the entire stats
+            # block when it was absent.
+            avg = d.get("avg_ms")
+            avg_part = f"avg {round(avg)}ms   " if avg is not None else ""
+            yield Static(
+                f"[dim]server[/dim] {self.server}   [dim]tool[/dim] {self.tool}\n"
+                f"total {d.get('total', 0)}   success {d.get('success', 0)}   "
+                f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
+                f"success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
+                f"{avg_part}last used {db.fmt_time(d.get('last_used'))}",
+                id="detail-stats",
+            )
+            yield Label("Call history (Enter on the MCP tab opens this page)", id="detail-hist-label")
+            table = DataTable(id="detail-history", zebra_stripes=True)
+            table.cursor_type = "row"
+            yield table
 
-        def on_mount(self) -> None:
+        def populate(self) -> None:
             table = self.query_one("#detail-history", DataTable)
             table.add_columns("Time", "Project", "Session", "Status", "Duration", "Trigger", "Args")
             for r in self.detail.get("history", []):
@@ -1031,38 +1059,30 @@ def _tui_classes() -> dict:
                     (r.get("arg_names") or "")[:50],
                 )
 
-    class PluginDetailScreen(Screen):
-        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
-
+    class PluginDetailScreen(DetailScreen):
         def __init__(self, plugin: str, kind: str, item: str, detail: dict):
-            super().__init__()
+            super().__init__(f"{plugin} / {kind} / {item}")
             self.plugin = plugin
             self.kind = kind
             self.item = item
             self.detail = detail
 
-        def compose(self) -> ComposeResult:
+        def sections(self) -> ComposeResult:
             d = self.detail
-            yield Header(show_clock=True)
-            with VerticalScroll(id="detail-body"):
-                yield Static(
-                    f"[b]{self.plugin} / {self.kind} / {self.item}[/b]", id="detail-title"
-                )
-                sr = db.success_rate(d.get("total"), d.get("success"))
-                yield Static(
-                    f"total {d.get('total', 0)}   success {d.get('success', 0)}   "
-                    f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
-                    f"success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
-                    f"last used {db.fmt_time(d.get('last_used'))}",
-                    id="detail-stats",
-                )
-                yield Label("Call history (Enter on the Plugins tab opens this page)", id="detail-hist-label")
-                table = DataTable(id="detail-history", zebra_stripes=True)
-                table.cursor_type = "row"
-                yield table
-            yield Footer()
+            sr = db.success_rate(d.get("total"), d.get("success"))
+            yield Static(
+                f"total {d.get('total', 0)}   success {d.get('success', 0)}   "
+                f"errors {d.get('errors', 0)}   denied {d.get('denied', 0)}\n"
+                f"success rate {('%d%%' % round(sr * 100)) if sr is not None else '-'}   "
+                f"last used {db.fmt_time(d.get('last_used'))}",
+                id="detail-stats",
+            )
+            yield Label("Call history (Enter on the Plugins tab opens this page)", id="detail-hist-label")
+            table = DataTable(id="detail-history", zebra_stripes=True)
+            table.cursor_type = "row"
+            yield table
 
-        def on_mount(self) -> None:
+        def populate(self) -> None:
             table = self.query_one("#detail-history", DataTable)
             table.add_columns("Time", "Project", "Session", "Status", "Duration", "Trigger")
             for r in self.detail.get("history", []):
@@ -1076,7 +1096,7 @@ def _tui_classes() -> dict:
                 )
 
     # ---- advisor loop detail ------------------------------------------------
-    class AdvisorDetailScreen(Screen):
+    class AdvisorDetailScreen(DetailScreen):
         """One advisor loop, explained.
 
         This screen performs no reading of its own: it is handed the projected
@@ -1087,29 +1107,21 @@ def _tui_classes() -> dict:
         editing it can, and the tests read the rendered text for the sentinels.
         """
 
-        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
-
         def __init__(self, loop: dict, timeout_ms: int):
-            super().__init__()
+            super().__init__(f"Advisor loop {loop.get('loop_id') or '-'}")
             self.loop = loop
             self.timeout_ms = timeout_ms
 
-        def compose(self) -> ComposeResult:
-            loop = self.loop
-            yield Header(show_clock=True)
-            with VerticalScroll(id="detail-body"):
-                yield Static(f"[b]Advisor loop {loop.get('loop_id') or '-'}[/b]",
-                             id="advisor-loop-id")
-                yield Static(self._summary_text(), id="detail-stats")
-                yield Static(self._recall_text(), id="advisor-memory")
-                yield Static(self._usage_text(), id="advisor-usage")
-                yield Label(
-                    "Stage timings — bar length is milliseconds, scaled to this "
-                    "loop's slowest stage",
-                    id="detail-hist-label",
-                )
-                yield Static(self._stage_chart_text(), id="advisor-stage-chart")
-            yield Footer()
+        def sections(self) -> ComposeResult:
+            yield Static(self._summary_text(), id="detail-stats")
+            yield Static(self._recall_text(), id="advisor-memory")
+            yield Static(self._usage_text(), id="advisor-usage")
+            yield Label(
+                "Stage timings — bar length is milliseconds, scaled to this "
+                "loop's slowest stage",
+                id="detail-hist-label",
+            )
+            yield Static(self._stage_chart_text(), id="advisor-stage-chart")
 
         # -- text builders, each naming the fields it reads ------------------
         def _summary_text(self) -> str:
@@ -2472,6 +2484,7 @@ def _tui_classes() -> dict:
     _TUI_CACHE.update(
         {
             "ConfirmScreen": ConfirmScreen,
+            "DetailScreen": DetailScreen,
             "SkillDetailScreen": SkillDetailScreen,
             "McpDetailScreen": McpDetailScreen,
             "PluginDetailScreen": PluginDetailScreen,
