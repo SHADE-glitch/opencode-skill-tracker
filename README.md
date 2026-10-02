@@ -272,9 +272,12 @@ skillt agentos   [--json] [--limit N]
   policy (see [Backups](#backups)).
 - `doctor` — health check printing PASS/WARN/FAIL; **exit code 1 if any FAIL**.
   Besides the structural checks (database, skills, plugin file, environment,
-  backups) it checks the **capture pipeline itself**: `capture.freshness` (how
-  long ago the newest row in each usage table is, against `--freshness-days`,
-  default 7), `log.errors` (count of `[err]` lines in the plugin's own log, with
+  backups) it checks the **capture pipeline itself**: `capture.freshness` (the age
+  of the newest row **of each stream separately** — `skill_usage 0.0d · mcp_usage
+  2.2d · plugin_usage 0.0d` — against `--freshness-days`, default 7; a stream that
+  never recorded a row is reported as `no rows` and is not treated as stalled, and
+  `OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` excludes a stream from the verdict
+  while still printing its age), `log.errors` (count of `[err]` lines in the plugin's own log, with
   the last one quoted) and `env.opencode_version` (installed version versus the
   one the builtin-tool allowlist is pinned to, see M13). Those three **WARN,
   never FAIL** — a quiet week is not a fault.
@@ -356,6 +359,7 @@ OpenCode runtime
 | `OPENCODE_SKILL_TRACKER_MCP_DISABLE` | `1` stops MCP recording while skill recording stays on |
 | `OPENCODE_SKILL_TRACKER_DISABLE` | `1` disables the plugin entirely |
 | `OPENCODE_SKILL_TRACKER_DEBUG` | `1` enables per-call debug lines in the plugin log |
+| `OPENCODE_SKILL_TRACKER_STREAMS` | read side: comma list of streams `doctor` may call stalled (default: all three). An excluded stream is still printed, marked `(excluded)` |
 | `SKILLT_SCRIPTS` | override the `scripts/` directory the launcher uses |
 | `SKILLT_VENV` | point the launcher at a venv dir or a python binary |
 

@@ -21,7 +21,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Rows | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
-| Test suite | 344 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| Test suite | 347 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Every stage so far has been 15–172 ms against a 1200 ms budget. **The 5 loops are live-test samples** (`model=opencode/space-bunny-free`), not production usage |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
@@ -82,8 +82,13 @@ Healthy today means, at minimum:
 
 - `db.quick_check` → `ok`
 - `plugin.exists` / `plugin.hooks` / `plugin.mcp_hooks` / `plugin.plugin_hooks` → PASS
-- `capture.freshness` → PASS with a table named and an age; **WARN means the
-  plugin stopped writing**, which is the failure this check exists for
+- `capture.freshness` → PASS listing **every** stream's age (`skill_usage 0.0d ·
+  mcp_usage 2.2d · plugin_usage 0.0d`); **WARN names the stalled one**, which is the
+  failure this check exists for. It used to take the newest row across the three
+  tables, so one live stream made it permanently green: not a false alarm, a false
+  silence. A stream that never recorded a row reads `no rows` and is not stalled;
+  `OPENCODE_SKILL_TRACKER_STREAMS` excludes a stream from the verdict while still
+  printing its age
 - `log.errors` → `0 error line(s)`; any other number means a hook threw and the
   detail is the last `[err]` line
 - `env.opencode_version` → PASS only while the installed version equals the pin

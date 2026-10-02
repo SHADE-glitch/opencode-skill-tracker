@@ -17,7 +17,7 @@
 | 行数 | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
-| 测试 | 344 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| 测试 | 347 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。目前所有阶段都在 15–172ms，预算是 1200ms。**那 5 个 loop 是 live 测试样本**（`model=opencode/space-bunny-free`），不是真实用量 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
@@ -66,7 +66,7 @@ skillt doctor            # 期望：0 FAIL
 
 - `db.quick_check` → `ok`
 - `plugin.exists` / `plugin.hooks` / `plugin.mcp_hooks` / `plugin.plugin_hooks` → PASS
-- `capture.freshness` → PASS 并点名表和距今时长；**WARN 意味着插件停止写入了**，这正是这项检查存在的理由
+- `capture.freshness` → PASS 时**三条流各自**报距今时长；**WARN 会点名停滞的那条**——这正是这项检查存在的理由。以前它取三张表的最大值，只要还有一路活着就永远绿：某一路断了它不会误报，而是**该报的时候不报**。现在按流判定；从没记过行的流算 `no rows` 不算停滞，`OPENCODE_SKILL_TRACKER_STREAMS` 可以排除某条流但仍会打印它的年龄
 - `log.errors` → `0 error line(s)`；非 0 说明有钩子抛过异常，详情就是最后那条 `[err]`
 - `env.opencode_version` → 只有安装版本与 allowlist 对齐版本相同才 PASS
 - 启用 §4 的定时器后，`backups.latest` → 约 1 天内
