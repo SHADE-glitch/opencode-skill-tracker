@@ -1252,6 +1252,29 @@ def _tui_classes() -> dict:
         # Wall-clock time of the last full re-read; drives _maybe_refresh.
         _last_refresh: float = 0.0
 
+        # Where each page's status line lives. A page stamps its own line with
+        # when *it* was read (see _freshness), because with per-page refresh
+        # the pages are read at different times.
+        _PAGE_STATUS_WIDGET = {
+            "tab-dash": "#cards-legend",
+            "tab-skills": "#sort-label",
+            "tab-mcp": "#mcp-label",
+            "tab-plugins": "#plugins-label",
+            "tab-advisor": "#advisor-label",
+            "tab-recent": "#recent-label",
+            "tab-cats": "#cats-label",
+            "tab-data": "#data-info",
+        }
+
+        def __init__(self):
+            super().__init__()
+            # Read time per tab id, plus the base text and the failure note of
+            # each page's status line. A single global "data as of" would be a
+            # lie once pages refresh independently.
+            self._page_read_at: dict[str, float] = {}
+            self._page_status_base: dict[str, str] = {}
+            self._page_stale: dict[str, str] = {}
+
         BINDINGS = [
             Binding("q", "app.quit", "Quit"),
             Binding("r", "refresh_data", "Refresh"),
@@ -1358,6 +1381,7 @@ def _tui_classes() -> dict:
                     t.cursor_type = "row"
                     yield t
                 with TabPane("Categories", id="tab-cats"):
+                    yield Static(id="cats-label")
                     t = DataTable(id="cats-table", zebra_stripes=True)
                     t.cursor_type = "row"
                     yield t
@@ -1402,7 +1426,9 @@ def _tui_classes() -> dict:
                 except Exception as e:  # noqa: BLE001
                     self.app.notify(f"sync failed: {e}", severity="warning")
             self._layout_cards()
-            self.refresh_data()
+            # First paint populates every page, so no tab opens empty. After
+            # this, only the page on screen is re-read.
+            self.refresh_all()
 
         def _fail_with(self, message: str) -> None:
             """Leave an error on screen, not only in a transient toast."""
@@ -1425,8 +1451,39 @@ def _tui_classes() -> dict:
             # written since the screen was drawn.
             self._maybe_refresh()
 
+        def _freshness(self, page: str) -> str:
+            """The suffix a page's status line carries.
+
+            Either when that page's data was last read, or that its last read
+            failed. Computed from the page's own stamp, never a global clock,
+            so a page that was not re-read cannot look freshly read.
+            """
+            stale = self._page_stale.get(page)
+            if stale:
+                return f"  ·  [red]Partly stale[/red] ({stale})"
+            ts = self._page_read_at.get(page)
+            if not ts:
+                return ""
+            return f"  ·  [dim]data as of {datetime.fromtimestamp(ts).strftime('%H:%M:%S')}[/dim]"
+
+        def _paint_status(self, page: str) -> None:
+            """Write `base_text + freshness` to the page's status widget.
+
+            Always recomputed from the stored base, so a failure repaint cannot
+            stack a second suffix on top of the first.
+            """
+            wid = self._PAGE_STATUS_WIDGET.get(page)
+            if not wid:
+                return
+            base = self._page_status_base.get(page, "")
+            try:
+                self.query_one(wid, Static).update(base + self._freshness(page))
+            except Exception:  # noqa: BLE001 - widget not composed yet
+                pass
+
         def on_tabbed_content_tab_activated(self, event) -> None:
             # Switching tabs is when a user looks; do not make them press `r`.
+            # Only the page they switched to is re-read.
             if self.app.conn is not None:
                 self.refresh_data()
 
@@ -1448,38 +1505,78 @@ def _tui_classes() -> dict:
             cards.styles.grid_size_rows = 1 if wide else 2
 
         # -- rendering ------------------------------------------------------
-        def refresh_data(self) -> None:
-            """Re-read every section of the screen.
+        def _page_sections(self) -> dict:
+            """The sections each tab owns, by tab id.
 
-            Each section is attempted on its own. They used to share one
-            try/except, so a failure halfway through left the cards it had
-            already written current and every table below them stale — the
-            screen looked refreshed while parts of it were not.
+            The active tab decides what a refresh re-reads. The advisor digest
+            is the one query that does per-file I/O, so it is listed only under
+            the Advisor page — no other page can reach that store by accident.
             """
             conn = self.app.conn
-            failures: list[str] = []
-            self._last_refresh = time.time()
+            return {
+                "tab-dash": [
+                    ("cards", lambda: self._render_cards(conn)),
+                    ("trends", lambda: self._render_trends(conn)),
+                    ("top tables", lambda: self._render_top_tables(conn)),
+                ],
+                "tab-skills": [("skills", lambda: self._render_skills_section(conn))],
+                "tab-mcp": [("mcp", self.render_mcp)],
+                "tab-plugins": [("plugins", self.render_plugins)],
+                "tab-advisor": [("advisor", lambda: self._render_advisor(conn))],
+                "tab-recent": [("recent timeline", self._render_recent_section)],
+                "tab-cats": [("categories", lambda: self._render_categories(conn))],
+                "tab-data": [("data page", self._render_data_info)],
+            }
 
-            def section(label, render):
-                try:
-                    render()
-                except Exception as e:  # noqa: BLE001
-                    failures.append(f"{label}: {e}")
+        def _active_page(self) -> str:
+            try:
+                return self.query_one(TabbedContent).active
+            except Exception:  # noqa: BLE001 - before compose in tests
+                return "tab-dash"
 
-            section("cards", lambda: self._render_cards(conn))
-            section("trends", lambda: self._render_trends(conn))
-            section("top tables", lambda: self._render_top_tables(conn))
-            section("skills", lambda: self._render_skills_section(conn))
-            section("advisor", lambda: self._render_advisor(conn))
-            section("recent timeline", self._render_recent_section)
-            section("categories", lambda: self._render_categories(conn))
-            section("data page", self._render_data_info)
+        def refresh_data(self) -> None:
+            """Re-read the page that is on screen.
 
+            A page that is not visible is not re-queried, so switching tabs no
+            longer repaints every page (and no longer reads the advisor store
+            from a page that has nothing to do with it). The explicit `r` key
+            and the first paint use `refresh_all`.
+            """
+            self._refresh_pages([self._active_page()])
+
+        def refresh_all(self) -> None:
+            """Re-read every page. Used for the first paint and the `r` key."""
+            self._refresh_pages(list(self._page_sections()))
+
+        def _refresh_pages(self, pages) -> None:
+            """Run each named page's sections, isolated from the others.
+
+            Each section is attempted on its own: a failure halfway through
+            leaves the sections it already wrote current and marks only its own
+            page stale, instead of the whole screen looking refreshed.
+            """
+            if self.app.conn is None:
+                return
+            sections = self._page_sections()
+            failures: list[tuple[str, str]] = []
+            now = time.time()
+            for page in pages:
+                # Stamp the read before the sections run, so a page's own
+                # status line can say when this read happened.
+                self._page_read_at[page] = now
+                self._page_stale.pop(page, None)
+                for label, render in sections.get(page, []):
+                    try:
+                        render()
+                    except Exception as e:  # noqa: BLE001
+                        failures.append((page, f"{label}: {e}"))
+            self._last_refresh = now
             if failures:
-                self.query_one("#cards-legend", Static).update(
-                    "[red]Partly stale[/red]  ·  " + "  ·  ".join(failures[:3])
-                )
-                self.app.notify("; ".join(failures), severity="error")
+                for page, message in failures:
+                    self._page_stale[page] = message
+                for page in {p for p, _ in failures}:
+                    self._paint_status(page)
+                self.app.notify("; ".join(m for _, m in failures), severity="error")
 
         def _render_cards(self, conn) -> None:
             s = db.dashboard_summary(conn)
@@ -1506,16 +1603,16 @@ def _tui_classes() -> dict:
             self.query_one("#card-rate", Static).update(
                 f"[b]{rate_text(tot, ok)}[/b]\n[dim]Skill success[/dim]"
             )
-            self.query_one("#cards-legend", Static).update(
+            self._page_status_base["tab-dash"] = (
                 f"[dim]Today (all) = {s['today_usage']} skill + {s['today_mcp']} mcp"
                 f" + {s.get('today_plugin', 0)} plugin  ·  "
                 f"{s['personal']} personal / {s['open_source']} OSS skills  ·  "
                 f"observed {s['sample']['sessions']} session(s) over "
-                f"{s['sample']['days_observed']} day(s)  ·  "
-                # The screen only re-reads on interaction, so say when it last
-                # did: idle numbers must never look live.
-                f"data as of {datetime.now().strftime('%H:%M:%S')}[/dim]"
+                f"{s['sample']['days_observed']} day(s)[/dim]"
             )
+            # The screen only re-reads on interaction, so its own status line
+            # says when it last did: idle numbers must never look live.
+            self._paint_status("tab-dash")
 
         def _render_trends(self, conn) -> None:
             # Three 7-day charts side by side, each scaled to its own peak:
@@ -1550,10 +1647,11 @@ def _tui_classes() -> dict:
                 self.query_one(wid, Static).update("\n".join(chart))
 
         def _render_top_tables(self, conn) -> None:
+            # The MCP and Plugins pages render themselves; the dashboard fills
+            # only its own top-10 tables, so a dashboard refresh no longer
+            # repaints two unrelated pages.
             mcp_rows = db.mcp_stats_rows(conn)
             plugin_rows = db.plugin_stats_rows(conn)
-            self.render_mcp(mcp_rows)
-            self.render_plugins(plugin_rows)
 
             top_rows = db.top_rows(conn, 10)
             top = self.query_one("#dash-top", DataTable)
@@ -1611,7 +1709,6 @@ def _tui_classes() -> dict:
 
         def _render_advisor(self, conn) -> None:
             res = db.agentos_summary(conn, limit=ADVISOR_ROW_LIMIT)
-            label = self.query_one("#advisor-label", Static)
             legend = self.query_one("#advisor-legend", Static)
             table = self.query_one("#advisor-table", DataTable)
             if not table.columns:
@@ -1640,21 +1737,23 @@ def _tui_classes() -> dict:
                 "that store and never copies its task text.[/dim]"
             )
             if not res["available"]:
-                label.update(
+                self._page_status_base["tab-advisor"] = (
                     f"[dim]AgentOS advisor: not aggregated[/dim]  ·  {res['reason']}\n"
                     "[dim]set AGENT_OS_ROOT, or OPENCODE_SKILL_TRACKER_AGENTOS_DB"
                     " pointing at store/aos.db. This tab never writes to that store.[/dim]\n"
                     + ADVISOR_SOURCE_NOTE
                 )
+                self._paint_status("tab-advisor")
                 return
             sc = res["store_counts"]
-            label.update(
+            self._page_status_base["tab-advisor"] = (
                 ADVISOR_SOURCE_NOTE + "\n"
                 f"[dim]store {res['db_path']}   ·   memories {sc.get('memories')}"
                 f"   ·   retrieval {res['retrieval'].get('n')}"
                 f" over {res['retrieval'].get('memories')}"
                 f"   ·   loops {res['loops_total']}[/dim]"
             )
+            self._paint_status("tab-advisor")
             for i, loop in enumerate(res["loops"]):
                 stages = loop.get("stages") or {}
                 done = sum(1 for v in stages.values() if v["status"] == "completed")
@@ -1706,9 +1805,12 @@ def _tui_classes() -> dict:
                     r["source"], r["category"] or "-", str(r["skills"]), str(r["usage"]),
                     str(r["success"]), str(r["errors"]), str(r["denied"]),
                 )
+            self._page_status_base["tab-cats"] = "[dim]One row per source / category[/dim]"
+            self._paint_status("tab-cats")
 
         def _render_data_info(self) -> None:
-            self.query_one("#data-info", Static).update(self._data_info())
+            self._page_status_base["tab-data"] = self._data_info()
+            self._paint_status("tab-data")
 
         def _data_info(self) -> str:
             """DB path/size/row counts + last backup, shown on the Data page.
@@ -1779,11 +1881,12 @@ def _tui_classes() -> dict:
                     selected = None
 
             hint = "" if self.app.has_usage else "   ·   no usage data yet, all orders coincide"
-            self.query_one("#sort-label", Static).update(
+            self._page_status_base["tab-skills"] = (
                 f"[dim]Sort: {SORT_LABELS[self.app.sort_mode]}   ·   "
                 f"showing {len(rows)} / {len(self.app.all_rows)}   ·   "
                 f"Enter opens detail  ·  d deletes{hint}[/dim]"
             )
+            self._paint_status("tab-skills")
             # Columns are static, so a row-level clear is enough (and keeps the
             # column set stable across refreshes).
             if not table.columns:
@@ -1841,6 +1944,11 @@ def _tui_classes() -> dict:
                     f"{r['duration_ms']}ms" if r["duration_ms"] is not None else "-",
                     key=key,
                 )
+            self._page_status_base["tab-recent"] = (
+                "[dim]Skills + MCP + plugins in one timeline  ·  "
+                "Enter opens the row's detail page[/dim]"
+            )
+            self._paint_status("tab-recent")
 
         def render_mcp(self, rows=None) -> None:
             if rows is None:
@@ -1865,10 +1973,11 @@ def _tui_classes() -> dict:
                 except Exception:  # noqa: BLE001
                     selected = None
 
-            self.query_one("#mcp-label", Static).update(
+            self._page_status_base["tab-mcp"] = (
                 f"[dim]Sort: {SORT_LABELS[self.app.mcp_sort_mode]}   ·   "
                 f"showing {len(rows)} tool(s)  ·  Enter opens detail[/dim]"
             )
+            self._paint_status("tab-mcp")
             if not table.columns:
                 table.add_columns(
                     "Server", "Tool", "Calls", "30d", "Sessions", "Success Rate", "Avg", "Last Used"
@@ -1946,7 +2055,8 @@ def _tui_classes() -> dict:
                 )
             if excluded:
                 lines.append("[dim]Excluded: " + " · ".join(excluded) + "[/dim]")
-            self.query_one("#plugins-label", Static).update("\n".join(lines))
+            self._page_status_base["tab-plugins"] = "\n".join(lines)
+            self._paint_status("tab-plugins")
 
             if not table.columns:
                 table.add_columns(
@@ -2114,7 +2224,8 @@ def _tui_classes() -> dict:
 
         # -- actions --------------------------------------------------------
         def action_refresh_data(self) -> None:
-            self.refresh_data()
+            # An explicit refresh re-reads every page, not just the one shown.
+            self.refresh_all()
             self.app.notify("Refreshed")
 
         def action_focus_search(self) -> None:
@@ -2297,7 +2408,7 @@ def _tui_classes() -> dict:
            drift. */
         .trend { width: 1fr; height: 8; }
         .section { padding: 1 2 0 2; }
-        #sort-label, #mcp-label, #plugins-label { padding: 0 2; height: auto; }
+        #sort-label, #mcp-label, #plugins-label, #cats-label { padding: 0 2; height: auto; }
         #search, #mcp-search, #plugins-search { margin: 0 2; }
         DataTable { height: 1fr; margin: 0 1; }
         DataTable > .datatable--header { text-style: bold; }

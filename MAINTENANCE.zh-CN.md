@@ -164,7 +164,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 6. 刻意为之的偏离（别"顺手修回去"）
 
-- **TUI 里没有后台定时器。** 屏幕在按键（5 秒节流）、切页、`r` 时重读，并显示 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会一次带走 47 个 TUI 测试。`test_tui_creates_no_app_timers` 把这条钉住。
+- **TUI 里没有后台定时器。** 刷新是按页、事件驱动的：按键（5 秒节流）和切页只重读当前页，`r` 与首次绘制重读所有页；每页各自显示自己的 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会一次带走 47 个 TUI 测试。`test_tui_creates_no_app_timers` 把这条钉住。
 - **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** Dashboard 排名柱那版把每根渲染出来的柱都和 `rank_bar_width(...)` 的返回值比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫不是守卫。那一列后来按他的要求撤掉了，但这条教训留下：现在`test_tui_trend_rows_are_a_fixed_width` 断言的是绝对宽度（20），顾问阶段图的用例断言的也是绝对的格子数。
 - **顾问的三个召回计数绝不合并。** `Searched` 是引擎自报，`Recalled` 是
   `len(memory_ids)`，`Reached the prompt` 是 `len(injected_memory_ids)`；假说可以被单独注入，
@@ -217,7 +217,7 @@ M1–M21 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [REA
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
 | 日志不轮转（M17） | 小 | 需要先定策略（轮转 / 截断 / 交给 journald） |
-| Advisor 页每次刷新最多重读 30 个 loop 文件，按 Enter 进详情会再读一遍 | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态 |
+| Advisor 页在自身刷新时最多重读 30 个 loop 文件（其他页刷新时不会），按 Enter 进详情会再读一遍 | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态 |
 | Advisor 页读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那两格变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的列变成 `-` 就是信号 |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
 | `skill_versions` 无上限增长 | 小 | 需要保留策略；目前没有任何清理 |

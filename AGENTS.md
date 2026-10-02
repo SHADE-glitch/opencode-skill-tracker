@@ -129,8 +129,9 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   created after the screens mount makes `run_test`'s teardown raise
   `LookupError: <ContextVar name='active_app'>` (empty callback, App or Screen,
   even after `timer.stop()`), which fails all 47 TUI tests at once. Refresh is
-  event-driven: keystroke (throttled by `REFRESH_STALE_AFTER_S`), tab
-  activation, and `r`; the dashboard prints `data as of HH:MM:SS`.
+  event-driven and per page: a keystroke (throttled by `REFRESH_STALE_AFTER_S`)
+  and a tab activation re-read only the active page, `r` and the first paint
+  re-read every page, and each page prints its own `data as of HH:MM:SS`.
   `test_tui_creates_no_app_timers` pins it.
 - **Never parse a row's identity out of its `key`.** Names contain the
   separators: `@scope/pkg@1.0/tool`, `conductor:newTrack`, server names with

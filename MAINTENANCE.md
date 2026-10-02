@@ -200,8 +200,10 @@ instead — but then `env.opencode_version` keeps WARNING on purpose.
 Recorded so the next reader does not "helpfully" fix them back into a broken
 state.
 
-- **No background timer in the TUI.** The screen re-reads on keystroke (5 s
-  throttle), on tab activation and on `r`, and prints `data as of HH:MM:SS`.
+- **No background timer in the TUI.** Refresh is event-driven and per page: a
+  keystroke (5 s throttle) and a tab activation re-read only the page on
+  screen, `r` and the first paint re-read every page, and each page prints its
+  own `data as of HH:MM:SS`.
   A `set_interval` was tried first: on textual 8.2.8 **any** app timer created
   after the screens mount makes `run_test`'s teardown raise
   `LookupError: <ContextVar name='active_app'>` — reproduced with an empty
@@ -294,7 +296,7 @@ late error text can be dropped by the `COALESCE` on metadata).
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
 | No log rotation (M17) | small | needs a policy decision (rotate vs. cap vs. rely on journald) |
-| The Advisor tab re-reads up to 30 loop files on every refresh, and opening a row reads them again | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns |
+| The Advisor tab re-reads up to 30 loop files whenever the Advisor page refreshes (not when other tabs do), and opening a row reads them again | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns |
 | The Advisor tab reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one blanks those cells instead of breaking anything, and `_count_only` refuses to count text. A column that used to hold numbers showing `-` is the signal |
 | `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
 | `skill_versions` grows without bound | small | needs a retention decision; no pruning exists today |

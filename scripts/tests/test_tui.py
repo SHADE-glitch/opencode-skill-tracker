@@ -1190,25 +1190,104 @@ def test_tui_shows_the_age_of_what_is_on_screen(seeded_db):
 
 
 def test_tui_refreshes_when_a_tab_is_activated(seeded_db):
+    """Switching to a page re-reads that page: the writer is another process.
+
+    Per-page refresh means the page the user switched to is the one re-read —
+    the dashboard is not repainted as a side effect. A row written since mount
+    must therefore appear on the activated page itself, not only on a card.
+    """
     import sqlite3
 
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test(size=(120, 45)) as pilot:
             await pilot.pause()
+            assert not any(r["name"] == "tab-activated" for r in app.recent_rows_cache)
             extra = sqlite3.connect(seeded_db)
             extra.execute(
                 "INSERT INTO skill_usage (skill_name, session_id, project_path,"
                 " trigger_type, status, timestamp, call_id)"
-                " VALUES ('grow','s-tab','/p','tool_call','success',"
+                " VALUES ('tab-activated','s-tab','/p','tool_call','success',"
                 " strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'c-tab')"
             )
             extra.commit()
             extra.close()
 
+            app.screen.query_one("TabbedContent").active = "tab-recent"
+            await pilot.pause()
+            assert any(r["name"] == "tab-activated" for r in app.recent_rows_cache), (
+                "the activated page must pick up the row written since mount"
+            )
+            app.conn.close()
+
+    _run(_run_it())
+
+
+def test_tui_skills_refresh_does_not_read_the_advisor(seeded_db, tmp_path, monkeypatch):
+    """Per-page refresh: only the Advisor page opens the advisor store.
+
+    The advisor digest is the one refresh query that does per-file I/O, and it
+    is irrelevant to every other page. This spies on the only door into that
+    store and pins that switching to Skills never opens it. Before the refresh
+    was split per page, a Skills tab switch ran the full refresh and read the
+    advisor store every time.
+    """
+    import skill_db as db
+    from test_agentos import _make_store
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    calls = []
+    real = db.agentos_summary
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(st.db, "agentos_summary", spy)
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()          # mount runs the full refresh
+            calls.clear()                # ignore the mount-time advisor read
             app.screen.query_one("TabbedContent").active = "tab-skills"
             await pilot.pause()
-            assert "22" in static_text(app.screen.query_one("#card-usage", Static))
+            assert calls == [], "switching to Skills must not read the advisor store"
+            app.conn.close()
+
+    _run(_run_it())
+
+
+def test_tui_a_page_not_refreshed_keeps_its_own_stamp(seeded_db):
+    """Each page stamps when *it* was read, not when any page was read.
+
+    A global "data as of" would make a page that has not been re-read look as
+    fresh as the page just visited. Pin that switching to Skills leaves the
+    dashboard's stamp untouched and gives Skills its own.
+    """
+    from datetime import datetime
+    from textual.widgets import Static
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            # Backdate the dashboard's read and repaint its status line.
+            old = datetime(2020, 1, 2, 3, 4, 5)
+            screen._page_read_at["tab-dash"] = old.timestamp()
+            screen._paint_status("tab-dash")
+            await pilot.pause()
+            stamp = old.strftime("%H:%M:%S")
+            assert stamp in static_text(screen.query_one("#cards-legend", Static))
+
+            screen.query_one("TabbedContent").active = "tab-skills"
+            await pilot.pause()
+            legend = static_text(screen.query_one("#cards-legend", Static))
+            assert stamp in legend, "a Skills switch must not re-read the dashboard"
+            skills = static_text(screen.query_one("#sort-label", Static))
+            assert "data as of" in skills, skills
             app.conn.close()
 
     _run(_run_it())

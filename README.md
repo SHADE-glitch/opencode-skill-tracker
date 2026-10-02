@@ -186,7 +186,9 @@ The **MCP** page lists one row per `(server, tool)` pair with call count,
 the Skills / MCP / Plugins tables has its own sort mode and filter box — `s`
 cycles the sort of whichever page is active, and `Enter` opens the row's
 detail page. The **Recent** page merges all three kinds into one timeline;
-`Enter` routes each row to its skill/MCP/plugin detail page.
+`Enter` routes each row to its skill/MCP/plugin detail page. Switching to a
+page re-reads **only that page** (and `r` re-reads every page), so each page
+prints its own `data as of HH:MM:SS` instead of one global timestamp.
 
 The **Advisor** page reads the AgentOS advisor's own store, read-only, and prints
 one row per advisor participation in a session: `Started`, `Outcome`,
