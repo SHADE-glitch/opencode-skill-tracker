@@ -571,6 +571,18 @@ REFRESH_STALE_AFTER_S = 5
 # a lie about a file that is still there.
 ADVISOR_ROW_LIMIT = 30
 
+# Said on the page, in both branches, because the misunderstanding it prevents is
+# about the whole tab: these are the advisor's own numbers, read back. The
+# tracker cannot record this plugin's behaviour at all — it registers no tool and
+# no command, so no usage row can ever name it (verified: `skill_usage`,
+# `mcp_usage` and `plugin_usage` hold zero rows for it; `plugin_inventory` holds
+# one, with empty tool and command lists).
+ADVISOR_SOURCE_NOTE = (
+    "[dim]the numbers on this page come from the advisor's own store, read-only — "
+    "they are not measured here: agent-os.js registers no tool and no command, so no "
+    "usage row can ever name it.[/dim]"
+)
+
 
 def _opencode_version():
     """Output of `opencode --version`, or None when it cannot be run.
@@ -1677,11 +1689,13 @@ def _tui_classes() -> dict:
                 label.update(
                     f"[dim]AgentOS advisor: not aggregated[/dim]  ·  {res['reason']}\n"
                     "[dim]set AGENT_OS_ROOT, or OPENCODE_SKILL_TRACKER_AGENTOS_DB"
-                    " pointing at store/aos.db. This tab never writes to that store.[/dim]"
+                    " pointing at store/aos.db. This tab never writes to that store.[/dim]\n"
+                    + ADVISOR_SOURCE_NOTE
                 )
                 return
             sc = res["store_counts"]
             label.update(
+                ADVISOR_SOURCE_NOTE + "\n"
                 f"[dim]store {res['db_path']}   ·   memories {sc.get('memories')}"
                 f"   ·   retrieval {res['retrieval'].get('n')}"
                 f" over {res['retrieval'].get('memories')}"

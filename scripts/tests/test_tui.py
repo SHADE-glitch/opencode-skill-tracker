@@ -1684,6 +1684,54 @@ def test_tui_row_dispatch_ignores_unknown_kinds(seeded_db):
     _run(_run_it())
 
 
+def test_tui_advisor_label_says_the_tracker_cannot_see_the_advisor(seeded_db, tmp_path, monkeypatch):
+    """The page must state where its numbers come from.
+
+    A reader who assumes these are tracker-measured usage rows will believe the
+    advisor's behaviour was measured. It never can be: the plugin registers no
+    tool and no command, so no usage row can name it.
+    """
+    import skill_db as db
+    from test_agentos import _make_store
+    from textual.widgets import Static
+
+    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            label = static_text(app.screen.query_one("#advisor-label", Static))
+            assert "own store" in label, label
+            assert "no tool and no command" in label, label
+            assert "not measured here" in label, label
+
+    _run(_run_it())
+
+
+def test_tui_advisor_label_says_it_even_without_a_store(seeded_db, monkeypatch):
+    """The explanation belongs to the page, not to one of its branches."""
+    import skill_db as db
+    from textual.widgets import Static
+
+    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-advisor"
+            await pilot.pause()
+            label = static_text(app.screen.query_one("#advisor-label", Static))
+            assert "not aggregated" in label, label
+            assert "own store" in label and "no tool and no command" in label, label
+
+    _run(_run_it())
+
+
 def test_tui_advisor_detail_dismisses_like_the_other_detail_screens(
     seeded_db, tmp_path, monkeypatch
 ):
