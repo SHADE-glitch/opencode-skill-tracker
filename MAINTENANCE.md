@@ -373,8 +373,8 @@ state.
 ## 7. Known limitations
 
 M1–M22, with reproduction notes:
-[README.zh-CN.md §9](README.zh-CN.md#9-已知限制) /
-[README.md](README.md#known-limitations).
+[README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
+[README.md](README.md#-known-limitations).
 The ones most likely to bite during maintenance: **M14** (historical prompt text
 in rows — scrubbed 2026-10-01, and the backups predating it were deleted),
 **M19** (fixed: backups had two destinations and retention only reached one —

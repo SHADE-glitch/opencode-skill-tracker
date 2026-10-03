@@ -19,7 +19,7 @@
 
 ---
 
-## 1. 项目介绍
+## 🤔 1. 项目介绍
 
 OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具调用钩子来间接识别 skill 使用：
 
@@ -46,7 +46,7 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 
 ---
 
-## 2. 架构
+## 🧱 2. 架构
 
 ```
 OpenCode 运行
@@ -68,7 +68,7 @@ OpenCode 运行
 
 ---
 
-## 3. 目录说明
+## 📦 3. 目录说明
 
 | 路径 | 作用 |
 |---|---|
@@ -89,7 +89,7 @@ OpenCode 运行
 
 ---
 
-## 4. 命令说明
+## 💻 4. 命令说明
 
 统一入口是 `skillt`。
 
@@ -191,7 +191,7 @@ skillt help
 
 ---
 
-## 5. 数据库说明
+## 💽 5. 数据库说明
 
 ### 5.1 表
 
@@ -237,7 +237,7 @@ sqlite3 ~/.local/share/opencode/skill-usage.db \
 
 ---
 
-## 6. 备份与恢复
+## 💾 6. 备份与恢复
 
 ### 6.1 手动备份
 
@@ -304,7 +304,7 @@ skillt doctor
 
 ---
 
-## 7. 故障排查
+## 🔧 7. 故障排查
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -321,7 +321,7 @@ skillt doctor
 
 ---
 
-## 8. 删除方法
+## 🧹 8. 删除方法
 
 按粒度从轻到重：
 
@@ -353,7 +353,7 @@ rm -rf ~/.local/share/opencode/backups
 
 ---
 
-## 9. 已知限制
+## 🚧 9. 已知限制
 
 以下问题在审计中确认存在。此前几轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等）；一轮又修掉了 **M1 / M7 / M8 / M9**（下文标注"已修复"）。**本轮（对采集与界面的全面实测）修掉了：dashboard 三张表 Enter 无效、Plugins 页对 `@scope/name` 型插件 Enter 无效、Recent 时间线对含 `:` 的名字 Enter 静默失效、导出泄露历史提示词、`on_mount` 开库无保护、一次失败让半屏数据停在旧值、以及测试对本机 skills 目录的依赖**；并给 `doctor` 加了 `capture.freshness` / `log.errors` / `env.opencode_version` 三项，新增 `skillt scrub-metadata`。其余如实记录、**本次不修**（M14–M18 为本轮新登记）。多数是边界情况，不影响日常使用。
 
@@ -446,7 +446,7 @@ rm -rf ~/.local/share/opencode/backups
 
 ---
 
-## 10. 参与贡献
+## 🤝 10. 参与贡献
 
 欢迎提交 Issue 与 Pull Request。提交前请确保测试全绿：
 
@@ -458,6 +458,6 @@ python3 -m pytest scripts/tests -q     # 仅标准库；TUI 测试会被跳过
 `README.zh-CN.md` —— `scripts/tests/test_readme.py` 会校验中文文档覆盖了全部
 已知限制（M1–M13）。
 
-## 11. 许可证
+## ⚖️ 11. 许可证
 
 [MIT](LICENSE) © 2026 SHADE-glitch

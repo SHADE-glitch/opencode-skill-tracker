@@ -15,7 +15,7 @@ a single local SQLite file — no network, no upload, no conversation content.
 
 ---
 
-## Why
+## 🤔 Why
 
 OpenCode has no dedicated skill hook. This project recognises skill usage
 indirectly, through the generic tool hooks:
@@ -45,7 +45,7 @@ Design constraints, deliberately kept:
 
 ---
 
-## Requirements
+## 📋 Requirements
 
 | | |
 |---|---|
@@ -63,7 +63,7 @@ interactive TUI needs [Textual](https://textual.textualize.io/)
 
 ---
 
-## Install
+## 📥 Install
 
 ### Out of the box
 
@@ -143,7 +143,7 @@ subcommand works.
 
 ---
 
-## Usage
+## 🧭 Usage
 
 ### Interactive TUI
 
@@ -245,7 +245,7 @@ skillt agentos   [--json] [--limit N]
 - `mcp` — MCP tool usage: per-server roll-up plus the top tools by call count,
   success rate and last use. **Read-only.**
 - `auto-backup` — snapshot into the backup directory and prune by retention
-  policy (see [Backups](#backups)).
+  policy (see [Backups](#-backups)).
 - `doctor` — health check printing PASS/WARN/FAIL; **exit code 1 if any FAIL**.
   Besides the structural checks (database, skills, plugin file, environment,
   backups) it checks the **capture pipeline itself**: `capture.freshness` (the age
@@ -315,7 +315,7 @@ and script parsing.
 
 ---
 
-## How it works
+## 🔬 How it works
 
 ```
 OpenCode runtime
@@ -383,7 +383,7 @@ sqlite3 ~/.local/share/opencode/skill-usage.db \
 
 ---
 
-## Backups
+## 💾 Backups
 
 ```bash
 skillt auto-backup --dry-run   # see what would happen
@@ -437,7 +437,7 @@ skillt doctor
 
 ---
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -454,10 +454,10 @@ The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 
 ---
 
-## Known limitations
+## 🚧 Known limitations
 
 The full audit — M1 through M19, with reproduction notes — lives in
-[README.zh-CN.md §9](README.zh-CN.md#9-已知限制). Highlights:
+[README.zh-CN.md §9](README.zh-CN.md#-9-已知限制). Highlights:
 
 - **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
   UTC+8, local 00:00–08:00 landed on the previous day. They now follow the
@@ -633,7 +633,7 @@ If the database was polluted historically, clean it with
 
 ---
 
-## Repository layout
+## 📦 Repository layout
 
 ```
 opencode-skill-tracker/
@@ -675,7 +675,7 @@ one, and the deviations that must not be "fixed" back.
 
 ---
 
-## Uninstall
+## 🧹 Uninstall
 
 ```bash
 rm ~/.local/bin/skillt
@@ -700,7 +700,7 @@ systemctl --user daemon-reload
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
 Issues and pull requests are welcome. Before opening a PR, make sure the suite
 is green:
@@ -715,6 +715,6 @@ Chinese documentation covers every known limitation.
 
 ---
 
-## License
+## ⚖️ License
 
 [MIT](LICENSE) © 2026 SHADE-glitch

@@ -256,7 +256,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 7. 已知限制
 
-M1–M22 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
+M1–M22 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英文摘要在 [README.md](README.md#-known-limitations)）。
 维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修
