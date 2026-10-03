@@ -13,13 +13,13 @@
 | 插件 SDK | `@opencode-ai/plugin` 1.18.4 |
 | 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
 | TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
-| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL，548 KiB |
-| 行数 | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
+| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL，576 KiB |
+| 行数 | 39 skills · 23 skill_usage · 550 mcp_usage · 111 plugin_usage · 76 skill_versions · 7 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
-| 测试 | 332 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
-| AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。目前所有阶段都在 15–172ms，预算是 1200ms。**那 5 个 loop 是 live 测试样本**（`model=opencode/space-bunny-free`），不是真实用量 |
-| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
+| 测试 | 335 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| AgentOS 顾问存储（2026-10-03 实测；那是另一个进程的状态，会变） | `/home/shade/Public/AgentOS/store/aos.db`——22 条 telemetry、51 条召回（覆盖 8 条记忆）、14 条记忆、**83 个 loop 文件**。阶段耗时已经不是小数：最新的 loop 里 `validate` 跑到 31–37 秒，是 1200ms 预算的约 30 倍。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。某个 loop 是 live 测试样本还是真实用量，不由本项目代答；这里对那个库只读，最新的 loop 自己带着 `model` 标签。 |
+| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，10.0 天 894 行（首行 2026-09-23），`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
 | 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
 | 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份），这个删除会在下一次夜间任务发生 |
@@ -200,6 +200,19 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
   `test_tui_dashboard_row_double_click_opens_detail` 先把表头这一条断言掉，正例才不会是空的。
   给搬旧数字的人留一句：Advisor 表上那个 `(4, 2)` 的反例是**fixture 只有一行**造成的，
   行数多于一个时 y=2 就是一行，它会打开页面。
+- **插件表面的扫描只跳一层，而且入口文件永远不受大小上限约束。** 发布出去的 `main` 经常只是个壳：
+  `opencode-mem@2.28.1` 的 `dist/plugin.js` 只有 407 字节、什么都不注册，真正的工具在它
+  `await import("./index.js")` 拉进来的 chunk 里。只扫入口于是把一个确实注册了工具的插件列成
+  `tools=[]`，它每次调用都落进 `(unknown)`。现在扫描跟着入口自己的相对 import：
+  `PLUGIN_SCAN_HOPS_MAX`（3 个）、`PLUGIN_SCAN_HOP_MAX_BYTES`（每个 256 KiB）、只在入口所在目录里，
+  绝不递归——因为发现过程跑在 `init()` 里，宿主是盯着截止时间的。这两条边界都是靠踩坏另一条找出来的：
+  第一版把大小上限也加在入口上，于是悄悄丢了 DCP 的 `compress`（一个 300 KiB 的 bundle，以前一直是整份读的）；
+  把工具键规则收紧成 `id: {` 又丢一次，因为 DCP 写的是 `compress: cond ? a() : b()`。
+  所以键规则保持宽松，改成过滤全大写的键——描述字符串里的 `MATCH USER LANGUAGE: ${…}`
+  在正则眼里就是个键（`TOOL_KEY_NOISE_RE`）。守卫是
+  `test_scan_follows_the_entry_shim_one_hop`、`test_scan_hops_are_bounded`、
+  `test_scan_reads_a_large_entry_file_in_full`。三个真实插件上整个 `init()` 的实测成本：
+  改前中位 45.1 ms，改后 44.7 ms。
 - **表格列宽在这里算，不交给 Textual 去发现。** `DataTable` 在 `_on_idle` 里重算自动列宽，
   所以第一帧每列恰好是表头的宽度（`frozen-gnome-fork-maintenance` 显示成 `froze`），之后每一帧
   都滞后一帧的内容。`fit_columns()` 用手里的单元格算宽并把 `auto_width` 关掉；`_PAGE_TABLES`

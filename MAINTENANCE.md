@@ -17,13 +17,13 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Plugin SDK | `@opencode-ai/plugin` 1.18.4 |
 | Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
 | TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
-| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 548 KiB |
-| Rows | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
+| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 576 KiB |
+| Rows | 39 skills · 23 skill_usage · 550 mcp_usage · 111 plugin_usage · 76 skill_versions · 7 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
-| Test suite | 332 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
-| AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. **The TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request); `skillt agentos` is now the only surface that opens that store, and `test_tui_never_reads_the_advisor_store` pins that no tab reads it. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Every stage so far has been 15–172 ms against a 1200 ms budget. **The 5 loops are live-test samples** (`model=opencode/space-bunny-free`), not production usage |
-| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
+| Test suite | 335 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| AgentOS advisor store (measured 2026-10-03; it is another process's state and moves) | `/home/shade/Public/AgentOS/store/aos.db` — 22 telemetry events, 51 retrieval rows over 8 memories, 14 memories, **83 loop files**. Stages are no longer small: the newest loops run `validate` at 31–37 s, i.e. ~30× the 1200 ms budget. **The TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request); `skillt agentos` is now the only surface that opens that store, and `test_tui_never_reads_the_advisor_store` pins that no tab reads it. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Whether a loop is a live-test sample or real usage is not this project's call to make; the store is read-only here and the newest loops are labelled with their own `model`. |
+| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 894 lines over 10.0 d (first line 2026-09-23), 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
 | Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots) — that deletion happens on the next nightly run |
@@ -275,6 +275,24 @@ state.
   positive case cannot be vacuous. Note for anyone carrying old numbers over: the
   Advisor table's `(4, 2)` negative was an artifact of that fixture holding **one**
   row — on a table with several rows y=2 is a row and it opens the page.
+- **The plugin surface scan is one hop wide, and the entry is never size-capped.**
+  A published `main` is often a shim: `opencode-mem@2.28.1`'s `dist/plugin.js` is
+  407 bytes and registers nothing — its tool lives in the chunk the shim pulls in
+  with `await import("./index.js")`. Scanning only the entry therefore listed
+  `tools=[]` for a plugin that does register a tool, and every call it made landed
+  in `(unknown)`. The scan now follows the entry's own relative imports:
+  `PLUGIN_SCAN_HOPS_MAX` (3), `PLUGIN_SCAN_HOP_MAX_BYTES` (256 KiB each), only
+  inside the entry's directory, never transitively — discovery runs inside
+  `init()`, which the host watches a deadline on. Both edges of that were found by
+  breaking the other one: a first attempt capped the entry too and silently lost
+  DCP's `compress` (a 300 KiB bundle that had always been read in full), and a
+  stricter tool-key rule (`id: {`) lost it again, because DCP registers
+  `compress: cond ? a() : b()`. So the key rule stays loose and an ALL_CAPS key is
+  filtered instead — `MATCH USER LANGUAGE: ${…}` inside a description string reads
+  as a key to a regex (`TOOL_KEY_NOISE_RE`). Guards:
+  `test_scan_follows_the_entry_shim_one_hop`, `test_scan_hops_are_bounded`,
+  `test_scan_reads_a_large_entry_file_in_full`. Measured cost of the whole `init()`
+  over the three real plugins: median 45.1 ms before, 44.7 ms after.
 - **Table column widths are measured here, not by Textual.** `DataTable` recomputes
   auto widths in `_on_idle`, so the first painted frame gives every column its
   header's width (`frozen-gnome-fork-maintenance` → `froze`) and later frames lag by
