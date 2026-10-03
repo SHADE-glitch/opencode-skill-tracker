@@ -8,6 +8,7 @@ against an isolated temp DB, and they are skipped when Bun is unavailable.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -846,6 +847,159 @@ def test_plugin_tools_and_commands_are_attributed_end_to_end(tmp_path):
         assert "PLUGVALUE" not in dump, "an argument value reached the database"
     finally:
         c.close()
+
+
+def _npm_plugin(tmp_path, name, files, version="1.0.0", main="dist/plugin.js"):
+    """A package laid out the way OpenCode caches npm plugins.
+
+    `~/.cache/opencode/packages/<spec>/node_modules/<name>/…` — the nesting is
+    what `resolvePluginEntry` walks, so a fixture that flattens it proves nothing
+    about resolution. Returns the packages dir to point
+    `OPENCODE_SKILL_TRACKER_PACKAGES_DIR` at and the spec to ask for.
+    """
+    pkg = tmp_path / "packages" / f"{name}@{version}" / "node_modules" / name
+    pkg.mkdir(parents=True)
+    manifest = {"name": name, "version": version, "main": main}
+    (pkg / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    for rel, body in files.items():
+        target = pkg / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    return str(tmp_path / "packages"), f"{name}@{version}"
+
+
+def _inventory(tmp_path):
+    c = sqlite3.connect(str(tmp_path / "iso.db"))
+    try:
+        return c.execute(
+            "SELECT plugin_name, version, source, tools, commands FROM plugin_inventory"
+        ).fetchall()
+    finally:
+        c.close()
+
+
+_INIT_SCRIPT = """
+const mod = await import(process.env.PLUGIN_PATH);
+await mod.default.server(
+  { directory: '/tmp/x', worktree: '/tmp/x', client: {} }, {}
+);
+console.log('INIT_OK');
+"""
+
+
+@requires_bun
+def test_scan_follows_the_entry_shim_one_hop(tmp_path):
+    """The bug the user sees: a plugin that registers a tool shows `tools=[]`.
+
+    `opencode-mem@2.28.1`'s `main` is a 407-byte shim that pulls the real
+    registration in with `await import("./index.js")`, so scanning only the entry
+    found nothing and every `memory` call landed in `(unknown)`. The scan now
+    follows the entry's own relative imports, one hop, and still reads only files
+    inside the package: `../escape.js` is *not* this plugin's surface.
+    """
+    packages, spec = _npm_plugin(tmp_path, "shimmy", {
+        "dist/plugin.js": (
+            'const { ShimPlugin } = await import("./index.js");\n'
+            'const { V2 } = await import("./v2/plugin.js");\n'
+            'import("../escape.js");\n'
+            "export default { ...V2, server: ShimPlugin };\n"
+        ),
+        "dist/index.js": (
+            "export const ShimPlugin = async () => ({\n"
+            "  tool: {\n"
+            "    memory: tool({\n"
+            '      description: `Manage memory (MATCH USER LANGUAGE: ${x("en")})`,\n'
+            "      args: { action: { type: \"string\" } },\n"
+            "    }),\n"
+            "  },\n"
+            "});\n"
+        ),
+        "dist/v2/plugin.js": "export const V2 = { id: 'shimmy-v2' };\n",
+    })
+    # The file the `../escape.js` import would reach, outside the package dir.
+    outside = Path(packages) / "shimmy@1.0.0" / "node_modules" / "escape.js"
+    outside.write_text(
+        "export const E = { tool: { should_not_appear: tool({}) } };\n", encoding="utf-8"
+    )
+
+    r = _run_bun(_INIT_SCRIPT, {
+        **_isolated(tmp_path, plugins=spec),
+        "OPENCODE_SKILL_TRACKER_PACKAGES_DIR": packages,
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "INIT_OK" in r.stdout, r.stdout + r.stderr
+
+    rows = _inventory(tmp_path)
+    assert rows == [
+        # `LANGUAGE` is a ternary inside a description string, not a tool id;
+        # `should_not_appear` is outside the package and must stay unread.
+        (spec, "1.0.0", "npm", '["memory"]', "[]"),
+    ], rows
+
+
+@requires_bun
+def test_scan_hops_are_bounded(tmp_path):
+    """The hop is single and capped, so discovery cannot crawl a dependency tree.
+
+    Five sibling chunks, each with one tool: only the first three hops are read.
+    Without a bound a plugin with a hundred chunks would make every OpenCode
+    start read all of them.
+    """
+    files = {"dist/plugin.js": "".join(
+        f'await import("./part{i}.js");\n' for i in range(1, 6)
+    )}
+    files.update({
+        f"dist/part{i}.js": f"export const p{i} = {{ tool: {{ tool{i}: tool({{}}) }} }};\n"
+        for i in range(1, 6)
+    })
+    packages, spec = _npm_plugin(tmp_path, "manyhops", files)
+
+    r = _run_bun(_INIT_SCRIPT, {
+        **_isolated(tmp_path, plugins=spec),
+        "OPENCODE_SKILL_TRACKER_PACKAGES_DIR": packages,
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    tools = json.loads(_inventory(tmp_path)[0][3])
+    assert tools == ["tool1", "tool2", "tool3"], tools
+
+
+@requires_bun
+def test_scan_reads_a_large_entry_file_in_full(tmp_path):
+    """The size cap is on the hops, never on the entry.
+
+    DCP's bundle is ~300 KiB and holds its whole surface there. A first attempt at
+    the one-hop fix capped every file it opened, which silently dropped a plugin
+    that was being attributed correctly — the inventory went to `tools=[]`.
+    """
+    body = "// pad\n" * 40_000          # > 256 KiB of comment
+    files = {
+        "dist/plugin.js": (
+            "export default { server: async () => ({\n"
+            "  tool: {\n"
+            "    compress: cond ? createMessageTool() : createRangeTool(),\n"
+            "  },\n"
+            "  command: {\n"
+            '    "dcp-compress": { template: "x" },\n'
+            "  },\n"
+            "});\n"
+        ) + body,
+    }
+    packages, spec = _npm_plugin(tmp_path, "bigentry", files)
+
+    r = _run_bun(_INIT_SCRIPT, {
+        **_isolated(tmp_path, plugins=spec),
+        "OPENCODE_SKILL_TRACKER_PACKAGES_DIR": packages,
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    row = _inventory(tmp_path)[0]
+    assert json.loads(row[3]) == ["compress"], row
+    assert json.loads(row[4]) == ["dcp-compress"], row
+    # The pad is what makes the entry bigger than the hop cap; assert it really is,
+    # or this test would pass against a capped read.
+    entry = Path(packages) / "bigentry@1.0.0" / "node_modules" / "bigentry" / "dist" / "plugin.js"
+    assert entry.stat().st_size > 256 * 1024, entry.stat().st_size
 
 
 @requires_bun

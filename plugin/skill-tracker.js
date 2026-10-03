@@ -789,13 +789,53 @@ function resolvePluginEntry(spec) {
 
 const TOOL_BLOCK_RE = /tool\s*:\s*\{([^}]*)\}/gs;
 const TOOL_KEY_RE = /([A-Za-z_][\w]*)\s*:/g;
+// Tool ids in this ecosystem are lowercase-ish (`compress`, `memory`, `read`),
+// while an ALL_CAPS name inside a `tool: {` block is a constant that leaked in
+// through a string interpolation (`... MATCH USER LANGUAGE: ${x}` — the `?`/`:`
+// of a ternary reads as a key to a regex). Requiring `id: {` instead would have
+// been tidier, but DCP registers `compress: cond ? a() : b()`, so the looser key
+// rule plus this filter is what keeps both plugins listed.
+const TOOL_KEY_NOISE_RE = /^[A-Z][A-Z0-9_]*$/;
 const CMD_TEMPLATE_RE = /"([A-Za-z][\w:.-]+)"\s*:\s*\{\s*template\s*:/gs;
 const CMD_BRACKET_RE = /command\s*\[\s*"([^"]+)"\s*\]\s*=/gs;
+// `from "./x.js"` and `import("./x.js")` — the two ways a bundle shim reaches
+// the chunk that actually registers the surface.
+const RELATIVE_IMPORT_RE = /(?:\bfrom|\bimport)\s*\(?\s*["'](\.\/[^"']+)["']/g;
+
+// One hop from the entry file, and no more. A published plugin's `main` is
+// increasingly a shim that re-exports the chunk holding the surface
+// (`opencode-mem@2.28.1`'s `dist/plugin.js` is 407 bytes:
+// `const { OpenCodeMemPlugin } = await import("./index.js")`), so scanning only
+// the entry reports `tools=[]` for a plugin that does register a tool — and every
+// call it makes then lands in `(unknown)`. Crawling further would mean walking a
+// dependency tree that is not ours to size, so the hop is single and bounded. The
+// entry itself is never size-limited: DCP's bundle is 300 KiB and was already
+// being read in full, and a cap that also applied to it silently loses a plugin
+// that works today.
+const PLUGIN_SCAN_HOPS_MAX = 3;
+const PLUGIN_SCAN_HOP_MAX_BYTES = 256 * 1024;
+
+function scanSurfaceText(src, tools, commands) {
+  for (const block of src.matchAll(TOOL_BLOCK_RE)) {
+    const body = block[1].slice(0, PLUGIN_SCAN_BLOCK_MAX);
+    for (const k of body.matchAll(TOOL_KEY_RE)) {
+      if (!SCAN_KEY_DENYLIST.has(k[1]) && !TOOL_KEY_NOISE_RE.test(k[1])) tools.add(k[1]);
+    }
+  }
+  for (const m of src.matchAll(CMD_TEMPLATE_RE)) commands.add(m[1]);
+  for (const m of src.matchAll(CMD_BRACKET_RE)) commands.add(m[1]);
+  // Keep only namespaced command ids: the `template` shape alone also matches
+  // unrelated objects that happen to carry a template key.
+  for (const c of [...commands]) {
+    if (!c.includes(":") && !c.includes("-")) commands.delete(c);
+  }
+}
 
 // Best-effort static scan for a plugin's registered surface. Verified against
-// the three plugins installed on 2026-09-28: DCP yields tool `compress` and
-// command `dcp-compress`, conductor yields its six `conductor:*` commands, and
-// the notifier yields nothing. An unparsable shape yields nothing.
+// the plugins installed here: DCP yields tool `compress` and command
+// `dcp-compress`, conductor yields its six `conductor:*` commands, opencode-mem
+// yields `memory` through its shim, and the notifier yields nothing. An
+// unparsable shape yields nothing.
 function scanPluginSurface(entry) {
   const tools = new Set();
   const commands = new Set();
@@ -806,19 +846,28 @@ function scanPluginSurface(entry) {
   } catch {
     return { tools, commands };
   }
+  scanSurfaceText(src, tools, commands);
 
-  for (const block of src.matchAll(TOOL_BLOCK_RE)) {
-    const body = block[1].slice(0, PLUGIN_SCAN_BLOCK_MAX);
-    for (const k of body.matchAll(TOOL_KEY_RE)) {
-      if (!SCAN_KEY_DENYLIST.has(k[1])) tools.add(k[1]);
+  const root = path.resolve(path.dirname(entry));
+  const visited = new Set([path.resolve(entry)]);
+  let hops = 0;
+  for (const m of src.matchAll(RELATIVE_IMPORT_RE)) {
+    if (hops >= PLUGIN_SCAN_HOPS_MAX) break;
+    const next = path.resolve(path.dirname(entry), m[1]);
+    // Only inside the entry's own directory subtree — `../` leaves it, and a
+    // sibling package in the same cache is not this plugin's surface to read.
+    if (!next.startsWith(root + path.sep) || visited.has(next)) continue;
+    visited.add(next);
+    hops++;
+    let extra;
+    try {
+      const st = fs.statSync(next);
+      if (!st.isFile() || st.size > PLUGIN_SCAN_HOP_MAX_BYTES) continue;
+      extra = fs.readFileSync(next, "utf8");
+    } catch {
+      continue;
     }
-  }
-  for (const m of src.matchAll(CMD_TEMPLATE_RE)) commands.add(m[1]);
-  for (const m of src.matchAll(CMD_BRACKET_RE)) commands.add(m[1]);
-  // Keep only namespaced command ids: the `template` shape alone also matches
-  // unrelated objects that happen to carry a template key.
-  for (const c of [...commands]) {
-    if (!c.includes(":") && !c.includes("-")) commands.delete(c);
+    scanSurfaceText(extra, tools, commands);
   }
   return { tools, commands };
 }

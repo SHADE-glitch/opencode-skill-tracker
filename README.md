@@ -496,7 +496,10 @@ The full audit — M1 through M19, with reproduction notes — lives in
   just skipped). Detection fails **closed**: if no server can be identified,
   nothing is written rather than guessing which tools are MCP.
 - **M12** The plugin inventory and attribution are also resolved **once, at
-  init** by a best-effort **static scan** of each plugin's source. New,
+  init** by a best-effort **static scan** of each plugin's source: the package's
+  entry file, plus **one hop** into the modules it imports by relative path
+  (bounded: 3 hops, 256 KiB each — a published `main` is often a few-hundred-byte
+  shim that re-exports the chunk holding the real registration). New,
   upgraded or renamed plugins (and the tools/commands they register) need an
   OpenCode restart to appear. An unattributable tool is recorded as
   `(unknown)`; an unattributable command is **not recorded** (fail closed, so

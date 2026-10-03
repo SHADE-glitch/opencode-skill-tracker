@@ -14,7 +14,8 @@ usage** into a local SQLite database. Three layers, in dependency order:
    Every registered tool goes through the same wrapper, so MCP and plugin tools
    are captured alongside skills; an MCP tool id is `{server}_{tool}` and is
    resolved against the configured server list by longest-prefix match. Plugin
-   surfaces are best-effort statically scanned once at init; unresolved tools
+   surfaces are best-effort statically scanned once at init (the entry file plus
+   one hop into its relative imports); unresolved tools
    become `(unknown)`, while unresolved commands are dropped fail-closed.
 2. `scripts/skill_db.py` — the shared data layer (schema, migrations, queries,
    export, backup). Imported by both the TUI and the tests.
