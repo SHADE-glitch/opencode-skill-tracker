@@ -742,12 +742,26 @@ function readPackageMain(dir) {
   }
 }
 
+// A `file://…` or absolute spec is used as given; a `./` / `../` spec is relative
+// to the **config directory**, which is what OpenCode documents and what people
+// write next to `~/.config/opencode/opencode.json`. It is deliberately *not*
+// relative to `process.cwd()`: OpenCode starts inside whichever project the user is
+// in, so reading it from the CWD looked for the plugin inside that project, found
+// nothing, and recorded a real plugin with no source and no surface.
+// Returns null for anything that is not a path spec (i.e. an npm name).
+function localPluginPath(spec) {
+  if (spec.startsWith("file://")) return path.resolve(spec.slice("file://".length));
+  if (path.isAbsolute(spec)) return spec;
+  if (spec.startsWith(".")) return path.resolve(CFG_DIR, spec);
+  return null;
+}
+
 // Resolves a config `plugin` entry to its package directory and entry file.
 // Returns null when nothing usable is found — the caller then records the
 // plugin without a surface rather than guessing.
 function resolvePluginEntry(spec) {
-  if (spec.startsWith("file://") || spec.startsWith("/") || spec.startsWith(".")) {
-    const file = spec.startsWith("file://") ? spec.slice("file://".length) : spec;
+  const file = localPluginPath(spec);
+  if (file !== null) {
     return fs.existsSync(file)
       ? { dir: path.dirname(file), entry: file, name: file, version: null, source: "local" }
       : null;

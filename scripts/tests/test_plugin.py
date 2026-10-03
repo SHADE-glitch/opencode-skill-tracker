@@ -464,8 +464,13 @@ def test_plugin_and_python_schema_do_not_drift(src):
 # a factory; the isolation guard threw and the WHOLE plugin failed to load, so
 # skill_usage stayed empty. These tests pin the contract that prevents that.
 # ---------------------------------------------------------------------------
-def _run_bun(script: str, extra_env: dict | None = None):
-    """Run a Bun snippet with the plugin path injected and prod paths scrubbed."""
+def _run_bun(script: str, extra_env: dict | None = None, cwd: str | None = None):
+    """Run a Bun snippet with the plugin path injected and prod paths scrubbed.
+
+    `cwd` is settable because a plugin spec that starts with `./` is a relative
+    path, and a test that wants to prove *which* directory it is relative to has
+    to control the process's working directory.
+    """
     env = dict(os.environ)
     # Never let the plugin reach the production DB, even by accident.
     env.pop("OPENCODE_SKILL_TRACKER_DB", None)
@@ -473,7 +478,8 @@ def _run_bun(script: str, extra_env: dict | None = None):
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        [BUN, "-e", script], capture_output=True, text=True, timeout=60, env=env
+        [BUN, "-e", script], capture_output=True, text=True, timeout=60, env=env,
+        cwd=cwd,
     )
 
 
@@ -1000,6 +1006,64 @@ def test_scan_reads_a_large_entry_file_in_full(tmp_path):
     # or this test would pass against a capped read.
     entry = Path(packages) / "bigentry@1.0.0" / "node_modules" / "bigentry" / "dist" / "plugin.js"
     assert entry.stat().st_size > 256 * 1024, entry.stat().st_size
+
+
+@requires_bun
+def test_relative_plugin_spec_resolves_against_the_config_dir(tmp_path):
+    """`./plugins/claude-mem.js` is config-relative — that is the whole bug.
+
+    OpenCode resolves a `./` plugin spec against the config directory, and the file
+    really is at `<CFG_DIR>/plugins/claude-mem.js` (466 KB, registering
+    `claude_mem_search`). The tracker resolved it against the *process* CWD instead,
+    found nothing, and recorded the plugin with no source, no version and no
+    surface — so every tool it registered fell to `(unknown)` and the Plugins page
+    had nothing to show. Reproduced on 2026-10-03 against the installed plugin.
+    """
+    cfg = tmp_path / "cfg"
+    (cfg / "plugins").mkdir(parents=True)
+    (cfg / "plugins" / "rel.js").write_text(
+        'export default { server: async () => ({\n'
+        '  tool: { rel_search: { description: "x" } },\n'
+        '}); };\n',
+        encoding="utf-8",
+    )
+    r = _run_bun(_INIT_SCRIPT, {
+        **_isolated(tmp_path, plugins="./plugins/rel.js"),
+        "OPENCODE_SKILL_TRACKER_CONFIG_DIR": str(cfg),
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _inventory(tmp_path) == [
+        (str(cfg / "plugins" / "rel.js"), None, "local", '["rel_search"]', "[]"),
+    ], _inventory(tmp_path)
+
+
+@requires_bun
+def test_relative_plugin_spec_is_not_resolved_against_the_process_cwd(tmp_path):
+    """The same relative path, existing only under the CWD, must stay unresolved.
+
+    Without this pair the test above could pass by accident — the bug *was* resolving
+    against `process.cwd()`. An unresolved plugin is still listed, with no source and
+    no surface: that is the inventory's fail-open shape, and it is what makes the
+    `(unknown)` attribution honest rather than a guess.
+    """
+    work = tmp_path / "work"
+    (work / "plugins").mkdir(parents=True)
+    (work / "plugins" / "rel.js").write_text(
+        'export default { server: async () => ({\n'
+        '  tool: { rel_search: { description: "x" } },\n'
+        '}); };\n',
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    r = _run_bun(_INIT_SCRIPT, {
+        **_isolated(tmp_path, plugins="./plugins/rel.js"),
+        "OPENCODE_SKILL_TRACKER_CONFIG_DIR": str(cfg),
+    }, cwd=str(work))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _inventory(tmp_path) == [
+        ("./plugins/rel.js", None, None, "[]", "[]"),
+    ], _inventory(tmp_path)
 
 
 @requires_bun
