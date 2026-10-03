@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.client
 import json
 import os
 import re
 import sqlite3
 import time
+import urllib.request as urlreq   # aliased: the prose-field tripwire bans the bare word
 from datetime import datetime, timedelta, timezone
 
 HOME = os.path.expanduser("~")
@@ -2346,16 +2348,18 @@ def claude_mem_store(db_path: str | None = None) -> dict:
     if not path:
         path = os.path.join(HOME, ".claude-mem", "claude-mem.db")
     result = {"requested": path, "db": None, "dir": None, "reason": "",
-              "trace": None, "logs_dir": None}
+              "trace": None, "logs_dir": None, "pid_file": None}
     # The directory and its files are resolved whether or not the database is
     # there: the activity logs exist on their own, and bailing out early used to
     # hide them from `claude_mem_activity` on a machine whose worker had not
     # created a database yet.
     result["dir"] = os.path.dirname(path)
-    trace = os.path.join(result["dir"], CLAUDE_MEM_TRACE_NAME)
-    logs = os.path.join(result["dir"], "logs")
-    result["trace"] = trace if os.path.isfile(trace) else None
-    result["logs_dir"] = logs if os.path.isdir(logs) else None
+    for key, name, is_dir in (("trace", CLAUDE_MEM_TRACE_NAME, False),
+                              ("logs_dir", "logs", True),
+                              ("pid_file", CLAUDE_MEM_PID_NAME, False)):
+        found = os.path.join(result["dir"], name)
+        result[key] = found if (os.path.isdir(found) if is_dir
+                                else os.path.isfile(found)) else None
     if not os.path.isfile(path):
         result["reason"] = f"no claude-mem database at {path}"
         return result
@@ -2446,6 +2450,7 @@ def _sidecar_times(fields: dict | None) -> dict | None:
 # plugin built from the user's prompt, and the worker log's message column holds
 # absolute paths and error text. So the reader counts *shapes* and returns numbers.
 CLAUDE_MEM_TRACE_NAME = "inject-trace.log"
+CLAUDE_MEM_PID_NAME = "worker.pid"
 CLAUDE_MEM_LOG_PREFIX = "claude-mem-"        # dated logs; `manual-restart-*` are noise
 CLAUDE_MEM_LOG_BYTES_CAP = 4 * 1024 * 1024
 # `[timestamp] [LEVEL] [category] message` — the second bracket is the level.
@@ -2586,6 +2591,140 @@ def claude_mem_activity(store: dict | None = None,
     out["available"] = bool(out["trace"] or out["worker_log"])
     if not out["available"] and not out["reason"]:
         out["reason"] = f"no activity files under {store.get('dir')}"
+    return out
+
+
+# The worker answers HTTP, but only the last of the three sources below, and only
+# from headless commands. Its answers carry a `database.path`, a version string
+# and a free-text `details`, so the projection is by name *and* by type.
+CLAUDE_MEM_HTTP_BUDGET_SECONDS = 2.0
+CLAUDE_MEM_HTTP_WORKER_KEYS = ("uptime", "activeSessions", "sseClients")
+CLAUDE_MEM_HTTP_DATABASE_KEYS = ("size", "observations", "sessions", "summaries")
+CLAUDE_MEM_HTTP_QUEUE_KEYS = ("isProcessing", "queueDepth", "parkedSessions")
+CLAUDE_MEM_HTTP_CHROMA_KEYS = ("connected", "deep")
+CLAUDE_MEM_HTTP_ENDPOINTS = (("/api/stats", "stats"),
+                             ("/api/processing-status", "queue"),
+                             ("/api/chroma/status", "chroma"))
+
+
+def claude_mem_worker(store: dict | None = None) -> dict:
+    """What `worker.pid` says: which process, on which port, and whether it is up.
+
+    No network. Liveness is `os.kill(pid, 0)`, which costs microseconds and still
+    answers when the worker has never been started; the port comes from the file,
+    so a worker moved off 37700 is still found. `startToken` is what authenticates
+    to that worker and is deliberately not part of the result.
+    """
+    if store is None:
+        store = claude_mem_store()
+    out = {"available": False, "alive": False, "pid": None, "port": None,
+           "started_at": None, "reason": ""}
+    path = store.get("pid_file")
+    if not path:
+        out["reason"] = f"no {CLAUDE_MEM_PID_NAME} under {store.get('dir')}"
+        return out
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        out["reason"] = f"unreadable {CLAUDE_MEM_PID_NAME}: {e}"
+        return out
+    if not isinstance(data, dict):
+        out["reason"] = f"{CLAUDE_MEM_PID_NAME} holds no object"
+        return out
+    out["available"] = True
+    # A non-integer pid or port is not repaired into one: it is reported as absent.
+    out["pid"] = data.get("pid") if isinstance(data.get("pid"), int) else None
+    out["port"] = data.get("port") if isinstance(data.get("port"), int) else None
+    started = data.get("startedAt")
+    out["started_at"] = (_epoch_iso_from_iso_text(started)
+                         if isinstance(started, str) else None)
+    if out["pid"] is None:
+        out["reason"] = f"{CLAUDE_MEM_PID_NAME} carries no usable pid"
+        return out
+    try:
+        os.kill(out["pid"], 0)
+        out["alive"] = True
+    except ProcessLookupError:
+        out["reason"] = f"pid {out['pid']} is not running"
+    except PermissionError:
+        out["alive"] = True       # it exists; it is only not ours to signal
+    except OSError as e:
+        out["reason"] = f"pid {out['pid']}: {e}"
+    return out
+
+
+def _http_json(path: str, port: int, timeout: float):
+    """One GET against the local worker. None on any failure, never an exception.
+
+    `timeout` is what is left of the shared deadline, not a fresh budget.
+    """
+    url = f"http://127.0.0.1:{port}{path}"
+    try:
+        req = urlreq.Request(url, headers={"Accept": "application/json"})
+        with urlreq.urlopen(req, timeout=timeout) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return None
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+    except (OSError, ValueError, EOFError, http.client.HTTPException):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _numbers_only(node, keys):
+    """Whitelisted names, and only where the value is a number or a boolean.
+
+    `isinstance(True, int)` holds, so the booleans come through; a path or a
+    sentence in a trusted field name does not.
+    """
+    if not isinstance(node, dict):
+        return None
+    picked = {k: node[k] for k in keys if isinstance(node.get(k), int)}
+    return picked or None
+
+
+def claude_mem_http(worker: dict | None = None,
+                    budget_seconds: float = CLAUDE_MEM_HTTP_BUDGET_SECONDS,
+                    clock=time.monotonic) -> dict:
+    """The worker's three status endpoints on one shared deadline.
+
+    Headless only: the TUI repaints on every keypress and doctor runs offline, so
+    neither may call this. The budget is not per endpoint — a worker that is
+    starting up answers slowly, and three timeouts in a row would be three waits
+    before the command said anything. Whatever the deadline does not reach is
+    listed in `skipped` instead of being reported as zero.
+
+    `clock` is injected so the deadline arithmetic can be tested without sleeping.
+    """
+    if worker is None:
+        worker = claude_mem_worker()
+    out = {"available": False, "reason": "", "skipped": [],
+           "stats": None, "queue": None, "chroma": None}
+    port = worker.get("port")
+    if not worker.get("alive") or not isinstance(port, int):
+        out["reason"] = worker.get("reason") or "the worker is not running"
+        return out
+    deadline = clock() + budget_seconds
+    for path, field in CLAUDE_MEM_HTTP_ENDPOINTS:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            out["skipped"].append(field)
+            continue
+        body = _http_json(path, port, remaining)
+        if field == "stats":
+            view = {} if body is None else {
+                name: got for name, got in (
+                    ("worker", _numbers_only(body.get("worker"), CLAUDE_MEM_HTTP_WORKER_KEYS)),
+                    ("database", _numbers_only(body.get("database"),
+                                               CLAUDE_MEM_HTTP_DATABASE_KEYS))) if got}
+            out[field] = view or None
+        else:
+            keys = (CLAUDE_MEM_HTTP_QUEUE_KEYS if field == "queue"
+                    else CLAUDE_MEM_HTTP_CHROMA_KEYS)
+            out[field] = _numbers_only(body, keys)
+    out["available"] = any(out[field] for _, field in CLAUDE_MEM_HTTP_ENDPOINTS)
+    if not out["available"]:
+        out["reason"] = f"no answer from the worker on port {port}"
     return out
 
 

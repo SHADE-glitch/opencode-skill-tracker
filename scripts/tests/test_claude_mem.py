@@ -14,6 +14,8 @@ import pathlib
 import re
 import sqlite3
 import time
+import urllib.parse
+import urllib.request
 
 import pytest
 from conftest import load_module
@@ -460,6 +462,234 @@ def test_activity_is_optional_and_silent_when_the_files_are_absent(tmp_path, tra
     a = db.claude_mem_activity(store=db.claude_mem_store(path))
     assert a["available"] is False
     assert a["trace"] is None and a["worker_log"] is None
+
+
+# --- the worker: pid file first, HTTP last ---------------------------------
+def add_pid_file(root, *, pid=None, port=37701):
+    """The file the worker writes for itself. `startToken` authenticates to it."""
+    (root / "worker.pid").write_text(json.dumps({
+        "pid": pid or os.getpid(),
+        "port": port,
+        "startToken": SENTINEL,
+        "startedAt": "2026-10-03T12:54:49.179Z",
+    }), encoding="utf-8")
+
+
+def _free_pid():
+    for candidate in range(40000, 40200):
+        try:
+            os.kill(candidate, 0)
+        except ProcessLookupError:
+            return candidate
+        except OSError:
+            continue
+    return None
+
+
+class _Resp:
+    """The minimum `urlopen` result the reader may touch: a status and a body."""
+
+    def __init__(self, body):
+        self.status = 200
+        self._body = json.dumps(body).encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+# Exactly what the real endpoints answered with on 2026-10-03, plus the fields
+# that must not cross: an absolute path, free text, a version string.
+REAL_STATS = {"worker": {"version": SENTINEL, "uptime": 12478, "activeSessions": 3,
+                         "sseClients": 6, "port": 37700},
+              "database": {"path": "/home/" + SENTINEL + "/.claude-mem/claude-mem.db",
+                           "size": 876544, "observations": 210, "sessions": 16,
+                           "summaries": 1, "firstObservationAt": "2026-10-03T11:06:59.463Z"}}
+REAL_QUEUE = {"isProcessing": True, "queueDepth": 48, "parkedSessions": 0}
+REAL_CHROMA = {"status": SENTINEL, "connected": True,
+               "timestamp": "2026-10-03T16:22:48.128Z", "deep": False,
+               "details": SENTINEL}
+BODIES = {"/api/stats": REAL_STATS, "/api/processing-status": REAL_QUEUE,
+          "/api/chroma/status": REAL_CHROMA}
+
+
+def fake_http(monkeypatch, *, bodies=None, step=0.0, fail=False):
+    """Stand in for the worker, on a clock the test owns.
+
+    Returns the timeouts it was handed and the clock to pass to the probe. No
+    sleeping: a deadline shared between three requests is arithmetic, and
+    arithmetic is not flaky.
+    """
+    calls = []
+    ticks = [0.0]
+    bodies = BODIES if bodies is None else bodies
+
+    def urlopen(req, timeout=None, **kw):
+        calls.append(timeout)
+        ticks[0] += step
+        if fail:
+            raise OSError(111, "Connection refused")
+        path = urllib.parse.urlsplit(str(req.full_url)).path
+        if path not in bodies:
+            raise OSError(404, path)
+        return _Resp(bodies[path])
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return calls, lambda: ticks[0]
+
+
+def test_worker_pid_gives_the_port_and_liveness_without_http(tmp_path, tracker_db, monkeypatch):
+    """Liveness is `os.kill(pid, 0)`: microseconds, and it works when the worker is down."""
+    def no_network(*a, **k):
+        raise AssertionError("reading the pid file must not reach the network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", no_network)
+    root = add_activity_files(tmp_path)
+    add_pid_file(root)
+    w = db.claude_mem_worker(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    assert w["alive"] is True, w
+    assert w["port"] == 37701, w               # from the file, never hardcoded
+    assert w["pid"] == os.getpid(), w
+    assert w["started_at"] == db.fmt_time("2026-10-03T12:54:49.179Z"), w
+    blob = json.dumps(w, ensure_ascii=False)
+    assert SENTINEL not in blob, blob          # startToken authenticates; it is not a stat
+
+
+def test_a_dead_worker_is_reported_and_not_treated_as_a_failure(tmp_path, tracker_db):
+    """It is an on-demand process: absent is a state, not a fault."""
+    root = add_activity_files(tmp_path)
+    dead = _free_pid()
+    add_pid_file(root, pid=dead)
+    w = db.claude_mem_worker(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    assert w["alive"] is False, w
+    assert w["port"] == 37701, w               # the port it *would* use
+    assert w["reason"], w
+
+
+def test_no_pid_file_means_no_worker_and_no_crash(tmp_path, tracker_db):
+    root = add_activity_files(tmp_path)
+    w = db.claude_mem_worker(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    assert w["alive"] is False and w["port"] is None, w
+
+
+def test_the_http_probe_shares_one_deadline(tmp_path, monkeypatch):
+    """Three endpoints, one budget — not one timeout each.
+
+    A worker that is starting up answers slowly; three separate timeouts would
+    make the command wait three times over before it said anything.
+    """
+    calls, clock = fake_http(monkeypatch, step=0.3)
+    out = db.claude_mem_http(worker={"alive": True, "port": 37701},
+                             budget_seconds=0.5, clock=clock)
+    assert calls == [0.5, 0.2], calls          # each got what was left, not the full budget
+    assert out["skipped"] == ["chroma"], out
+
+
+def test_no_http_is_attempted_when_the_worker_is_not_running(tmp_path, monkeypatch):
+    calls, clock = fake_http(monkeypatch)
+    out = db.claude_mem_http(worker={"alive": False, "port": 37701, "reason": "down"},
+                             clock=clock)
+    assert calls == [], calls
+    assert out["available"] is False and out["reason"], out
+
+
+def test_the_http_probe_degrades_to_none(tmp_path, monkeypatch):
+    """Refused, missing key, wrong type — none of it may raise into a command."""
+    calls, clock = fake_http(monkeypatch, fail=True)
+    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    assert out["available"] is False, out
+    assert out["stats"] is None and out["queue"] is None and out["chroma"] is None
+    assert len(calls) == 3, calls              # it tried, and every try came back empty
+
+    calls, clock = fake_http(monkeypatch, bodies={})
+    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    assert out["available"] is False, out
+
+
+def test_no_path_or_free_text_crosses_the_http_whitelist(tmp_path, monkeypatch):
+    """Numbers and booleans, and nothing else, whatever the worker answers."""
+    calls, clock = fake_http(monkeypatch)
+    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    blob = json.dumps(out, ensure_ascii=False)
+    assert SENTINEL not in blob, blob
+    assert "claude-mem.db" not in blob, blob
+
+    def leaf_types(node):
+        if isinstance(node, dict):
+            for v in node.values():
+                yield from leaf_types(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from leaf_types(v)
+        else:
+            yield node
+
+    for key in ("stats", "queue", "chroma"):
+        for value in leaf_types(out[key] or {}):
+            assert isinstance(value, (int, bool)), (key, value)
+    assert out["stats"]["database"]["observations"] == 210, out
+    assert out["queue"]["queueDepth"] == 48, out
+    assert out["chroma"]["connected"] is True, out
+
+
+def test_a_whitelisted_key_holding_a_string_is_dropped(tmp_path, monkeypatch):
+    """The whitelist is a type contract, not just a name list.
+
+    A future worker that answers `observations: "210"` — or with a path in a field
+    this code already trusts by name — must not smuggle text through.
+    """
+    calls, clock = fake_http(monkeypatch, bodies={"/api/stats": {
+        "worker": {"uptime": 10},
+        "database": {"observations": SENTINEL, "sessions": 16}}})
+    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    assert out["stats"] == {"worker": {"uptime": 10}, "database": {"sessions": 16}}, out
+
+
+def test_doctor_warns_on_the_error_level_field_not_an_error_category(tmp_path, tracker_db, monkeypatch):
+    """The count comes from bracket two of the log line, and it is a WARN."""
+    path = make_store(tmp_path)
+    root = pathlib.Path(path).parent
+    add_activity_files(tmp_path)               # ERROR x2 at the level position
+    names = _doctor(tmp_path, tracker_db, monkeypatch, store=path)
+    status, detail = names["claude_mem.capture"]
+    assert status == "WARN", detail
+    assert "2 worker-log ERROR" in detail, detail
+
+
+def test_doctor_stays_passing_and_silent_about_the_worker(tmp_path, tracker_db, monkeypatch):
+    """Neither a clean log nor a missing worker is a warning."""
+    path = make_store(tmp_path)
+    root = pathlib.Path(path).parent
+    (root / "logs").mkdir(parents=True, exist_ok=True)
+    (root / "logs" / "claude-mem-2026-10-03.log").write_text(
+        "[2026-10-03 13:20:40.381] [INFO ] [WORKER] nothing wrong\n", encoding="utf-8")
+    names = _doctor(tmp_path, tracker_db, monkeypatch, store=path)
+    status, detail = names["claude_mem.capture"]
+    assert status == "PASS", detail
+    assert "ERROR" not in detail, detail
+
+    add_pid_file(root)
+    names = _doctor(tmp_path, tracker_db, monkeypatch, store=path)
+    assert names["claude_mem.capture"][0] == "PASS", names["claude_mem.capture"]
+
+
+def test_doctor_never_reaches_the_worker_over_http(tmp_path, tracker_db, monkeypatch):
+    """Doctor is offline by contract, and the probe is only for headless commands."""
+    def no_network(*a, **k):
+        raise AssertionError("doctor opened the network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", no_network)
+    path = make_store(tmp_path)
+    root = pathlib.Path(path).parent
+    add_activity_files(tmp_path)
+    add_pid_file(root)
+    names = _doctor(tmp_path, tracker_db, monkeypatch, store=path)
+    assert "claude_mem.capture" in names, sorted(names)
 
 
 # --- the whitelist is the contract ----------------------------------------

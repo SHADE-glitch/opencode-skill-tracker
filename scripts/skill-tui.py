@@ -316,9 +316,80 @@ def _cli_scrub_metadata(conn, args) -> int:
     return 0
 
 
+def _flat_bits(node, prefix=""):
+    """`queueDepth=48 · chroma.connected=yes`, booleans spelled out."""
+    bits = []
+    for key, value in node.items():
+        if isinstance(value, dict):
+            bits.extend(_flat_bits(value, f"{key}."))
+        elif isinstance(value, bool):
+            bits.append(f"{prefix}{key}={'yes' if value else 'no'}")
+        else:
+            bits.append(f"{prefix}{key}={value:,}")
+    return bits
+
+
+def _print_claude_mem_activity(activity, worker, http) -> None:
+    """Files first, HTTP last.
+
+    The two log files say whether the plugin is working even when its database is
+    missing or its worker is stopped, so they print in every case; the endpoints
+    are only this command's, and only ever after the files.
+    """
+    trace = activity.get("trace")
+    if trace:
+        print(f"  inject log   {trace['injected']} injected"
+              f" ({trace['injected_bare']} bare, {trace['injected_with_source']} with source)"
+              f" · {trace['loaded']} loaded · {trace['worker_ensure']} worker ensures"
+              f" · {trace['chars_total']:,} chars injected")
+        extra = []
+        if trace.get("unrecognized"):
+            extra.append(f"{trace['unrecognized']} line(s) of a shape this version does not know")
+        if trace.get("injected_with_query"):
+            extra.append(f"{trace['injected_with_query']} carried a query (counted, never read)")
+        if trace.get("truncated"):
+            extra.append("read capped at the byte limit, so this is a floor")
+        if extra:
+            print("               " + " · ".join(extra))
+    log = activity.get("worker_log")
+    if log:
+        levels = " · ".join(f"{k} {v:,}" for k, v in sorted((log.get("levels") or {}).items()))
+        print(f"  worker log   {levels}   ({log['lines']:,} lines, "
+              f"{log['size_bytes']:,} bytes scanned)")
+        extra = []
+        if log.get("unparsed"):
+            extra.append(f"{log['unparsed']} line(s) not in `[time] [level] [category]` shape")
+        if log.get("truncated"):
+            extra.append("scanned bytes capped, so the counts are a floor")
+        if extra:
+            print("               " + " · ".join(extra))
+    if worker.get("available"):
+        print(f"  worker       {'up on port ' + str(worker['port']) if worker['alive'] else 'not running'}"
+              + (f" · pid {worker['pid']}" if worker.get("pid") else "")
+              + (f" · since {worker['started_at']}" if worker.get("started_at") else "")
+              + (f" · {worker['reason']}" if worker.get("reason") else ""))
+    if http.get("available"):
+        for field in ("stats", "queue", "chroma"):
+            node = http.get(field)
+            if node:
+                print(f"  {field:<12} " + " · ".join(_flat_bits(node)))
+        if http.get("skipped"):
+            print("               not reached inside the shared deadline: "
+                  + ", ".join(http["skipped"]))
+    elif worker.get("alive"):
+        print(f"  http         {http.get('reason') or 'no answer from the worker'}")
+
+
 def _cli_claude_mem(conn, args) -> int:
     """claude-mem's own ledger, read-only. Nothing here writes to that store."""
     res = db.claude_mem_summary(conn, days=args.days)
+    store = db.claude_mem_store()
+    activity = db.claude_mem_activity(store=store)
+    worker = db.claude_mem_worker(store=store)
+    # Only a headless command reaches this: the same call from the TUI would put a
+    # network wait on the path that repaints for every key.
+    http = db.claude_mem_http(worker=worker)
+    res["activity"], res["worker"], res["http"] = activity, worker, http
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
@@ -326,6 +397,7 @@ def _cli_claude_mem(conn, args) -> int:
         print(f"claude-mem: not aggregated ({res['reason']})")
         print("  set OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB, or CLAUDE_MEM_DIR"
               " pointing at the directory holding claude-mem.db")
+        _print_claude_mem_activity(activity, worker, http)
         return 0
 
     t = res["tables"]
@@ -360,6 +432,7 @@ def _cli_claude_mem(conn, args) -> int:
     if b:
         print(f"  backfill   through {b.get('throughDay')} · {b.get('eventCount')} events"
               f" · completed {b.get('completedAt')}")
+    _print_claude_mem_activity(activity, worker, http)
     tw = res.get("tracker_same_window")
     if tw:
         print(f"  same {res['days']} d in this tracker: {tw.get('skill_usage')} skill"
@@ -848,15 +921,28 @@ def _doctor_checks(conn, args) -> list:
             parts = [f"observations {obs}",
                      f"newest {cm['newest'] or '-'}"
                      + (f" ({age:.1f}d)" if age is not None else "")]
+            if age is None:
+                parts.append("no rows in its own ledger")
             if isinstance(fails, int) and fails:
                 parts.append(f"{fails} consecutive observer failures"
                              + (f" ({health.get('lastErrorKind')})"
                                 if health.get("lastErrorKind") else ""))
+            # Its own log and its own pid file, both read from disk. The ERROR
+            # count is the one thing the ledger cannot show: a worker can be
+            # healthy-looking and failing on every sync. HTTP is not consulted
+            # here at all — doctor stays offline.
+            store = db.claude_mem_store()
+            levels = ((db.claude_mem_activity(store=store).get("worker_log")
+                       or {}).get("levels") or {})
+            errs = levels.get("ERROR", 0)
+            if isinstance(errs, int) and errs:
+                parts.append(f"{errs} worker-log ERROR lines")
+            worker = db.claude_mem_worker(store=store)
+            if worker["available"]:
+                parts.append(f"worker up :{worker['port']}" if worker["alive"]
+                             else "worker down (on-demand)")
             want = f"want <= {CAPTURE_FRESHNESS_DAYS}d"
-            if age is None:
-                add("claude_mem.capture", False,
-                    "  ·  ".join(parts + ["no rows in its own ledger", want]), warn=True)
-            elif age > CAPTURE_FRESHNESS_DAYS or (isinstance(fails, int) and fails > 0):
+            if age is None or age > CAPTURE_FRESHNESS_DAYS or fails or errs:
                 add("claude_mem.capture", False, "  ·  ".join(parts + [want]), warn=True)
             else:
                 add("claude_mem.capture", True, "  ·  ".join(parts + [want]))
