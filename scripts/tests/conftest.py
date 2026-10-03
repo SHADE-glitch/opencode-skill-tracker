@@ -243,18 +243,18 @@ def seeded_plugin_db(tmp_path):
     add(dcp, "tool", "expand", "success", 45, duration=2000)
 
     inventory = [
-        (dcp, "3.2.0", "npm", 0, '["compress","expand"]', '["dcp-compress"]'),
-        (conductor, None, "npm", 0, "[]", '["conductor:status"]'),
-        ("/cfg/plugin/skill-tracker.js", None, "local", 1, "[]", "[]"),
-        ("@mohak34/opencode-notifier@0.4.0", "0.4.0", "npm", 1, "[]", "[]"),
+        (dcp, "3.2.0", "npm", 0, '["compress","expand"]', '["dcp-compress"]', "global"),
+        (conductor, None, "npm", 0, "[]", '["conductor:status"]', "project"),
+        ("/cfg/plugin/skill-tracker.js", None, "local", 1, "[]", "[]", "localdir"),
+        ("@mohak34/opencode-notifier@0.4.0", "0.4.0", "npm", 1, "[]", "[]", "global"),
     ]
-    for name, version, source, skipped, tools, commands in inventory:
+    for name, version, source, skipped, tools, commands, scope in inventory:
         conn.execute(
             "INSERT INTO plugin_inventory (plugin_name, version, source, skipped, tools,"
-            " commands, first_seen, last_seen) "
-            "VALUES (?,?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 days'),"
+            " commands, scope, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 days'),"
             " strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-            (name, version, source, skipped, tools, commands),
+            (name, version, source, skipped, tools, commands, scope),
         )
 
     conn.commit()

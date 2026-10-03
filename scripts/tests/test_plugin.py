@@ -355,12 +355,12 @@ def test_plugin_inventory_upsert_keeps_first_seen(upsert_plugin_inventory_sql):
     c = _conn()
     c.execute(
         upsert_plugin_inventory_sql,
-        (DCP, "3.2.0", "npm", 0, '["compress"]', '["dcp-compress"]'),
+        (DCP, "3.2.0", "npm", 0, '["compress"]', '["dcp-compress"]', "global"),
     )
     c.execute("UPDATE plugin_inventory SET first_seen='2000-01-01T00:00:00.000Z'")
     c.execute(
         upsert_plugin_inventory_sql,
-        (DCP, "3.3.0", "npm", 0, '["compress","expand"]', '["dcp-compress"]'),
+        (DCP, "3.3.0", "npm", 0, '["compress","expand"]', '["dcp-compress"]', "global"),
     )
     row = c.execute(
         "SELECT version, tools, first_seen FROM plugin_inventory WHERE plugin_name=?",
@@ -369,6 +369,27 @@ def test_plugin_inventory_upsert_keeps_first_seen(upsert_plugin_inventory_sql):
     assert row[0] == "3.3.0", "version must refresh"
     assert row[1] == '["compress","expand"]', "surface must refresh"
     assert row[2] == "2000-01-01T00:00:00.000Z", "first_seen must be immutable"
+
+
+def test_a_project_scope_row_is_never_downgraded(upsert_plugin_inventory_sql):
+    """`project` is the label that protects a row from the prune, so it sticks.
+
+    If a re-scan could overwrite it with `global`, a session started somewhere
+    else would delete a plugin that this project still lists — and the inventory
+    would flap between two states depending on where OpenCode happened to be run.
+    """
+    c = _conn()
+    c.execute(
+        upsert_plugin_inventory_sql,
+        (DCP, "3.2.0", "npm", 0, "[]", "[]", "project"),
+    )
+    c.execute(
+        upsert_plugin_inventory_sql,
+        (DCP, "3.3.0", "npm", 0, '["compress"]', "[]", "global"),
+    )
+    assert c.execute(
+        "SELECT scope, version FROM plugin_inventory WHERE plugin_name=?", (DCP,)
+    ).fetchone() == ("project", "3.3.0"), "scope must stick, everything else must refresh"
 
 
 # ---------------------------------------------------------------------------
@@ -1064,6 +1085,154 @@ def test_relative_plugin_spec_is_not_resolved_against_the_process_cwd(tmp_path):
     assert _inventory(tmp_path) == [
         ("./plugins/rel.js", None, None, "[]", "[]"),
     ], _inventory(tmp_path)
+
+
+_INIT_SCRIPT_AT = """
+const mod = await import(process.env.PLUGIN_PATH);
+await mod.default.server(
+  { directory: process.env.PROJECT_DIR, worktree: process.env.PROJECT_DIR, client: {} }, {}
+);
+console.log('INIT_OK');
+"""
+
+
+def _config_env(tmp_path, cfg, **extra):
+    """An env that reads a *real* config file instead of the spec override.
+
+    `_isolated` pins `OPENCODE_SKILL_TRACKER_PLUGINS` precisely so no test can see
+    the developer's own plugins — and that override also disables the prune. These
+    tests drop it and point the config directory at a temp dir instead, so nothing
+    here can reach the real `~/.config/opencode`.
+    """
+    env = _isolated(tmp_path)
+    env.pop("OPENCODE_SKILL_TRACKER_PLUGINS")
+    env["OPENCODE_SKILL_TRACKER_CONFIG_DIR"] = str(cfg)
+    env.update(extra)
+    return env
+
+
+def _write_config(cfg, specs, name="opencode.json"):
+    (cfg / name).write_text(json.dumps({"$schema": "x", "plugin": specs}), encoding="utf-8")
+
+
+def _inventory_scopes(tmp_path):
+    c = sqlite3.connect(str(tmp_path / "iso.db"))
+    try:
+        return dict(c.execute("SELECT plugin_name, scope FROM plugin_inventory").fetchall())
+    finally:
+        c.close()
+
+
+@requires_bun
+def test_the_inventory_prunes_a_plugin_the_global_config_dropped(tmp_path):
+    """`Loaded` used to mean "seen at some point since the DB was created".
+
+    Two inits against one database, with the global config changed in between —
+    which is exactly what a user does when they remove a plugin. Every session
+    reads the same global config, so a `global` row this init did not see is a
+    plugin that is gone, and it goes with it. The surviving row keeps its scope.
+    """
+    cfg = tmp_path / "cfg"
+    (cfg / "plugins").mkdir(parents=True)
+    (cfg / "plugins" / "a.js").write_text(FAKE_PLUGIN_SRC, encoding="utf-8")
+    (cfg / "plugins" / "b.js").write_text(FAKE_PLUGIN_SRC, encoding="utf-8")
+    a = str(cfg / "plugins" / "a.js")
+    b = str(cfg / "plugins" / "b.js")
+
+    _write_config(cfg, [a, b])
+    r = _run_bun(_INIT_SCRIPT, _config_env(tmp_path, cfg))
+    assert r.returncode == 0 and "INIT_OK" in r.stdout, r.stdout + r.stderr
+    assert _inventory_scopes(tmp_path) == {a: "global", b: "global"}
+
+    _write_config(cfg, [a])
+    r = _run_bun(_INIT_SCRIPT, _config_env(tmp_path, cfg))
+    assert r.returncode == 0 and "INIT_OK" in r.stdout, r.stdout + r.stderr
+    assert _inventory_scopes(tmp_path) == {a: "global"}, "the dropped plugin must be gone"
+
+
+@requires_bun
+def test_a_project_scoped_plugin_survives_a_session_started_elsewhere(tmp_path):
+    """A plugin listed by *one* project's config must not be deleted by another.
+
+    The prune's premise is "every session reads this file". That is true of the
+    global config and the local plugin directory, and false of a project config —
+    so those rows are kept, and the TUI can say where each entry came from.
+    """
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    here = tmp_path / "proj-here"
+    here.mkdir()
+    elsewhere = tmp_path / "proj-elsewhere"
+    elsewhere.mkdir()
+    (here / ".opencode").mkdir()
+    plugin = tmp_path / "project-plugin.js"
+    plugin.write_text(FAKE_PLUGIN_SRC, encoding="utf-8")
+
+    _write_config(cfg, [])
+    _write_config(here / ".opencode", [f"file://{plugin}"])
+    r = _run_bun(_INIT_SCRIPT_AT, {
+        **_config_env(tmp_path, cfg), "PROJECT_DIR": str(here),
+    })
+    assert r.returncode == 0 and "INIT_OK" in r.stdout, r.stdout + r.stderr
+    assert _inventory_scopes(tmp_path) == {str(plugin): "project"}
+
+    # Same global config (which lists nothing), started from a project that has no
+    # config of its own: the project row must still be there afterwards.
+    r = _run_bun(_INIT_SCRIPT_AT, {
+        **_config_env(tmp_path, cfg), "PROJECT_DIR": str(elsewhere),
+    })
+    assert r.returncode == 0 and "INIT_OK" in r.stdout, r.stdout + r.stderr
+    assert _inventory_scopes(tmp_path) == {
+        str(plugin): "project",
+    }, "a row another project listed must never be pruned"
+
+
+@requires_bun
+def test_the_env_spec_override_never_prunes(tmp_path):
+    """Tests and sandboxes pin the spec list by hand; that says nothing about
+    what is installed, so it must not delete anything."""
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    plugin = tmp_path / "kept.js"
+    plugin.write_text(FAKE_PLUGIN_SRC, encoding="utf-8")
+    _write_config(cfg, [f"file://{plugin}"])
+    r = _run_bun(_INIT_SCRIPT, _config_env(tmp_path, cfg))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _inventory_scopes(tmp_path) == {str(plugin): "global"}
+
+    env = _isolated(tmp_path, plugins="")      # the override, deliberately empty
+    env["OPENCODE_SKILL_TRACKER_CONFIG_DIR"] = str(cfg)
+    r = _run_bun(_INIT_SCRIPT, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _inventory_scopes(tmp_path) == {str(plugin): "global"}, \
+        "an empty override must not empty the inventory"
+
+
+@requires_bun
+def test_an_unreadable_global_config_never_prunes(tmp_path):
+    """A broken or deleted config file looks exactly like "no plugins installed".
+
+    The difference matters: one empties the inventory, the other should leave it
+    alone. `globalReadable` is the only thing the prune trusts.
+    """
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    plugin = tmp_path / "kept.js"
+    plugin.write_text(FAKE_PLUGIN_SRC, encoding="utf-8")
+    good = cfg / "opencode.json"
+    _write_config(cfg, [f"file://{plugin}"])
+    assert _run_bun(_INIT_SCRIPT, _config_env(tmp_path, cfg)).returncode == 0
+    assert _inventory_scopes(tmp_path) == {str(plugin): "global"}
+
+    good.write_text("{ this is not json", encoding="utf-8")
+    assert _run_bun(_INIT_SCRIPT, _config_env(tmp_path, cfg)).returncode == 0
+    assert _inventory_scopes(tmp_path) == {str(plugin): "global"}, \
+        "an unparsable config must not be read as 'the user removed everything'"
+
+    good.unlink()
+    assert _run_bun(_INIT_SCRIPT, _config_env(tmp_path, cfg)).returncode == 0
+    assert _inventory_scopes(tmp_path) == {str(plugin): "global"}, \
+        "a missing config must not be read as 'the user removed everything'"
 
 
 @requires_bun

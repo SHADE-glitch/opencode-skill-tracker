@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS plugin_inventory (
   skipped     INTEGER NOT NULL DEFAULT 0,
   tools       TEXT,
   commands    TEXT,
+  scope       TEXT,
   first_seen  TEXT NOT NULL,
   last_seen   TEXT NOT NULL
 );
@@ -373,10 +374,16 @@ WHERE plugin_usage.duration_ms IS NULL
 
 // One row per plugin seen at init. first_seen is deliberately never updated,
 // so the inventory doubles as a record of when each plugin first appeared.
+//
+// `scope` is what makes the row deletable later (see SCOPE_* below), so an
+// existing row is never downgraded from `project`: a plugin that any session has
+// seen coming from *that project's* config must not be pruned by a session
+// running somewhere else.
 const UPSERT_PLUGIN_INVENTORY_SQL = `
 INSERT INTO plugin_inventory
-  (plugin_name, version, source, skipped, tools, commands, first_seen, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+  (plugin_name, version, source, skipped, tools, commands, scope, first_seen, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?,
+        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
         strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 ON CONFLICT(plugin_name) DO UPDATE SET
   version   = excluded.version,
@@ -384,6 +391,8 @@ ON CONFLICT(plugin_name) DO UPDATE SET
   skipped   = excluded.skipped,
   tools     = excluded.tools,
   commands  = excluded.commands,
+  scope     = CASE WHEN plugin_inventory.scope = 'project' THEN 'project'
+                   ELSE excluded.scope END,
   last_seen = excluded.last_seen
 `;
 
@@ -613,12 +622,6 @@ function readMcpKeysFromConfig(file) {
   const json = readJsonConfig(file);
   const mcp = json && json.mcp;
   return mcp && typeof mcp === "object" && !Array.isArray(mcp) ? Object.keys(mcp) : [];
-}
-
-function readPluginSpecsFromConfig(file) {
-  const json = readJsonConfig(file);
-  const list = json && json.plugin;
-  return Array.isArray(list) ? list.filter((s) => typeof s === "string" && s) : [];
 }
 
 async function fetchMcpServersFromClient(client) {
@@ -932,7 +935,23 @@ function isSkippedPlugin(spec, resolved, exclusions) {
   return exclusions.some((e) => e && hay.includes(e));
 }
 
-function upsertInventory(name, resolved, skipped, surface) {
+// Where a spec was read from, which is what decides whether its later absence
+// means anything. Every OpenCode session reads the same global config and the
+// same local plugin directory, so a row from those that this init did not see is
+// a plugin the user removed. A project config is only read when OpenCode runs in
+// that project, so those rows are never deleted from elsewhere — and an
+// env-overridden spec set (tests, sandboxes) proves nothing about the real
+// config, so it is never pruned either.
+const SCOPE_GLOBAL = "global";
+const SCOPE_LOCAL = "localdir";
+const SCOPE_PROJECT = "project";
+const SCOPE_OVERRIDE = "override";
+// Rows written before `scope` existed are NULL. They are treated as global: the
+// common case is right, and a wrong deletion costs only the inventory row — the
+// usage rows stay, and the next session from that project re-adds the entry.
+const SCOPE_PRUNABLE_SQL = "(scope IS NULL OR scope IN ('global','localdir'))";
+
+function upsertInventory(name, resolved, skipped, surface, scope) {
   if (!db) return;
   try {
     db.query(UPSERT_PLUGIN_INVENTORY_SQL).run(
@@ -941,10 +960,77 @@ function upsertInventory(name, resolved, skipped, surface) {
       resolved ? resolved.source : null,
       skipped ? 1 : 0,
       JSON.stringify([...surface.tools].sort()),
-      JSON.stringify([...surface.commands].sort())
+      JSON.stringify([...surface.commands].sort()),
+      scope
     );
   } catch (e) {
     log("err", "upsertInventory: " + errMsg(e));
+  }
+}
+
+// `CREATE TABLE IF NOT EXISTS` never adds a column to a table that already
+// exists, and on an upgrade this is the writer that runs first — so the column is
+// added here as well as in `skill_db.ensure_schema()`. A second migrator winning
+// the race shows up as "duplicate column name", which is success.
+function ensureInventoryScope() {
+  try {
+    const cols = db.prepare("PRAGMA table_info(plugin_inventory)").all();
+    if (cols.some((c) => c && c.name === "scope")) return;
+    db.exec("ALTER TABLE plugin_inventory ADD COLUMN scope TEXT");
+    log("info", "inventory: added the scope column");
+  } catch (e) {
+    log("err", "inventory scope: " + errMsg(e));
+  }
+}
+
+// Specs, plus where each one came from. A config file that is missing or
+// unparsable makes no claim at all: it contributes nothing, and `globalReadable`
+// stays false — which is what stops a broken config from emptying the inventory.
+function configPluginEntries() {
+  const entries = [];
+  const cfgRoot = path.resolve(CFG_DIR) + path.sep;
+  let globalReadable = false;
+  for (const file of configFiles()) {
+    const json = readJsonConfig(file);
+    if (!json) continue;
+    const scope = path.resolve(file).startsWith(cfgRoot) ? SCOPE_GLOBAL : SCOPE_PROJECT;
+    if (scope === SCOPE_GLOBAL) globalReadable = true;
+    const list = Array.isArray(json.plugin) ? json.plugin : [];
+    for (const s of list) if (typeof s === "string" && s) entries.push({ spec: s, scope });
+  }
+  return { entries, globalReadable };
+}
+
+// The least prunable label wins: a spec that a project config also lists must not
+// become deletable just because the global config lists it too.
+const SCOPE_RANK = { [SCOPE_PROJECT]: 3, [SCOPE_LOCAL]: 2, [SCOPE_GLOBAL]: 1 };
+function mergeScopedEntries(entries) {
+  const bySpec = new Map();
+  for (const { spec, scope } of entries) {
+    const held = bySpec.get(spec);
+    if (held === undefined || (SCOPE_RANK[scope] || 0) > (SCOPE_RANK[held] || 0)) {
+      bySpec.set(spec, scope);
+    }
+  }
+  return bySpec;
+}
+
+// Drop the rows for plugins this session's *global* config and local plugin
+// directory no longer list. Both are read by every session, so their absence here
+// is the same as the user removing the plugin. Names go in as parameters, never
+// interpolated.
+function pruneInventory(keepNames) {
+  if (!db) return;
+  try {
+    const keep = [...keepNames];
+    const sql =
+      `DELETE FROM plugin_inventory WHERE ${SCOPE_PRUNABLE_SQL}` +
+      (keep.length ? ` AND plugin_name NOT IN (${keep.map(() => "?").join(",")})` : "");
+    const res = db.query(sql).run(...keep);
+    const n = res && typeof res.changes === "number" ? res.changes : 0;
+    if (n) log("info", `inventory: pruned ${n} row(s) no longer listed by the global config`);
+  } catch (e) {
+    log("err", "inventory prune: " + errMsg(e));
   }
 }
 
@@ -958,16 +1044,19 @@ async function loadPlugins() {
   //    read the developer's real configuration. Read at call time (not at
   //    module load) so __selftest can set it before the factory runs.
   const envSpecs = process.env.OPENCODE_SKILL_TRACKER_PLUGINS;
-  let specs;
+  let entries, prunable;
   if (envSpecs !== undefined) {
-    specs = envSpecs
+    entries = envSpecs
       .split(",")
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((spec) => ({ spec, scope: SCOPE_OVERRIDE }));
+    prunable = false;   // an override says nothing about what is installed
   } else {
-    specs = [];
-    for (const f of configFiles()) specs.push(...readPluginSpecsFromConfig(f));
-    specs.push(...localPluginSpecs());
+    const cfg = configPluginEntries();
+    entries = cfg.entries;
+    for (const spec of localPluginSpecs()) entries.push({ spec, scope: SCOPE_LOCAL });
+    prunable = cfg.globalReadable;
   }
 
   const exclusions = [...PLUGIN_EXCLUDE_DEFAULT, ...PLUGIN_EXCLUDE_EXTRA];
@@ -976,20 +1065,24 @@ async function loadPlugins() {
   commandToPlugin = new Map();
 
   let skippedCount = 0;
-  for (const spec of [...new Set(specs)]) {
+  const seenNames = new Set();
+  for (const [spec, scope] of mergeScopedEntries(entries)) {
     const resolved = resolvePluginEntry(spec);
     const name = (resolved && resolved.name) || spec;
+    seenNames.add(name);
     if (isSkippedPlugin(spec, resolved, exclusions)) {
       skippedCount++;
-      upsertInventory(name, resolved, 1, { tools: new Set(), commands: new Set() });
+      upsertInventory(name, resolved, 1, { tools: new Set(), commands: new Set() }, scope);
       continue;
     }
     const surface = scanPluginSurface(resolved && resolved.entry);
     for (const t of surface.tools) if (!toolToPlugin.has(t)) toolToPlugin.set(t, name);
     for (const c of surface.commands) if (!commandToPlugin.has(c)) commandToPlugin.set(c, name);
     pluginSurface.set(name, surface);
-    upsertInventory(name, resolved, 0, surface);
+    upsertInventory(name, resolved, 0, surface, scope);
   }
+
+  if (prunable) pruneInventory(seenNames);
 
   log(
     "info",
@@ -1228,6 +1321,8 @@ async function doInit() {
     db = null;
     return;
   }
+
+  ensureInventoryScope();
 
   try {
     db.exec(VIEWS_SQL);

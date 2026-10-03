@@ -14,7 +14,7 @@ import skill_db as db
 def test_export_document_shape(seeded_db):
     conn = db.open_db(seeded_db)
     doc = db.export_document(conn)
-    assert doc["schema_version"] == 4
+    assert doc["schema_version"] == 5
     assert doc["generated_at"].endswith("Z")
     assert len(doc["skills"]) == 6
     assert len(doc["usage"]) == 21
@@ -108,7 +108,7 @@ def test_export_mcp_key_exists_on_an_unmigrated_db(empty_db):
     assert doc["mcp_usage"] == []
     assert doc["plugin_usage"] == []
     assert doc["plugin_inventory"] == []
-    assert doc["schema_version"] == 4
+    assert doc["schema_version"] == 5
     conn.close()
 
 
@@ -127,7 +127,7 @@ def test_write_private_json_permissions_and_guard(tmp_path, seeded_db):
 
     # force allows overwrite
     db.write_private_json(str(out), doc, force=True)
-    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 4
+    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 5
     conn.close()
 
 

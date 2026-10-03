@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS plugin_inventory (
   skipped     INTEGER NOT NULL DEFAULT 0,
   tools       TEXT,
   commands    TEXT,
+  scope       TEXT,
   first_seen  TEXT NOT NULL,
   last_seen   TEXT NOT NULL
 );
@@ -381,6 +382,7 @@ def ensure_schema(conn) -> dict:
     result = {
         "created_base": False,
         "added_content_hash": False,
+        "added_inventory_scope": False,
         "created_versions": False,
         "created_mcp": False,
         "created_plugin": False,
@@ -412,6 +414,17 @@ def ensure_schema(conn) -> dict:
             result["added_content_hash"] = True
         except sqlite3.OperationalError as e:
             # Race with a second migrator (e.g. TUI + CLI starting together).
+            if "duplicate column name" not in str(e).lower():
+                raise
+
+    # `scope` is how the plugin knows which rows it may delete at the next init
+    # (see SCOPE_* in the plugin). The plugin adds the same column on its side,
+    # because it is often the first thing to open the DB after an upgrade.
+    if not _column_exists(conn, "plugin_inventory", "scope"):
+        try:
+            conn.execute("ALTER TABLE plugin_inventory ADD COLUMN scope TEXT")
+            result["added_inventory_scope"] = True
+        except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise
 
@@ -1013,7 +1026,7 @@ def plugin_inventory_rows(conn) -> list[dict]:
         return []
     sql = """
     SELECT i.plugin_name, i.version, i.source, i.skipped, i.tools, i.commands,
-           i.first_seen, i.last_seen,
+           i.scope, i.first_seen, i.last_seen,
            COALESCE(u.total, 0)  AS total,
            COALESCE(u.errors, 0) AS errors,
            u.last_used           AS last_used
@@ -1232,7 +1245,10 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
         # 4 narrows `metadata` to EXPORT_METADATA_KEYS. Older builds wrote the
         # user's prompt text as `summary`, and those rows are still in existing
         # databases, so a v4 document is not a superset of a v3 one.
-        "schema_version": 4,
+        # 5 adds `plugin_inventory.scope` (which config listed the plugin, and so
+        # whether the plugin may prune it). Additive for the rows that have it;
+        # rows written before the column existed export it as null.
+        "schema_version": 5,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "db_path": db_file_of(conn),
         "skills": [],
