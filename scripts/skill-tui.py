@@ -7,7 +7,7 @@ Two modes in one file:
   * --cli <subcommand>   stdlib only; works on the system python3
                          subcommands: insight | export | sync | cleanup-selftest
                                       | scrub-metadata | health | mcp | plugins
-                                      | agentos | auto-backup | doctor
+                                      | agentos | claude-mem | auto-backup | doctor
 
 `textual` is imported lazily so the --cli path never depends on the venv.
 
@@ -313,6 +313,58 @@ def _cli_scrub_metadata(conn, args) -> int:
               "`skillt vacuum`.")
     elif res["checkpointed"]:
         print("  WAL checkpointed: the removed text is no longer on disk.")
+    return 0
+
+
+def _cli_claude_mem(conn, args) -> int:
+    """claude-mem's own ledger, read-only. Nothing here writes to that store."""
+    res = db.claude_mem_summary(conn, days=args.days)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    if not res["available"]:
+        print(f"claude-mem: not aggregated ({res['reason']})")
+        print("  set OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB, or CLAUDE_MEM_DIR"
+              " pointing at the directory holding claude-mem.db")
+        return 0
+
+    t = res["tables"]
+    age = db.claude_mem_age_days(res)
+    print("claude-mem (read-only; that store is never written from here)")
+    print("-" * 56)
+    print(f"  store      {res['db_path']}")
+    print(f"  newest row {res['newest'] or '-'}"
+          + (f"  ({age:.1f} d ago)" if age is not None else ""))
+    print("  " + "   ".join(
+        f"{name} {(t[name] or {}).get('n')}" for name in db.CLAUDE_MEM_TABLES))
+    obs = t.get("observations") or {}
+    if obs.get("by"):
+        print("  by type    " + " · ".join(f"{k} {v}" for k, v in obs["by"].items()))
+    sess = t.get("sdk_sessions") or {}
+    if sess.get("by"):
+        print("  sessions   " + " · ".join(f"{k} {v}" for k, v in sess["by"].items()))
+    tokens = [(n, (t.get(n) or {}).get("tokens")) for n in ("observations", "session_summaries")]
+    tokens = [(n, v) for n, v in tokens if isinstance(v, int) and v]
+    if tokens:
+        print("  discovery tokens  " + " + ".join(f"{v:,} ({n})" for n, v in tokens))
+    h = res.get("health") or {}
+    if h:
+        bits = [f"{h.get('consecutiveFailures', 0)} consecutive failures"]
+        if h.get("lastSuccessAt"):
+            bits.append(f"last success {h['lastSuccessAt']}")
+        if h.get("lastErrorAt"):
+            bits.append(f"last error {h['lastErrorAt']}"
+                        + (f" ({h['lastErrorKind']})" if h.get("lastErrorKind") else ""))
+        print("  observer   " + " · ".join(bits))
+    b = res.get("backfill") or {}
+    if b:
+        print(f"  backfill   through {b.get('throughDay')} · {b.get('eventCount')} events"
+              f" · completed {b.get('completedAt')}")
+    tw = res.get("tracker_same_window")
+    if tw:
+        print(f"  same {res['days']} d in this tracker: {tw.get('skill_usage')} skill"
+              f" / {tw.get('mcp_usage')} mcp / {tw.get('plugin_usage')} plugin"
+              "   (builtins are never measured here, so 0 is not 'nothing happened')")
     return 0
 
 
@@ -779,6 +831,38 @@ def _doctor_checks(conn, args) -> list:
     except Exception as e:  # noqa: BLE001
         add("capture.freshness", False, f"error: {e}", warn=True)
 
+    # --- claude-mem: a read-only neighbour, silent when not installed -----
+    # Deliberately no line at all when there is no store: warning about a plugin
+    # the user never installed is noise, and noise trains people to skip the
+    # report. When it *is* installed it is judged on the same clock as
+    # capture.freshness, and its own failure counter is surfaced — that store is
+    # written by a background worker, so "stale" and "failing" are different
+    # stories and both matter.
+    try:
+        cm = db.claude_mem_summary(conn, days=CAPTURE_FRESHNESS_DAYS)
+        if cm["available"]:
+            age = db.claude_mem_age_days(cm)
+            obs = (cm["tables"].get("observations") or {}).get("n")
+            health = cm.get("health") or {}
+            fails = health.get("consecutiveFailures")
+            parts = [f"observations {obs}",
+                     f"newest {cm['newest'] or '-'}"
+                     + (f" ({age:.1f}d)" if age is not None else "")]
+            if isinstance(fails, int) and fails:
+                parts.append(f"{fails} consecutive observer failures"
+                             + (f" ({health.get('lastErrorKind')})"
+                                if health.get("lastErrorKind") else ""))
+            want = f"want <= {CAPTURE_FRESHNESS_DAYS}d"
+            if age is None:
+                add("claude_mem.capture", False,
+                    "  ·  ".join(parts + ["no rows in its own ledger", want]), warn=True)
+            elif age > CAPTURE_FRESHNESS_DAYS or (isinstance(fails, int) and fails > 0):
+                add("claude_mem.capture", False, "  ·  ".join(parts + [want]), warn=True)
+            else:
+                add("claude_mem.capture", True, "  ·  ".join(parts + [want]))
+    except Exception as e:  # noqa: BLE001
+        add("claude_mem.capture", False, f"error: {e}", warn=True)
+
     try:
         if not os.path.isfile(TRACKER_LOG_PATH):
             add(
@@ -866,7 +950,8 @@ def cli_main(args) -> int:
     # DB read-only so they can never alter it.
     try:
         conn = db.open_db(
-            args.db, readonly=(args.command in ("health", "mcp", "plugins", "agentos"))
+            args.db, readonly=(args.command in ("health", "mcp", "plugins", "agentos",
+                                                "claude-mem"))
         )
     except sqlite3.Error as e:
         print(f"skillt: cannot open database {args.db}: {e}", file=sys.stderr)
@@ -888,6 +973,8 @@ def cli_main(args) -> int:
             return _cli_health(conn, args)
         if args.command == "agentos":
             return _cli_agentos(conn, args)
+        if args.command == "claude-mem":
+            return _cli_claude_mem(conn, args)
         if args.command == "mcp":
             return _cli_mcp(conn, args)
         if args.command == "plugins":
@@ -2400,7 +2487,7 @@ class Args:
 
 CLI_COMMANDS = {
     "insight", "export", "sync", "cleanup-selftest", "scrub-metadata", "health",
-    "mcp", "plugins", "agentos", "auto-backup", "doctor",
+    "mcp", "plugins", "agentos", "claude-mem", "auto-backup", "doctor",
 }
 
 
@@ -2511,7 +2598,7 @@ def main(argv):
             raise SystemExit(
                 "--cli requires a subcommand: "
                 "insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|"
-                "plugins|agentos|auto-backup|doctor"
+                "plugins|agentos|claude-mem|auto-backup|doctor"
             )
         return cli_main(args)
 

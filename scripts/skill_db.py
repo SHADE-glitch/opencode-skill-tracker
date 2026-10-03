@@ -2202,3 +2202,310 @@ def agentos_summary(conn, limit: int = 10, db_path: str | None = None,
     out["available"] = True
     out["reason"] = ""
     return out
+
+
+# ---------------------------------------------------------------------------
+# claude-mem — read-only neighbour #2: what its background capture actually did
+#
+# The tracker measures skill / MCP / plugin tool calls and nothing else, so a
+# session that only used builtins (`bash`, `edit`, …) leaves no row here at all.
+# claude-mem keeps its own ledger of the same sessions, and reading it answers
+# the question the tracker structurally cannot: "did anything happen".
+#
+# Same contract as the advisor store above, for the same reason: this is another
+# project's database, it is full of prompt-derived prose, and it is being written
+# by a live process. Read-only, field-whitelisted, never created, never exported.
+# ---------------------------------------------------------------------------
+
+CLAUDE_MEM_DB_ENV = "OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB"
+CLAUDE_MEM_DIR_ENV = "CLAUDE_MEM_DIR"
+
+# The tables this reader names, and the only columns it names from each. Every
+# entry is a counter, a timestamp or a short enum — because the columns beside
+# them (`observations.text`, `user_prompts.prompt_text`,
+# `session_summaries.request`/`investigated`/`learned`/`completed`/`next_steps`,
+# `sdk_sessions.user_prompt`/`custom_title`, `tool_uses.tool_input`/`tool_response`/`cwd`,
+# `pending_messages.last_user_message`/`last_assistant_message`) are the user's
+# own words. They appear nowhere below, in any SELECT, WHERE or log line.
+CLAUDE_MEM_TABLES = {
+    "observations":      {"time": "created_at_epoch", "label": "type",
+                          "tokens": "discovery_tokens"},
+    "user_prompts":      {"time": "created_at_epoch"},
+    "session_summaries": {"time": "created_at_epoch", "tokens": "discovery_tokens"},
+    "sdk_sessions":      {"time": "started_at_epoch", "label": "status"},
+    "tool_uses":         {"time": "created_at_epoch", "label": "tool_name"},
+    "pending_messages":  {"time": "created_at_epoch", "label": "status"},
+}
+
+# The sidecar files, and the only keys read from them. `observer-health.json`
+# also holds `lastErrorMessage` / `lastErrorUrl` / `lastErrorRequestId` (free
+# text and a URL from a third-party error page) and `supervisor.json` holds a
+# process table with paths in it — none of that is named here. `installId` is a
+# stable identifier of this machine, so it stays out too.
+CLAUDE_MEM_HEALTH_KEYS = ("consecutiveFailures", "failingSinceAt", "lastErrorAt",
+                          "lastErrorCode", "lastErrorKind", "lastSuccessAt",
+                          "quotaCooldown")
+CLAUDE_MEM_BACKFILL_KEYS = ("completedAt", "eventCount", "throughDay", "version")
+CLAUDE_MEM_TELEMETRY_KEYS = ("enabled", "decidedAt")
+
+# Never opened, at any cost: it holds `CLAUDE_MEM_OPENROUTER_API_KEY` and
+# `CLAUDE_MEM_PRO_MEMORY_KEY`. A reader that "just looks at the mode" here is one
+# refactor away from printing a secret into a terminal.
+CLAUDE_MEM_FORBIDDEN_FILES = ("settings.json",)
+
+# A label from another store is only echoed when it looks like a category name.
+_LABEL_RE = re.compile(r"^[\w][\w.:/ -]{0,39}$")
+
+# How many distinct labels one table may show: enough for the categories that
+# exist, small enough that the output stays a summary rather than a dump.
+CLAUDE_MEM_LABEL_CAP = 12
+
+# The tracker's own three streams, for the same-window comparison below. Named
+# here rather than imported from the TUI: the data layer must not depend on a
+# screen.
+CLAUDE_MEM_TRACKER_TABLES = ("skill_usage", "mcp_usage", "plugin_usage")
+
+
+def claude_mem_store(db_path: str | None = None) -> dict:
+    """Locate claude-mem's store. Never creates anything, never reads it here.
+
+    Resolution order, all read at call time: explicit argument, then
+    `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB`, then `$CLAUDE_MEM_DIR/claude-mem.db`,
+    then the default `~/.claude-mem/claude-mem.db`. The last one is why this
+    neighbour needs no configuration to be discovered — unlike the advisor, whose
+    location is a project choice and therefore has to be told to us.
+    """
+    path = db_path or os.environ.get(CLAUDE_MEM_DB_ENV)
+    if not path:
+        cm_dir = os.environ.get(CLAUDE_MEM_DIR_ENV)
+        if cm_dir:
+            path = os.path.join(cm_dir, "claude-mem.db")
+    if not path:
+        path = os.path.join(HOME, ".claude-mem", "claude-mem.db")
+    result = {"requested": path, "db": None, "dir": None, "reason": ""}
+    if not os.path.isfile(path):
+        result["reason"] = f"no claude-mem database at {path}"
+        return result
+    result["db"] = path
+    result["dir"] = os.path.dirname(path)
+    return result
+
+
+def _open_claude_mem_ro(path: str):
+    """Read-only on purpose; `open_db()` would fall back to read-write and
+    create a missing file, which would hand a foreign store to a reader."""
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    return conn
+
+
+def _epoch_iso(value) -> str | None:
+    """Epoch milliseconds from another store -> local 'YYYY-MM-DD HH:MM'.
+
+    Anything that is not a plausible millisecond count yields None: a store that
+    changes its time unit shows up as a missing number, not as a date in 1970.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0 or value < 10 ** 11 or value > 10 ** 14:
+        return None
+    return fmt_time(datetime.fromtimestamp(value / 1000, timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+
+
+def _short_label(value) -> str | None:
+    """Echo a foreign enum only if it looks like a category name.
+
+    `type`, `status` and `tool_name` are supposed to be short tokens, but they
+    live in someone else's column and nothing stops a future version from putting
+    a sentence there. A value that is not label-shaped becomes None rather than
+    a line of the user's text on the terminal.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text if _LABEL_RE.match(text) else None
+
+
+def _read_sidecar(dir_path: str, name: str, keys) -> dict | None:
+    """Whitelisted keys of one small JSON file; None when it is not there."""
+    if name in CLAUDE_MEM_FORBIDDEN_FILES:
+        return None
+    path = os.path.join(dir_path, name)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = value
+        elif isinstance(value, bool):
+            out[key] = value
+        elif isinstance(value, str) and len(value) <= 40 and not value.startswith(("http://", "https://", "/")):
+            out[key] = value
+    return out
+
+
+def _sidecar_times(fields: dict | None) -> dict | None:
+    """Epoch-ms fields become the same local string every other time uses.
+
+    Only a plausible millisecond count is converted: `backfill.completedAt` is
+    already an ISO string, and rewriting it to None would lose the one number
+    that field carries.
+    """
+    if not fields:
+        return fields
+    for key in list(fields):
+        if key.endswith("At"):
+            iso = _epoch_iso(fields[key])
+            if iso:
+                fields[key] = iso
+    return fields
+
+
+def claude_mem_summary(conn, days: int = 7, db_path: str | None = None) -> dict:
+    """Counts and timestamps of claude-mem's own ledger, read-only.
+
+    `conn` is the *tracker* database and is only used to say how much of the same
+    window the tracker measured; nothing here writes to either store. A table that
+    does not exist, or whose columns were renamed upstream, is reported as
+    `missing` / `degraded` with no numbers — it never raises, because a neighbour
+    upgrading under us must not break `skillt doctor`.
+    """
+    store = claude_mem_store(db_path)
+    out = {
+        "available": False, "reason": store["reason"], "db_path": store["db"],
+        "dir": store["dir"], "days": days, "tables": {}, "health": None,
+        "backfill": None, "telemetry": None, "newest_epoch": None,
+        "newest": None, "errors": [], "tracker_same_window": None,
+    }
+    if not store["db"]:
+        return out
+    try:
+        cm = _open_claude_mem_ro(store["db"])
+    except sqlite3.Error as e:
+        out["reason"] = f"could not open read-only: {e}"
+        return out
+    try:
+        cutoff = int((datetime.now(timezone.utc).timestamp() * 1000)
+                     - max(1, int(days)) * 86400 * 1000)
+        for name, spec in CLAUDE_MEM_TABLES.items():
+            row = {"n": None, "n_window": None, "last": None, "last_epoch": None,
+                   "tokens": None, "by": None}
+            try:
+                cols = {r[1] for r in cm.execute(f"PRAGMA table_info({name})")}
+            except sqlite3.Error:
+                cols = set()
+            if not cols:
+                row["missing"] = True
+                out["tables"][name] = row
+                continue
+            time_col = spec["time"] if spec["time"] in cols else None
+            select = ["COUNT(*) AS n"]
+            if time_col:
+                # COALESCE: `SUM` over zero rows is NULL, and "0 in the window"
+                # is a different fact from "cannot tell" — an empty table must say 0.
+                select.append(f"COALESCE(SUM(CASE WHEN {time_col} >= ? THEN 1 ELSE 0 END), 0) AS n_window")
+                select.append(f"MAX({time_col}) AS last_epoch")
+            tokens = spec.get("tokens")
+            if tokens and tokens in cols:
+                select.append(f"COALESCE(SUM({tokens}), 0) AS tokens")
+            try:
+                r = cm.execute(f"SELECT {', '.join(select)} FROM {name}",
+                               (cutoff,) if time_col else ()).fetchone()
+            except sqlite3.Error as e:
+                row["degraded"] = str(e)
+                out["tables"][name] = row
+                continue
+            row["n"] = r["n"]
+            if time_col:
+                row["n_window"] = r["n_window"]
+                row["last"] = _epoch_iso(r["last_epoch"])
+                # `newest_epoch` is only ever set to a value the formatter also
+                # accepted, so `claude_mem_age_days` can never date a row that the
+                # report shows as unknown (a store that switched to seconds would
+                # otherwise read as "20708 days ago").
+                if row["last"] and (out["newest_epoch"] is None
+                                    or r["last_epoch"] > out["newest_epoch"]):
+                    out["newest_epoch"] = r["last_epoch"]
+                else:
+                    row["last_epoch"] = None
+            if tokens and tokens in cols:
+                row["tokens"] = r["tokens"]
+            label = spec.get("label")
+            if label and label in cols:
+                try:
+                    rows = cm.execute(
+                        f"SELECT {label} AS v, COUNT(*) AS n FROM {name}"
+                        f" GROUP BY {label} ORDER BY n DESC, v ASC LIMIT {CLAUDE_MEM_LABEL_CAP}"
+                    ).fetchall()
+                except sqlite3.Error:
+                    rows = []
+                counts: dict = {}
+                for g in rows:
+                    key = _short_label(g["v"])
+                    if key is None:
+                        # Counted, never echoed: an un-label-shaped value still
+                        # belongs to the total, it just cannot be named here.
+                        counts.setdefault("(not shown)", 0)
+                        counts["(not shown)"] += g["n"]
+                        continue
+                    counts[key] = g["n"]
+                row["by"] = counts
+            out["tables"][name] = row
+    finally:
+        try:
+            cm.close()
+        except sqlite3.Error:
+            pass
+
+    readable = [n for n, r in out["tables"].items() if not r.get("missing")]
+    if out["tables"] and not readable:
+        # Every table we know about is absent: this is not an empty claude-mem,
+        # it is some other file (or a rename we cannot follow). Saying
+        # "installed, zero rows" would be a lie with a number on it.
+        out["reason"] = ("no claude-mem tables readable in "
+                         f"{store['db']} (tables: {', '.join(CLAUDE_MEM_TABLES)})")
+        return out
+
+    out["newest"] = _epoch_iso(out["newest_epoch"])
+    # The join that makes the two numbers worth reading together: claude-mem saw
+    # the session, and this is how much of the same window the tracker was
+    # *allowed* to see. Only skill/MCP/plugin calls are measured here, so a zero
+    # beside a non-zero claude-mem count is the design boundary, not a gap.
+    if conn is not None:
+        cutoff_iso = (datetime.fromtimestamp(cutoff / 1000, timezone.utc)
+                      .strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+        counts = {}
+        for table in CLAUDE_MEM_TRACKER_TABLES:
+            try:
+                counts[table] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE timestamp >= ?", (cutoff_iso,)
+                ).fetchone()[0]
+            except sqlite3.Error:
+                counts[table] = None
+        out["tracker_same_window"] = counts
+    if out["dir"]:
+        out["health"] = _sidecar_times(
+            _read_sidecar(out["dir"], "observer-health.json", CLAUDE_MEM_HEALTH_KEYS))
+        out["backfill"] = _sidecar_times(
+            _read_sidecar(out["dir"], "backfill.json", CLAUDE_MEM_BACKFILL_KEYS))
+        out["telemetry"] = _sidecar_times(
+            _read_sidecar(out["dir"], "telemetry.json", CLAUDE_MEM_TELEMETRY_KEYS))
+    out["available"] = True
+    out["reason"] = ""
+    return out
+
+
+def claude_mem_age_days(summary: dict):
+    """Days since claude-mem's newest row; None when there is nothing to date."""
+    epoch = (summary or {}).get("newest_epoch")
+    if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
+        return None
+    return (datetime.now(timezone.utc).timestamp() * 1000 - epoch) / 86400000.0

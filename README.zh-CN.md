@@ -155,7 +155,8 @@ skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
 skillt scrub-metadata [--yes] [--json] [--limit N]
-skillt agentos   [--json] [--limit N]
+skillt agentos    [--json] [--limit N]
+skillt claude-mem [--json] [--days N]
 ```
 
 - `insight`：最常使用 / 增长最快 / **从未使用** / 长期未使用 / 失败率最高，并附观察样本（session 数与天数）。
@@ -164,6 +165,7 @@ skillt agentos   [--json] [--limit N]
 - `health`：把每个 skill 分成 **活跃（≤30 天）/ 沉寂（30–90 天）/ 未使用（>90 天或从未）**，并给出风险标记与建议。会显示**观察样本**（N 个 session、D 天）；样本不足 **20 个 session 或 14 天**时只输出一行"数据不足"，不给剪枝建议——在样本足够之前，"0 次使用"没有意义。**只读、只建议、绝不自动删除。**
 - `mcp`：MCP 工具使用情况——按 server 汇总，再列出调用最多的工具（次数、成功率、最近使用）。**只读。**
 - `plugins`：插件清单（来源、版本、工具/命令面、排除状态、`scope` 与最后被看到的时刻）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
+- `claude-mem`：**只读** claude-mem 插件自己的账本——它记了多少 observation / 提示 / 会话、最新一行距今多久、discovery token 合计，以及它后台观察器的连续失败计数；同一时间窗里本 tracker 测到了多少也一并列在旁边。只有计数与时间：那个库里的文本列、以及存着它 API key 的 `settings.json`，一律不读（见 M22）。装在默认位置时不需要配置，否则设 `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` 或 `CLAUDE_MEM_DIR`；库不存在时 `skillt doctor` 对此一句不提。
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（**三张表分别**报最新一条距今多少天，例如 `skill_usage 0.0d · mcp_usage 2.2d · plugin_usage 0.0d`，阈值 `--freshness-days`，默认 7；从没记过行的流报 `no rows`，不算停滞；`OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` 可以把某条流排除在判定之外，但它仍会被打印并标注 `(excluded)`）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）。这三项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
@@ -391,6 +393,7 @@ rm -rf ~/.local/share/opencode/backups
 - **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
 - **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
 - **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。
+- **M22 claude-mem 的数字来自别人的 schema，而且只是数字。** `skillt claude-mem` 以只读方式打开另一个插件的 SQLite 库：只取计数、时间戳和很短的分类标签，绝不取它们旁边的文本列（`prompt_text`、`text`、`narrative`、`tool_input` 等），也绝不打开它的 `settings.json`。上游改字段名只会让某个数字变空，不牵连别处（又是 M21 那个形状）；一张表都读不到的库会被报成「读不懂」，而不是「装了但是空的」。claude-mem **做了什么**（它自己的 hook、它自己的总结进程）从这里根本观测不到——这里读的是它写下了什么，不是它干了什么。
 - **M21 顾问的单次预算是抄来的默认值。** tracker 没法跨那道缝读 `AOS_TIMEOUT_MS`，所以"是否超预算"用的是 AgentOS 文档里的默认值 1200ms，除非用 `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` 覆盖。AgentOS 若改了默认而这边没跟着改，这个标记就会**安静地失效**——和 M13 同一形状，所以写在这里而不是藏在常量里。
 - **M18 后到的错误文本可能被丢弃。** 三条 UPSERT 都用 `metadata = COALESCE(已存在, 新来的)`：若 `after` 钩子先写了一行、随后事件路径带着真正的报错文本到达，`status` 会被纠正为 `error`（单调规则），但 `metadata.error` **不会**被补进去。承载去重不变量，本轮不动。
 

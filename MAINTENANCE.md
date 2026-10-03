@@ -18,12 +18,12 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
 | TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
 | Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 592 KiB |
-| Rows (recounted 2026-10-03, **after the owner cleared usage**) | 39 skills · 1 skill_usage · 0 mcp_usage · 3 plugin_usage · 76 skill_versions · 8 plugin_inventory — the inventory is still the pre-prune set until OpenCode restarts |
+| Rows (recounted 2026-10-03, **after the owner cleared usage**) | 39 skills · 1 skill_usage · 1 mcp_usage · 6 plugin_usage · 76 skill_versions · 5 plugin_inventory — the inventory has been pruned once for real (8 → 5 at the 14:32Z start: agent-os.js, opencode-mem and both conductor spellings gone), and `claude-mem.js` now lists `claude_mem_search` |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 5` (4 = metadata is allowlisted, 5 = `plugin_inventory.scope`) |
-| Test suite | 347 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| Test suite | 365 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | AgentOS advisor store (measured 2026-10-03; it is another process's state and moves) | `/home/shade/Public/AgentOS/store/aos.db` — 22 telemetry events, 51 retrieval rows over 8 memories, 14 memories, **83 loop files**. Stages are no longer small: the newest loops run `validate` at 31–37 s, i.e. ~30× the 1200 ms budget. **The TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request); `skillt agentos` is now the only surface that opens that store, and `test_tui_never_reads_the_advisor_store` pins that no tab reads it. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Whether a loop is a live-test sample or real usage is not this project's call to make; the store is read-only here and the newest loops are labelled with their own `model`. |
-| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 920 lines over 10.1 d (first line 2026-09-23), 0 `[err]` |
+| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 1033 lines over 10.2 d (first line 2026-09-23), 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
 | Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots) — that deletion happens on the next nightly run |
@@ -100,6 +100,10 @@ Healthy today means, at minimum:
 skillt cleanup-selftest          # dry run; must report no synthetic rows
 skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
 skillt sync --dry-run            # scanned == skills row count, changed == 0
+skillt claude-mem                # the memory plugin's own ledger: how fresh its
+                                 # background capture is, its token totals, and the
+                                 # observer's consecutive-failure count (silent in
+                                 # `doctor` when that store is absent)
 skillt agentos                   # advisor loops: over-budget stages, errors, whether
                                  # the recalled memory reached the prompt, and the
                                  # join with measured usage (needs AGENT_OS_ROOT)
@@ -368,7 +372,7 @@ state.
 
 ## 7. Known limitations
 
-M1–M21, with reproduction notes:
+M1–M22, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#9-已知限制) /
 [README.md](README.md#known-limitations).
 The ones most likely to bite during maintenance: **M14** (historical prompt text

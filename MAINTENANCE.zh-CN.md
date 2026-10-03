@@ -14,12 +14,12 @@
 | 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
 | TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
 | 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL，592 KiB |
-| 行数（2026-10-03 重测，**owner 刚清空过用量**） | 39 skills · 1 skill_usage · 0 mcp_usage · 3 plugin_usage · 76 skill_versions · 8 plugin_inventory —— 清单这一列还是剪枝前的集合，要等 OpenCode 重启 |
+| 行数（2026-10-03 重测，**owner 刚清空过用量**） | 39 skills · 1 skill_usage · 1 mcp_usage · 6 plugin_usage · 76 skill_versions · 5 plugin_inventory —— 清单已经在真环境剪过一次（14:32Z 启动时 8 → 5：agent-os.js、opencode-mem 与两种 conductor 写法都没了），`claude-mem.js` 现在带着 `claude_mem_search` |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 5`（4 = metadata 走白名单，5 = 多了 `plugin_inventory.scope`） |
-| 测试 | 347 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| 测试 | 365 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | AgentOS 顾问存储（2026-10-03 实测；那是另一个进程的状态，会变） | `/home/shade/Public/AgentOS/store/aos.db`——22 条 telemetry、51 条召回（覆盖 8 条记忆）、14 条记忆、**83 个 loop 文件**。阶段耗时已经不是小数：最新的 loop 里 `validate` 跑到 31–37 秒，是 1200ms 预算的约 30 倍。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。某个 loop 是 live 测试样本还是真实用量，不由本项目代答；这里对那个库只读，最新的 loop 自己带着 `model` 标签。 |
-| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，10.1 天 920 行（首行 2026-09-23），`[err]` 0 行 |
+| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，10.2 天 1033 行（首行 2026-09-23），`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
 | 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
 | 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份），这个删除会在下一次夜间任务发生 |
@@ -77,6 +77,8 @@ skillt doctor            # 期望：0 FAIL
 skillt cleanup-selftest          # 干跑：必须报告没有合成行
 skillt scrub-metadata            # 干跑：必须报 0 行（M14 已闭环）
 skillt sync --dry-run            # scanned == skills 行数，changed == 0
+skillt claude-mem                # claude-mem 自己的账本：它后台采集有多新鲜、token 合计、
+                                 # 观察器连续失败数（那个库不存在时 doctor 一句不提）
 skillt agentos                   # 顾问 loop：超预算阶段、错误、召回是否真的进了提示、
                                  # 与可度量用量的连接（需要环境里有 AGENT_OS_ROOT）
 wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
@@ -254,7 +256,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 7. 已知限制
 
-M1–M21 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
+M1–M22 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [README.md](README.md#known-limitations)）。
 维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修

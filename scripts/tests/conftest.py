@@ -69,6 +69,21 @@ def temp_skills(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_claude_mem_store(tmp_path, monkeypatch):
+    """No test may read the developer's own `~/.claude-mem`.
+
+    The neighbour resolves to a well-known default path, so unlike the advisor
+    store it needs no configuration to be *found* — which also means `skillt
+    doctor`'s `claude_mem.capture` check would appear or vanish depending on what
+    this machine has installed. Pinning the env here keeps every test's view
+    empty; the tests that want a store pass `db_path=` explicitly.
+    """
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB",
+                       str(tmp_path / "no-claude-mem.db"))
+    monkeypatch.delenv("CLAUDE_MEM_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def isolate_backup_dir(tmp_path, monkeypatch):
     """No test may write into the real ~/.local/share/opencode/backups.
 

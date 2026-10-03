@@ -23,10 +23,14 @@ usage** into a local SQLite database. Three layers, in dependency order:
 3. `scripts/skill-tui.py` (Textual TUI + `--cli` headless subcommands) and
    `scripts/skill-stats.py` (legacy CLI). Read-only apart from explicit
    `delete` / `clear` / `backup` / `vacuum`.
-4. `scripts/skill_db.py::agentos_*` — a **read-only neighbour**, not a fourth
-   layer: the AgentOS advisor registers no tool and no command, so it can never
-   appear in the usage tables, and `skillt agentos` is the only surface that
-   reads its own store (`$AGENT_OS_ROOT/store/aos.db` + `store/loops/*.json`).
+4. `scripts/skill_db.py::agentos_*` and `::claude_mem_*` — **read-only
+   neighbours**, not a fourth layer. The AgentOS advisor registers no tool and no
+   command, so it can never appear in the usage tables, and `skillt agentos` is
+   the only surface that reads its own store
+   (`$AGENT_OS_ROOT/store/aos.db` + `store/loops/*.json`). claude-mem registers a
+   tool but does its real work in its own hooks, which the host never reports to
+   us, so `skillt claude-mem` reads what it wrote (counts, timestamps, token
+   totals) and nothing else.
    The Advisor tab that used to show this in the TUI was removed on 2026-10-03 at
    the owner's request; the data layer and the command stayed on purpose, so the
    page can come back without re-deriving the projection.
@@ -58,7 +62,14 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **Do not change the capture logic in the plugin** without tests. Writes are
   deduplicated by `UNIQUE(session_id, call_id)` + `ON CONFLICT` upsert; that
   invariant is load-bearing.
-- **The advisor store is read-only and field-whitelisted.** Never open it with
+- **A foreign store is read-only and field-whitelisted.** The claude-mem reader
+  may name only counters, timestamps and short category labels; its prose columns
+  (`prompt_text`, `text`, `narrative`, `tool_input`, …) are named nowhere in the
+  code, and `~/.claude-mem/settings.json` — which holds that plugin's API keys —
+  is never opened at all (`CLAUDE_MEM_FORBIDDEN_FILES`). A value from a foreign
+  enum column is echoed only if it is label-shaped (`_short_label`), and a store
+  with none of our tables present is reported unreadable rather than empty.
+  The advisor store is read-only and field-whitelisted the same way. Never open it with
   `open_db()` — that helper falls back to read-write and creates a missing file,
   which would hand a foreign store to a "read-only" reader. Use
   `_open_agentos_ro()` (`file:...?mode=ro`). Loop files carry `task_text` (the

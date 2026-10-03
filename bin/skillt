@@ -4,7 +4,7 @@
 #   skillt                      launch the interactive TUI
 #   skillt stats|top|show|recent|delete|clear|backup|vacuum
 #                               delegate to the legacy CLI (skill-stats.py)
-#   skillt insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|auto-backup|doctor
+#   skillt insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor
 #                               headless mode of skill-tui.py (no textual needed)
 #   skillt help                 show the legacy CLI help
 #
@@ -76,7 +76,7 @@ done
 # subcommands below always pass --cli through to skill-tui.py.
 if [ "$cli" -eq 1 ] && [ -z "$cmd" ]; then
   echo "skillt: --cli requires a subcommand" >&2
-  echo "  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|auto-backup|doctor" >&2
+  echo "  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor" >&2
   exit 2
 fi
 
@@ -103,7 +103,7 @@ case "$cmd" in
     exec "$SYS_PY" "$SCRIPTS/skill-stats.py" "$cmd" "${rest[@]+"${rest[@]}"}"
     ;;
 
-  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|auto-backup|doctor)
+  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor)
     py="$SYS_PY"
     [ -x "$VENV_PY" ] && py="$VENV_PY"
     exec "$py" "$SCRIPTS/skill-tui.py" --cli "$cmd" "${rest[@]+"${rest[@]}"}"

@@ -50,13 +50,14 @@ Design constraints, deliberately kept:
 | | |
 |---|---|
 | OS | Linux — developed and verified on Ubuntu 26.04; other distributions are **unverified** |
-| OpenCode | 1.18.x (developed and tested against 1.18.32) |
+| OpenCode | 1.18.x — allowlist verified against 1.18.34; the permission payload shapes were measured on 1.18.33 and have not been re-measured since (M20) |
 | Python | 3.11+ for the CLI and TUI (tested on 3.11, 3.13, 3.14) |
 | Bun | bundled with OpenCode — used to run the plugin; only needed for the plugin self-test |
 | `uv` | optional but recommended for creating the venv; plain `python3 -m venv` also works |
 
 The headless subcommands (`insight`, `health`, `doctor`, `export`, `sync`,
-`mcp`, `plugins`, `auto-backup`) need **only the Python standard library**. The
+`mcp`, `plugins`, `agentos`, `claude-mem`, `auto-backup`) need **only the Python
+standard library**. The
 interactive TUI needs [Textual](https://textual.textualize.io/)
 (`textual>=8.2,<9`), installed into a venv by `install.sh`.
 
@@ -266,6 +267,14 @@ skillt agentos   [--json] [--limit N]
   taken first, then the WAL is checkpointed so the text really leaves the disk).
   See M14.
 
+- `claude-mem` — the **claude-mem** plugin's own ledger, read-only: how many
+  observations, prompts and sessions it holds, how fresh its newest row is, its
+  discovery-token totals, and the background observer's failure counter — beside
+  what *this* tracker measured over the same window. Counts and timestamps only:
+  the prose columns of that store, and its `settings.json` (which holds its API
+  keys), are never read. See M22. Found at its default path when installed;
+  otherwise set `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` or `CLAUDE_MEM_DIR`.
+  `skillt doctor` says nothing about it when the store is absent.
 - `agentos` — the **AgentOS advisor**, aggregated read-only from its own store.
   The advisor registers no tool and no command, so it can never appear in the
   usage tables above: it produces **zero usage rows** there, and
@@ -568,6 +577,15 @@ The full audit — M1 through M19, with reproduction notes — lives in
   `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` says otherwise. If AgentOS changes its
   default and nobody changes this, the flag goes quietly stale — the same shape
   as M13, and the reason it is named here rather than buried in a constant.
+- **M22** The claude-mem numbers come from a foreign schema, and they are only
+  numbers. `skillt claude-mem` reads another plugin's SQLite store read-only —
+  counts, timestamps and short category labels, never the prose columns beside
+  them (`prompt_text`, `text`, `narrative`, `tool_input`, and so on) and never its
+  `settings.json`. A rename upstream blanks a number rather than breaking anything
+  (the M21 shape again), and a store whose tables are all missing is reported as
+  unreadable rather than as installed-and-empty. What claude-mem *does* — its own
+  hooks, its own summariser — is not observable from here at all: this reads what
+  it wrote, not what it did.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 
