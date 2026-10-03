@@ -868,6 +868,69 @@ def unified_recent_rows(conn, limit: int = 100) -> list[dict]:
     return merged[:limit]
 
 
+# `json_extract` does not return NULL for invalid JSON — it *raises*. Rows written
+# by older builds can hold anything in `metadata` (see the scrub-metadata
+# command), so every read of a metadata key goes through this.
+AGENT_EXPR = ("CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.agent')"
+              " END")
+
+
+def agent_usage_rows(conn) -> list[dict]:
+    """Call counts grouped by the agent each usage row reported.
+
+    Read-only. One row per agent: {agent, skill, mcp, plugin, total, success,
+    errors, denied, last_used}, biggest first. `agent` is None for rows that did
+    not carry one, and that bucket is returned rather than dropped — a table that
+    quietly omits rows reads as a complete picture of less than what happened.
+
+    What the None bucket means is a real limitation (M23), not a data-quality
+    detail: `agent` only ever arrives on the `chat.message` hook, and all three
+    usage upserts write `metadata = COALESCE(existing, excluded)`. Since
+    `metadata` is a JSON string that is never SQL NULL once written, the first
+    writer's JSON is frozen forever — a call recorded before the session named its
+    agent can never be repaired. So this column is "the agent the session first
+    reported", not "the agent that ran this call".
+
+    Missing tables are skipped the way `unified_recent_rows` skips them; a query
+    that *raises* is allowed to, because half an aggregate presented as the whole
+    one is the failure mode worth avoiding here.
+    """
+    per_agent: dict = {}
+    streams = (("skill_usage", "skill", True),
+               ("mcp_usage", "mcp", _mcp_available(conn)),
+               ("plugin_usage", "plugin", _plugin_available(conn)))
+    for table, kind, present in streams:
+        if not present:
+            continue
+        rows = conn.execute(f"""
+        SELECT {AGENT_EXPR} AS agent,
+               COUNT(*) AS n,
+               SUM(status = 'success') AS success,
+               SUM(status = 'error')   AS errors,
+               SUM(status = 'denied')  AS denied,
+               MAX(timestamp)          AS last_used
+        FROM {table} GROUP BY agent
+        """).fetchall()
+        for r in rows:
+            value = r["agent"]
+            # A number, or a blank string, is not an agent name: it belongs to the
+            # unknown bucket rather than becoming a label invented out of nothing.
+            agent = value.strip() if isinstance(value, str) and value.strip() else None
+            slot = per_agent.setdefault(agent, {
+                "agent": agent, "skill": 0, "mcp": 0, "plugin": 0, "total": 0,
+                "success": 0, "errors": 0, "denied": 0, "last_used": None,
+            })
+            slot[kind] += r["n"]
+            slot["total"] += r["n"]
+            slot["success"] += r["success"] or 0
+            slot["errors"] += r["errors"] or 0
+            slot["denied"] += r["denied"] or 0
+            if r["last_used"] and (slot["last_used"] is None
+                                   or r["last_used"] > slot["last_used"]):
+                slot["last_used"] = r["last_used"]
+    return sorted(per_agent.values(), key=lambda row: (-row["total"], row["agent"] or ""))
+
+
 # ---------------------------------------------------------------------------
 # MCP reads
 #
