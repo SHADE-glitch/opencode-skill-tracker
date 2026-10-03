@@ -74,7 +74,6 @@ const MCP_ARG_MAX = 32; // argument names recorded per call
 const MCP_ARG_NAME_MAX = 64; // characters per argument name
 const PLUGIN_NAME_MAX = 120;
 const PLUGIN_ITEM_MAX = 120;
-const PLUGIN_SCAN_BLOCK_MAX = 600; // chars read inside a `tool: {` block
 // The plugin name used when a tool is provably not builtin and not MCP, but no
 // installed plugin could be matched to it. Never a guess at a specific plugin.
 const UNKNOWN_PLUGIN = "(unknown)";
@@ -804,15 +803,15 @@ function resolvePluginEntry(spec) {
   return null;
 }
 
-const TOOL_BLOCK_RE = /tool\s*:\s*\{([^}]*)\}/gs;
-const TOOL_KEY_RE = /([A-Za-z_][\w]*)\s*:/g;
-// Tool ids in this ecosystem are lowercase-ish (`compress`, `memory`, `read`),
-// while an ALL_CAPS name inside a `tool: {` block is a constant that leaked in
-// through a string interpolation (`... MATCH USER LANGUAGE: ${x}` — the `?`/`:`
-// of a ternary reads as a key to a regex). Requiring `id: {` instead would have
-// been tidier, but DCP registers `compress: cond ? a() : b()`, so the looser key
-// rule plus this filter is what keeps both plugins listed.
-const TOOL_KEY_NOISE_RE = /^[A-Z][A-Z0-9_]*$/;
+// Inside a `tool: { … }` object the tool ids are the keys at the shallowest level
+// that has any. Anything deeper belongs to one tool's own definition:
+// `args: { query: … }` names a parameter, and a `… ? NOISE : …` inside a
+// description string is not a key at all. A regex could not tell those apart —
+// and because the old one stopped capturing at the first `}`, a tool written
+// *after* a nested object was lost as well. Sticky, so a match can only start
+// where the walk says a key may begin.
+const TOOL_OBJECT_RE = /\btool\s*:\s*\{/g;
+const TOOL_KEY_RE = /([A-Za-z_][\w]*)\s*:/y;
 const CMD_TEMPLATE_RE = /"([A-Za-z][\w:.-]+)"\s*:\s*\{\s*template\s*:/gs;
 const CMD_BRACKET_RE = /command\s*\[\s*"([^"]+)"\s*\]\s*=/gs;
 // `from "./x.js"` and `import("./x.js")` — the two ways a bundle shim reaches
@@ -832,13 +831,60 @@ const RELATIVE_IMPORT_RE = /(?:\bfrom|\bimport)\s*\(?\s*["'](\.\/[^"']+)["']/g;
 const PLUGIN_SCAN_HOPS_MAX = 3;
 const PLUGIN_SCAN_HOP_MAX_BYTES = 256 * 1024;
 
-function scanSurfaceText(src, tools, commands) {
-  for (const block of src.matchAll(TOOL_BLOCK_RE)) {
-    const body = block[1].slice(0, PLUGIN_SCAN_BLOCK_MAX);
-    for (const k of body.matchAll(TOOL_KEY_RE)) {
-      if (!SCAN_KEY_DENYLIST.has(k[1]) && !TOOL_KEY_NOISE_RE.test(k[1])) tools.add(k[1]);
-    }
+// Index just past the closing quote of the string literal starting at `i`. The
+// `${…}` of a template literal is not tracked: whatever it contains is inside a
+// description, which is exactly the text we must not read keys out of.
+function skipQuoted(src, i) {
+  const quote = src[i];
+  let j = i + 1;
+  while (j < src.length) {
+    const c = src[j];
+    if (c === "\\") { j += 2; continue; }
+    if (c === quote) return j + 1;
+    j++;
   }
+  return j;
+}
+
+// The tool ids in `src`. Inside a `tool: { … }` object the shallowest level that
+// has keys at all is the registry; anything below it belongs to an individual
+// tool's own definition (`args: { query: … }` names a parameter, and a `? :` in a
+// description string is not a key). Shallowest-rather-than-first matters because
+// DCP registers `tool:{ ...cond && { compress: … } }`, one level deeper.
+function scanToolBlocks(src, tools) {
+  let from = 0;
+  for (;;) {
+    TOOL_OBJECT_RE.lastIndex = from;
+    const open = TOOL_OBJECT_RE.exec(src);
+    if (!open) return;
+    const byDepth = new Map();
+    let depth = 1;
+    let i = open.index + open[0].length;      // just past the `{` that opens it
+    while (i < src.length && depth > 0) {
+      const ch = src[i];
+      if (ch === '"' || ch === "'" || ch === "`") { i = skipQuoted(src, i); continue; }
+      if (ch === "{") { depth++; i++; continue; }
+      if (ch === "}") { depth--; i++; continue; }
+      TOOL_KEY_RE.lastIndex = i;
+      const k = TOOL_KEY_RE.exec(src);
+      if (k) {
+        if (!SCAN_KEY_DENYLIST.has(k[1])) {
+          if (!byDepth.has(depth)) byDepth.set(depth, []);
+          byDepth.get(depth).push(k[1]);
+        }
+        i += k[0].length;
+        continue;
+      }
+      i++;
+    }
+    const shallowest = Math.min(...byDepth.keys());
+    if (byDepth.size) for (const t of byDepth.get(shallowest)) tools.add(t);
+    from = i;   // the block's own contents hold no registry of their own
+  }
+}
+
+function scanSurfaceText(src, tools, commands) {
+  scanToolBlocks(src, tools);
   for (const m of src.matchAll(CMD_TEMPLATE_RE)) commands.add(m[1]);
   for (const m of src.matchAll(CMD_BRACKET_RE)) commands.add(m[1]);
   // Keep only namespaced command ids: the `template` shape alone also matches

@@ -1236,6 +1236,70 @@ def test_an_unreadable_global_config_never_prunes(tmp_path):
 
 
 @requires_bun
+def test_scan_reports_tool_ids_not_parameter_names(tmp_path):
+    """`args: { query: … }` names a parameter, not a tool.
+
+    The tool block used to be read with a regex that stopped at the first `}`, so
+    the keys of a nested `args` object were collected as tools: claude-mem listed
+    `query` beside its real `claude_mem_search`, and a ternary inside a description
+    string once listed `LANGUAGE`. Depth-aware scanning separates them — and DCP's
+    `cond_tool: cond ? a() : b()` has to survive it, because that shape has already
+    cost one regression.
+    """
+    packages, spec = _npm_plugin(tmp_path, "depthy", {
+        "dist/plugin.js": (
+            "export default { server: async () => ({\n"
+            "  tool: {\n"
+            "    real_tool: { description: \"x ? NOISE : y\", args:"
+            " { query: S.string(), path: S.string() } },\n"
+            "    cond_tool: cond ? a() : b(),\n"
+            "    builder_tool: tool({ description: `d ? NOISE : e`,"
+            " args: { field: S.string() } }),\n"
+            "  },\n"
+            "});\n"
+        ),
+    })
+    r = _run_bun(_INIT_SCRIPT, {
+        **_isolated(tmp_path, plugins=spec),
+        "OPENCODE_SKILL_TRACKER_PACKAGES_DIR": packages,
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads(_inventory(tmp_path)[0][3]) == [
+        "builder_tool", "cond_tool", "real_tool",
+    ], _inventory(tmp_path)
+
+
+@requires_bun
+def test_scan_finds_a_tool_registered_behind_a_spread(tmp_path):
+    """DCP registers one level deeper than the ordinary shape, and must still work.
+
+        tool: { ...cond && { compress: a() : b() } }
+
+    A first attempt at the depth-aware scan read only the outermost level and lost
+    `compress` outright — the same regression the tool-key rule had from the other
+    direction. The rule is therefore "the shallowest level that has keys at all",
+    not "level one".
+    """
+    packages, spec = _npm_plugin(tmp_path, "spready", {
+        "dist/plugin.js": (
+            "export default { server: async () => ({\n"
+            "  tool: {\n"
+            "    ...cfg.compress.enabled && {\n"
+            "      compress: cfg.mode === \"message\" ? mk1(ctx) : mk2(ctx),\n"
+            "    },\n"
+            "  },\n"
+            "});\n"
+        ),
+    })
+    r = _run_bun(_INIT_SCRIPT, {
+        **_isolated(tmp_path, plugins=spec),
+        "OPENCODE_SKILL_TRACKER_PACKAGES_DIR": packages,
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads(_inventory(tmp_path)[0][3]) == ["compress"], _inventory(tmp_path)
+
+
+@requires_bun
 def test_excluded_and_self_plugins_are_listed_but_not_attributed(tmp_path):
     """The two exclusions still appear in the inventory (with skipped=1) so the
     TUI can show what was deliberately left out — but their tools are never
