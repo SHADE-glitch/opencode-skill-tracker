@@ -421,8 +421,13 @@ def test_tool_attribution_fails_open_to_unknown(src):
 
 
 def test_builtin_allowlist_matches_the_shipped_default(src):
-    """The allowlist is hardcoded from OpenCode 1.18.33's tool ids; pin it so a
-    silent edit is caught, and keep the env override documented (M13)."""
+    """The allowlist is hardcoded from the host's `/experimental/tool/ids`; pin it
+    so a silent edit is caught, and keep the env override documented (M13).
+
+    Measured again on 2026-10-03 against 1.18.34: the same fourteen ids, in the
+    same order. Do not "correct" this list from the binary's TUI view registry —
+    that one also carries `batch`, `list`, `lsp` and `plan_exit`, which the host
+    does *not* report as tool ids (measured, not inferred)."""
     m = re.search(r'const DEFAULT_BUILTIN_TOOLS\s*=\s*"([^"]*)"', src)
     assert m, "DEFAULT_BUILTIN_TOOLS not found"
     assert m.group(1).split(",") == [

@@ -512,10 +512,12 @@ The full audit — M1 through M19, with reproduction notes — lives in
   "seen once since this database was created". `project` rows are never deleted
   from elsewhere, because a session started in another directory cannot see them.
 - **M13** The builtin-tool `allowlist` is hardcoded and pinned to OpenCode
-  1.18.33. A builtin added by a later release would be attributed to a plugin
-  as `(unknown)` until the list is refreshed — or set
+  1.18.34 (measured with `curl /experimental/tool/ids` against
+  `opencode serve --pure`, which loads no plugins; the fourteen ids are
+  unchanged since 1.18.33). A builtin added by a later release would be
+  attributed to a plugin as `(unknown)` until the list is refreshed — or set
   `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` yourself. `skillt doctor`
-  `env.opencode_version` now warns when the installed version drifts.
+  `env.opencode_version` warns when the installed version drifts.
 - **M14** Older builds stored a session summary — the user's **own prompt
   text** — in `metadata.summary`. That writer is gone, the export path now
   emits only an allowlist of keys, and `__selftest` asserts it is never

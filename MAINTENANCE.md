@@ -13,7 +13,7 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 
 | Item | Value |
 |---|---|
-| OpenCode | 1.18.33 (`opencode --version`) |
+| OpenCode | 1.18.34 (`opencode --version`); the builtin allowlist was re-read from the host on 2026-10-03 and the fourteen ids had not changed |
 | Plugin SDK | `@opencode-ai/plugin` 1.18.4 |
 | Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
 | TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
@@ -184,8 +184,18 @@ inventories resolve only at init (M11/M12). So:
 
 1. `opencode --version` — note the number.
 2. `skillt doctor` → `env.opencode_version` must WARN with the drift.
-3. Get the real list: `curl -s localhost:<port>/experimental/tool/ids` while
-   OpenCode's server is up.
+3. Get the real list: `curl -s http://127.0.0.1:<port>/experimental/tool/ids`.
+   A running TUI does not necessarily expose it — the port you find may belong to
+   a *plugin's* web server, not the host. So start one that loads nothing:
+   `~/.opencode/bin/opencode serve --pure --port 14096 --hostname 127.0.0.1`,
+   curl it, kill it. `--pure` is what makes this safe while another OpenCode
+   session is live: no plugin is loaded, so nothing is captured and nothing is
+   written. It still needs the owner's go-ahead — starting a second host instance
+   is their call, not a routine check.
+   Do **not** substitute `strings` on the installed binary: its TUI view registry
+   also carries `batch`, `list`, `lsp` and `plan_exit`, none of which the host
+   reports as tool ids (measured 2026-10-03, right after that exact inference had
+   already been written into a report as a fact).
 4. Update `DEFAULT_BUILTIN_TOOLS` in `plugin/skill-tracker.js` **and** the
    `verified against OpenCode X.Y.Z` comment on the same line — that comment is
    what `doctor` parses, so leaving it behind re-creates the drift it detects.

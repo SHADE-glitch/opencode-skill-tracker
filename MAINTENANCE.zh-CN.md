@@ -9,7 +9,7 @@
 
 | 项 | 值 |
 |---|---|
-| OpenCode | 1.18.33（`opencode --version`） |
+| OpenCode | 1.18.34（`opencode --version`）；内置白名单 2026-10-03 已从宿主端重读，那十四个 id 没变 |
 | 插件 SDK | `@opencode-ai/plugin` 1.18.4 |
 | 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
 | TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
@@ -149,7 +149,8 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 1. `opencode --version`，记下版本号。
 2. `skillt doctor` → `env.opencode_version` 必须因为漂移而 WARN。
-3. 拿真实列表：OpenCode server 在跑时 `curl -s localhost:<port>/experimental/tool/ids`。
+3. 拿真实列表：`curl -s http://127.0.0.1:<端口>/experimental/tool/ids`。注意在跑的 TUI 不一定开着这个端点——你查到的端口可能属于**某个插件自己的** web server，不是宿主。所以起一个什么都不加载的：`~/.opencode/bin/opencode serve --pure --port 14096 --hostname 127.0.0.1`，curl 完就 kill。`--pure` 是它能在别的会话活着时安全执行的原因：不加载任何插件，于是不采集、也不写任何东西。但这仍然要 owner 点头——再起一个宿主实例是他的决定，不是例行检查。
+   **别**拿 `strings` 读安装包代替：它里面的 TUI 视图表还带着 `batch`、`list`、`lsp`、`plan_exit`，而这四个宿主根本不报成 tool id（2026-10-03 实测——就在这个推断已经被当成事实写进一份报告之后）。
 4. 同时更新 `plugin/skill-tracker.js` 里的 `DEFAULT_BUILTIN_TOOLS` **和**同一行那句 `verified against OpenCode X.Y.Z` 注释——`doctor` 解析的就是那句注释，漏掉它等于重新制造它要检的漂移。
 5. 重启 OpenCode，用 `skillt plugins` 确认清单已刷新。
 

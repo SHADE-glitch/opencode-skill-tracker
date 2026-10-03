@@ -378,7 +378,7 @@ rm -rf ~/.local/share/opencode/backups
 - **M9 重试静默失效（已修复）。** 旧版 `initDone = true` 在 `init()` 完成**之前**置位，任何早退都会让后续重试静默 no-op。现在 `initDone` 仅在 schema 创建成功后置位，并发调用由 `initInFlight` 去重，失败后仍可重试。
 - **M11 MCP 服务列表只在插件初始化时解析一次。** 新增或改名一个 MCP 服务后，必须**重启 OpenCode** 它的调用才会被记录；在那之前这些调用是**不可见**的（只是被跳过，**不会**记错）。检测**失败即关闭**：若一个服务都识别不出来，宁可不写，也不去猜哪些工具是 MCP。只记**参数名**、绝不记参数值。
 - **M12 插件清单和归属只在初始化时解析一次。** 静态扫描尽力从插件源码识别工具/命令：读包入口文件，再**跟着它自己 import 的相对路径模块跳一层**（有上界：3 个跳转、每个 256 KiB——发布出去的 `main` 常常只是几百字节的转发壳，真正的注册在它 import 的 chunk 里）；工具 id 取 `tool: {` 里**最浅的有键那一层**，再深就是某个工具自己的 `args: { query: … }`，不是工具。新增、升级、改名插件或它注册的工具/命令后，必须**重启 OpenCode** 才会刷新。工具无法归属时记录为 `(unknown)`；命令无法明确归属时**不记录**（失败即关闭，避免把 `/init` 等内置命令误记成插件）。每一行还记下**是哪份配置声明了它**（`global` / `localdir` / `project`）：后一次启动再见不到的 `global`/`localdir` 行会被删掉，所以页面上那一列说的是"启动时加载了什么"，不再是"这个库建好以来曾经见过什么"；`project` 行不在别处删——换个目录启动的会话本来就看不见它。
-- **M13 内置工具 allowlist 与 OpenCode 1.18.33 对齐并硬编码。** 如果 OpenCode 升级后新增了内置工具，而 tracker 尚未更新，它可能被当作 `(unknown)` 插件工具记录；可用 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` 覆盖 allowlist，或等待 tracker 更新。
+- **M13 内置工具 allowlist 与 OpenCode 1.18.34 对齐并硬编码**（2026-10-03 用 `curl /experimental/tool/ids` 对 `opencode serve --pure`（不加载任何插件）实测；这十四个 id 与 1.18.33 完全一致，只是把版本标注往前挪了）。** 如果 OpenCode 升级后新增了内置工具，而 tracker 尚未更新，它可能被当作 `(unknown)` 插件工具记录；可用 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` 覆盖 allowlist，或等待 tracker 更新。
 
 ### 编码
 

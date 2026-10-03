@@ -77,10 +77,12 @@ const PLUGIN_ITEM_MAX = 120;
 // The plugin name used when a tool is provably not builtin and not MCP, but no
 // installed plugin could be matched to it. Never a guess at a specific plugin.
 const UNKNOWN_PLUGIN = "(unknown)";
-// Builtin tool ids, verified against OpenCode 1.18.33 with
-// `curl /experimental/tool/ids`. Anything outside this set that is not the
-// skill tool and not an MCP tool is treated as plugin-provided. Refresh this
-// list on an OpenCode upgrade, or override it with
+// Builtin tool ids, verified against OpenCode 1.18.34 with
+// `curl /experimental/tool/ids` (2026-10-03, against `opencode serve --pure`,
+// which loads no plugins so the list is the host's own). The 1.18.34 list is
+// identical to the 1.18.33 one, so only the pin moved. Anything outside this set
+// that is not the skill tool and not an MCP tool is treated as plugin-provided.
+// Refresh this list on an OpenCode upgrade, or override it with
 // OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS (comma-separated).
 const DEFAULT_BUILTIN_TOOLS =
   "invalid,question,bash,read,glob,grep,edit,write,task,webfetch,todowrite,websearch,skill,apply_patch";

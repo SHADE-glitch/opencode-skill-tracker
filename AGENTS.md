@@ -81,7 +81,10 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   open to `(unknown)` when the static scan cannot resolve an owner; commands
   fail closed because there is no builtin command allowlist. The default plugin
   exclusions are the tracker itself (realpath-aware) and `opencode-notifier`.
-  The builtin tool allowlist is pinned to OpenCode 1.18.33; set
+  The builtin tool allowlist is pinned to OpenCode 1.18.34 — refreshed by
+  reading `/experimental/tool/ids` off an `opencode serve --pure` instance,
+  never by reading the binary's TUI view registry, which lists four extra names
+  the host does not report as tool ids. Set
   `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` after an OpenCode upgrade if needed.
 - **Permission payload shapes are measured, not assumed.** OpenCode 1.18.33
   emits `permission.asked` (id at `id`, refused call at `tool.callID`) followed
