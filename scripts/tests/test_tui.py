@@ -485,9 +485,10 @@ def test_duplicate_skill_names_do_not_crash(tmp_path):
 def test_tui_tab_order_is_pinned(seeded_db):
     """The tab contract: Data stays LAST; skills-adjacent tabs group together.
 
-    Order: Dashboard, Skills, MCP, Plugins, Recent, Categories, Data. The Advisor
-    tab was removed at the owner's request (the data layer and `skillt agentos`
-    stayed), so the count from Dashboard to Data is six presses, not seven.
+    Order: Dashboard, Skills, MCP, Plugins, Recent, Categories, Agents, Data. The
+    walk to Data is counted from the id list instead of a hand-written number:
+    adding a tab used to mean editing a press loop, and forgetting it failed as
+    "the Data page is broken" rather than "the order changed".
     """
     from textual.widgets import TabPane
 
@@ -498,24 +499,88 @@ def test_tui_tab_order_is_pinned(seeded_db):
             ids = [p.id for p in app.screen.query(TabPane)]
             assert ids == [
                 "tab-dash", "tab-skills", "tab-mcp", "tab-plugins",
-                "tab-recent", "tab-cats", "tab-data",
+                "tab-recent", "tab-cats", "tab-agents", "tab-data",
             ], ids
+            assert ids[-1] == "tab-data", "Data is the contract every Data test leans on"
+
+            tc = app.screen.query_one("TabbedContent")
 
             # Two presses land on MCP, three on Plugins (grouped after Skills).
             for _ in range(2):
                 await pilot.press("tab")
                 await pilot.pause()
-            assert app.screen.query_one("TabbedContent").active == "tab-mcp"
+            assert tc.active == "tab-mcp"
 
             await pilot.press("tab")
             await pilot.pause()
-            assert app.screen.query_one("TabbedContent").active == "tab-plugins"
+            assert tc.active == "tab-plugins"
 
-            # Three more land on Data, which is what the Data tests rely on.
-            for _ in range(3):
+            # However many tabs sit in between, the last one is Data.
+            for _ in range(ids.index("tab-data") - ids.index(tc.active)):
                 await pilot.press("tab")
                 await pilot.pause()
-            assert app.screen.query_one("TabbedContent").active == "tab-data"
+            assert tc.active == "tab-data"
+
+    _run(_run_it())
+
+
+def test_tui_agents_tab_renders_rows(seeded_db):
+    """The Agents page shows the per-agent table and admits what it cannot know.
+
+    `metadata` is written once and never updated, so a call recorded before its
+    session reported an agent stays `(unknown)` forever. The page has to say that
+    on screen — a bare "(unknown)" row reads like a real agent called "unknown".
+    """
+    from rich.text import Text
+    from textual.widgets import Static
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-agents"
+            await pilot.pause()
+            table = app.screen.query_one("#agents-table", DataTable)
+            assert table.row_count, "the fixture seeds agent=build rows"
+            headers = [str(c.label) for c in table.columns.values()]
+            assert headers == [
+                "Agent", "Skill", "MCP", "Plugin", "Total", "Success rate", "Last used",
+            ], headers
+            first = [str(c) for c in table.get_row(list(table.rows)[0])]
+            assert first[0] == "build", first
+            note = Text.from_markup(
+                str(app.screen.query_one("#agents-label", Static).content)
+            ).plain
+            assert "first" in note and "(unknown)" in note, note
+            assert "M23" in note, note
+
+    _run(_run_it())
+
+
+def test_cycling_sort_on_agents_leaves_skills_alone(seeded_db):
+    """`s` on the Agents page must be a no-op, not a Skills reshuffle in disguise.
+
+    `action_cycle_sort` ends in an `else` that cycles the Skills mode; a new tab
+    that forgets its own branch silently changes a page the user is not looking at
+    and appears to do nothing.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-agents"
+            await pilot.pause()
+            table = app.screen.query_one("#agents-table", DataTable)
+            before_order = [str(table.get_row(k)[0]) for k in table.rows]
+            skills_mode_before = app.sort_mode
+
+            await pilot.press("s")
+            await pilot.pause()
+
+            assert app.sort_mode == skills_mode_before, (
+                "`s` on the Agents page cycled the Skills sort mode"
+            )
+            assert [str(table.get_row(k)[0]) for k in table.rows] == before_order
 
     _run(_run_it())
 

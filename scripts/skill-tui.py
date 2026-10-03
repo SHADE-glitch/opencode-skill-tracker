@@ -1310,6 +1310,7 @@ def _tui_classes() -> dict:
             "tab-plugins": "#plugins-label",
             "tab-recent": "#recent-label",
             "tab-cats": "#cats-label",
+            "tab-agents": "#agents-label",
             "tab-data": "#data-info",
         }
 
@@ -1417,6 +1418,13 @@ def _tui_classes() -> dict:
                 with TabPane("Categories", id="tab-cats"):
                     yield Static(id="cats-label")
                     t = DataTable(id="cats-table", zebra_stripes=True)
+                    t.cursor_type = "row"
+                    yield t
+                with TabPane("Agents", id="tab-agents"):
+                    yield Static(id="agents-label")
+                    t = DataTable(id="agents-table", zebra_stripes=True)
+                    # `row`, not the default `cell`: a cell cursor leaves
+                    # `active_row` None and Enter then selects nothing.
                     t.cursor_type = "row"
                     yield t
                 with TabPane("Data", id="tab-data"):
@@ -1550,6 +1558,7 @@ def _tui_classes() -> dict:
             "tab-plugins": ("#plugins-table",),
             "tab-recent": ("#recent-table",),
             "tab-cats": ("#cats-table",),
+            "tab-agents": ("#agents-table",),
             "tab-data": (),
         }
 
@@ -1571,6 +1580,7 @@ def _tui_classes() -> dict:
                 "tab-plugins": [("plugins", self.render_plugins)],
                 "tab-recent": [("recent timeline", self._render_recent_section)],
                 "tab-cats": [("categories", lambda: self._render_categories(conn))],
+                "tab-agents": [("agents", lambda: self._render_agents(conn))],
                 "tab-data": [("data page", self._render_data_info)],
             }
 
@@ -1774,6 +1784,32 @@ def _tui_classes() -> dict:
                 )
             self._page_status_base["tab-cats"] = "[dim]One row per source / category[/dim]"
             self._paint_status("tab-cats")
+
+        def _render_agents(self, conn) -> None:
+            """Calls per agent, most first. Read-only, no filter, no sort cycle."""
+            table = self.query_one("#agents-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns(
+                "Agent", "Skill", "MCP", "Plugin", "Total", "Success rate", "Last used"
+            )
+            rows = db.agent_usage_rows(conn)
+            for r in rows:
+                table.add_row(
+                    r["agent"] or "(unknown)", str(r["skill"]), str(r["mcp"]),
+                    str(r["plugin"]), str(r["total"]),
+                    rate_text(r["total"], r["success"]),
+                    db.fmt_time(r["last_used"]),
+                )
+            unknown = sum(r["total"] for r in rows if r["agent"] is None)
+            note = (
+                "[dim]One row per agent, most calls first. The agent is the one its"
+                " session [b]first[/b] reported: `metadata` is written once and never"
+                f" updated, so a call recorded before that is `(unknown)` forever"
+                f" ({unknown} such call(s) now). It is not 'the agent that ran this"
+                " call'. See M23.[/dim]"
+            )
+            self._page_status_base["tab-agents"] = note
+            self._paint_status("tab-agents")
 
         def _render_data_info(self) -> None:
             self._page_status_base["tab-data"] = self._data_info()
@@ -2210,6 +2246,11 @@ def _tui_classes() -> dict:
                     (SORT_MODES.index(self.app.plugin_sort_mode) + 1) % len(SORT_MODES)
                 ]
                 self.render_plugins()
+            elif active == "tab-agents":
+                # One order only (most calls first). Falling through to the
+                # `else` would cycle the *Skills* sort while the user stands on
+                # the Agents page and see nothing change.
+                return
             else:
                 self.app.sort_mode = SORT_MODES[
                     (SORT_MODES.index(self.app.sort_mode) + 1) % len(SORT_MODES)
@@ -2231,6 +2272,7 @@ def _tui_classes() -> dict:
                 "tab-cats": "#cats-table",
                 "tab-mcp": "#mcp-table",
                 "tab-plugins": "#plugins-table",
+                "tab-agents": "#agents-table",
             }
             sel = mapping.get(tc.active)
             return self.query_one(sel, DataTable) if sel else None
@@ -2370,7 +2412,7 @@ def _tui_classes() -> dict:
            drift. */
         .trend { width: 1fr; height: 8; }
         .section { padding: 1 2 0 2; }
-        #sort-label, #mcp-label, #plugins-label, #cats-label { padding: 0 2; height: auto; }
+        #sort-label, #mcp-label, #plugins-label, #cats-label, #agents-label { padding: 0 2; height: auto; }
         #search, #mcp-search, #plugins-search { margin: 0 2; }
         DataTable { height: 1fr; margin: 0 1; }
         DataTable > .datatable--header { text-style: bold; }
