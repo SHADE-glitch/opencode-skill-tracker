@@ -2345,12 +2345,21 @@ def claude_mem_store(db_path: str | None = None) -> dict:
             path = os.path.join(cm_dir, "claude-mem.db")
     if not path:
         path = os.path.join(HOME, ".claude-mem", "claude-mem.db")
-    result = {"requested": path, "db": None, "dir": None, "reason": ""}
+    result = {"requested": path, "db": None, "dir": None, "reason": "",
+              "trace": None, "logs_dir": None}
+    # The directory and its files are resolved whether or not the database is
+    # there: the activity logs exist on their own, and bailing out early used to
+    # hide them from `claude_mem_activity` on a machine whose worker had not
+    # created a database yet.
+    result["dir"] = os.path.dirname(path)
+    trace = os.path.join(result["dir"], CLAUDE_MEM_TRACE_NAME)
+    logs = os.path.join(result["dir"], "logs")
+    result["trace"] = trace if os.path.isfile(trace) else None
+    result["logs_dir"] = logs if os.path.isdir(logs) else None
     if not os.path.isfile(path):
         result["reason"] = f"no claude-mem database at {path}"
         return result
     result["db"] = path
-    result["dir"] = os.path.dirname(path)
     return result
 
 
@@ -2430,6 +2439,154 @@ def _sidecar_times(fields: dict | None) -> dict | None:
             if iso:
                 fields[key] = iso
     return fields
+
+
+# claude-mem's own activity files. Both are line-oriented and both carry prose
+# the tracker must not take with it: `q=` in the trace log is the search text the
+# plugin built from the user's prompt, and the worker log's message column holds
+# absolute paths and error text. So the reader counts *shapes* and returns numbers.
+CLAUDE_MEM_TRACE_NAME = "inject-trace.log"
+CLAUDE_MEM_LOG_PREFIX = "claude-mem-"        # dated logs; `manual-restart-*` are noise
+CLAUDE_MEM_LOG_BYTES_CAP = 4 * 1024 * 1024
+# `[timestamp] [LEVEL] [category] message` — the second bracket is the level.
+# Reading ERROR as a category counts nothing at all.
+_LOG_LINE_RE = re.compile(r"^\[[^\]]+\]\s+\[\s*([A-Za-z]+)\s*]\s+\[([^\]]+)]")
+_LEN_RE = re.compile(r"\blen=(\d+)")
+
+
+def _read_bounded_text(path: str, cap: int):
+    """The first `cap` bytes of a log, and whether that cut anything off.
+
+    The cap cuts from the *start* of the file on purpose. On the real log the
+    failures were at the top and the filler at the bottom: a 64 KB tail reported
+    0 of its 57 ERROR lines.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read(cap)
+    except OSError:
+        return None, 0, False
+    return text, size, size > len(text.encode("utf-8", "replace"))
+
+
+def _read_inject_trace(path: str, cap: int) -> dict | None:
+    text, size, truncated = _read_bounded_text(path, cap)
+    if text is None:
+        return None
+    out = {"path": path, "lines": 0, "loaded": 0, "injected": 0,
+           "injected_with_source": 0, "injected_bare": 0, "injected_with_query": 0,
+           "worker_ensure": 0, "unrecognized": 0, "chars_total": 0,
+           "last_ts": None, "size_bytes": size, "truncated": truncated}
+    newest = ""
+    for line in text.splitlines():
+        body = line.strip()
+        if not body:
+            continue
+        out["lines"] += 1
+        stamp, _, rest = body.partition(" ")
+        if rest.startswith("loaded"):
+            out["loaded"] += 1
+        elif rest.startswith("injected"):
+            # Both shapes count: the plugin was edited in place, so the older bare
+            # `injected project=… len=…` lines and the newer `source=` ones share
+            # the file. Keying on `source=` alone dropped 91% of the injections.
+            out["injected"] += 1
+            if " source=" in rest:
+                out["injected_with_source"] += 1
+            else:
+                out["injected_bare"] += 1
+            if " q=" in rest:
+                # Counted, never read: what follows is the user's own text.
+                out["injected_with_query"] += 1
+            m = _LEN_RE.search(rest)
+            if m:
+                out["chars_total"] += int(m.group(1))
+        elif rest.startswith("worker ensure"):
+            out["worker_ensure"] += 1
+        else:
+            out["unrecognized"] += 1
+        if stamp > newest:
+            # Only a stamp that parses may become the newest: a line that does not
+            # start with a timestamp must not freeze out the real ones after it.
+            converted = _epoch_iso_from_iso_text(stamp)
+            if converted:
+                newest, out["last_ts"] = stamp, converted
+    return out
+
+
+def _read_worker_log(logs_dir: str, cap: int) -> dict | None:
+    try:
+        names = [n for n in os.listdir(logs_dir)
+                 if n.startswith(CLAUDE_MEM_LOG_PREFIX) and n.endswith(".log")]
+    except OSError:
+        return None
+    newest = None
+    for n in names:
+        full = os.path.join(logs_dir, n)
+        try:
+            m = os.path.getmtime(full)
+        except OSError:
+            continue
+        if newest is None or m > newest[1]:
+            newest = (full, m)
+    if not newest:
+        return None
+    path = newest[0]
+    text, size, truncated = _read_bounded_text(path, cap)
+    if text is None:
+        return None
+    out = {"path": path, "lines": 0, "levels": {}, "categories": {},
+           "unparsed": 0, "size_bytes": size, "truncated": truncated,
+           "mtime": fmt_time(datetime.fromtimestamp(newest[1], timezone.utc)
+                             .strftime("%Y-%m-%dT%H:%M:%S.%fZ"))}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        out["lines"] += 1
+        m = _LOG_LINE_RE.match(line)
+        if not m:
+            # The message is dropped here, not stored: a log line can carry a path
+            # or a user string, and neither belongs in this report.
+            out["unparsed"] += 1
+            continue
+        level, category = m.group(1).strip().upper(), m.group(2).strip()
+        level = level if _short_label(level) else "?"
+        category = _short_label(category) or "?"
+        out["levels"][level] = out["levels"].get(level, 0) + 1
+        out["categories"][category] = out["categories"].get(category, 0) + 1
+    return out
+
+
+def _epoch_iso_from_iso_text(value: str):
+    """An ISO-Z stamp from another tool -> the local string every time here uses."""
+    try:
+        datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return fmt_time(value)
+
+
+def claude_mem_activity(store: dict | None = None,
+                        log_bytes_cap: int = CLAUDE_MEM_LOG_BYTES_CAP) -> dict:
+    """What claude-mem's own log files say it did. Numbers only, read-only.
+
+    `store` is a `claude_mem_store()` result; one is taken when not given. Absent
+    files are absent, not zero: a machine without the plugin gets `available:
+    False` and no lines in the report.
+    """
+    if store is None:
+        store = claude_mem_store()
+    out = {"available": False, "reason": store.get("reason", ""), "dir": store.get("dir"),
+           "trace": None, "worker_log": None}
+    if store.get("trace"):
+        out["trace"] = _read_inject_trace(store["trace"], log_bytes_cap)
+    if store.get("logs_dir"):
+        out["worker_log"] = _read_worker_log(store["logs_dir"], log_bytes_cap)
+    out["available"] = bool(out["trace"] or out["worker_log"])
+    if not out["available"] and not out["reason"]:
+        out["reason"] = f"no activity files under {store.get('dir')}"
+    return out
 
 
 def claude_mem_summary(conn, days: int = 7, db_path: str | None = None) -> dict:

@@ -317,6 +317,151 @@ def test_epoch_units_are_validated_not_guessed(tmp_path, tracker_db):
     assert s["newest"] is None and db.claude_mem_age_days(s) is None
 
 
+# --- the activity files it writes ------------------------------------------
+TRACE_LINES = [
+    "2026-10-03T13:20:40.381Z loaded project=opencode",
+    "2026-10-03T13:20:41.000Z injected project=opencode len=120",
+    "2026-10-03T14:34:21.000Z injected source=search project=opencode len=1440 "
+    'q="' + SENTINEL + '"',
+    "2026-10-03T14:35:00.000Z injected source=recency project=opencode len=88",
+    "2026-10-03T14:36:00.000Z worker ensure: spawned start "
+    "/home/" + SENTINEL + "/.bun/bin/bun",
+    "2026-10-03T14:37:00.000Z something a future version invented",
+]
+WORKER_LINES = [
+    "[2026-10-03 13:20:40.381] [INFO ] [OPENCODE] Plugin installed {ok}",
+    "[2026-10-03 13:20:41.381] [ERROR] [CHROMA_SYNC] " + SENTINEL + " up the stack",
+    "[2026-10-03 13:20:42.381] [WARN ] [WORKER] queue drained late",
+    "[2026-10-03 13:20:43.381] [ERROR] [CHROMA_SYNC] second failure",
+    "a line with no brackets at all " + SENTINEL,
+]
+
+
+def add_activity_files(tmp_path, trace=None, worker=None, dated=True):
+    """The two files claude-mem writes for itself, next to the fixture store."""
+    root = tmp_path / "cm"
+    logs = root / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    trace = TRACE_LINES if trace is None else trace
+    (root / "inject-trace.log").write_text("\n".join(trace) + "\n", encoding="utf-8")
+    name = "claude-mem-2026-10-03.log" if dated else "manual-restart-203731.log"
+    body = "\n".join(worker if worker is not None else WORKER_LINES)
+    (logs / name).write_text(body + "\n", encoding="utf-8")
+    return root
+
+
+def test_activity_counts_injections_whatever_shape_they_have(tmp_path, tracker_db):
+    """The bare `injected project=…` lines are the majority, not the exception.
+
+    A first parser keyed on `source=` and would have reported 2 of 3 injections —
+    the file holds both shapes because the inject plugin was edited in place.
+    Anything that matches no known shape lands in `unrecognized` rather than
+    vanishing.
+    """
+    root = add_activity_files(tmp_path)
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    t = a["trace"]
+    assert t["injected"] == 3, t
+    assert t["injected_bare"] == 1 and t["injected_with_source"] == 2, t
+    assert t["loaded"] == 1 and t["worker_ensure"] == 1, t
+    assert t["unrecognized"] == 1, t
+    assert t["chars_total"] == 120 + 1440 + 88, t
+    assert t["last_ts"].startswith("2026-10-03 "), t
+
+
+def test_the_newest_trace_stamp_wins_not_the_last_line_read(tmp_path, tracker_db):
+    """`last_ts` is the latest moment in the file, out of order or not.
+
+    Comparing the raw stamp against the already-formatted value let any ISO stamp
+    win, because 'T' sorts above the space in `YYYY-MM-DD HH:MM` — so an older
+    line read later overwrote the newest. A line with no timestamp at all must
+    not freeze the maximum either.
+    """
+    lines = [
+        "2026-10-03T14:37:00.000Z loaded project=written-late",
+        "2026-10-03T09:00:00.000Z loaded project=older",
+        "not-a-timestamp loaded project=garbage",
+    ]
+    root = add_activity_files(tmp_path, trace=lines)
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    assert a["trace"]["last_ts"] == db.fmt_time("2026-10-03T14:37:00.000Z"), a["trace"]
+
+
+def test_activity_counts_worker_log_levels_and_categories(tmp_path, tracker_db):
+    root = add_activity_files(tmp_path)
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    w = a["worker_log"]
+    # `[时间] [级别] [类别]` — the second bracket is the LEVEL. Reading ERROR as
+    # a category (the first attempt) counts nothing at all.
+    assert w["levels"] == {"INFO": 1, "ERROR": 2, "WARN": 1}, w
+    assert w["categories"].get("CHROMA_SYNC") == 2, w
+    assert w["unparsed"] == 1, w
+
+
+def test_no_verbatim_query_or_log_line_crosses_the_activity_reader(tmp_path, tracker_db):
+    """`q=` holds the user's prompt text; log bodies hold paths and messages.
+
+    Neither may appear anywhere in what the reader returns — it counts shapes.
+    """
+    root = add_activity_files(tmp_path)
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    blob = json.dumps(a, ensure_ascii=False)
+    assert SENTINEL not in blob, blob[:400]
+    assert SECRET not in blob
+
+
+def test_the_activity_reader_never_opens_settings_json(tmp_path, tracker_db, monkeypatch):
+    """A second door into that directory needs the same tripwire as the first."""
+    root = add_activity_files(tmp_path)
+    real_open = open
+
+    def guarded(file, *a, **k):
+        if str(file).endswith("settings.json"):
+            raise AssertionError(f"the activity reader opened {file}")
+        return real_open(file, *a, **k)
+
+    monkeypatch.setitem(__builtins__.__dict__ if hasattr(__builtins__, "__dict__")
+                        else __builtins__, "open", guarded)
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    assert a["available"] is True
+
+
+def test_errors_are_counted_from_the_start_of_the_file_not_a_tail(tmp_path, tracker_db):
+    """A 64 KB tail on the real log saw 0 of its 57 ERROR lines.
+
+    The failures are early, the chatter is late — so a tail is exactly the wrong
+    end to read, and a size cap has to cut the *end* of the file and say so.
+    """
+    lines = [f"[2026-10-03 00:00:0{i}.0] [ERROR] [CHROMA_SYNC] early {i}"
+             for i in range(3)]
+    lines += [f"[2026-10-03 00:01:{i:02d}.0] [INFO ] [WORKER] filler" for i in range(60)]
+    root = add_activity_files(tmp_path, worker=lines)
+    path = str(root / "claude-mem.db")
+    full = db.claude_mem_activity(store=db.claude_mem_store(path))
+    assert full["worker_log"]["levels"]["ERROR"] == 3, full["worker_log"]
+    assert full["worker_log"]["truncated"] is False
+    capped = db.claude_mem_activity(store=db.claude_mem_store(path), log_bytes_cap=200)
+    assert capped["worker_log"]["truncated"] is True
+    assert capped["worker_log"]["levels"]["ERROR"] == 3, "the head is what survives a cap"
+
+
+def test_only_the_dated_worker_log_is_read(tmp_path, tracker_db):
+    """`manual-restart-*.log` files sit in the same directory and are all empty."""
+    root = add_activity_files(tmp_path, dated=False)
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    assert a["worker_log"] is None, a
+    add_activity_files(tmp_path)          # now the dated one exists too
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    assert a["worker_log"]["levels"]["ERROR"] == 2, a
+
+
+def test_activity_is_optional_and_silent_when_the_files_are_absent(tmp_path, tracker_db):
+    path = make_store(tmp_path, health=False)
+    a = db.claude_mem_activity(store=db.claude_mem_store(path))
+    assert a["available"] is False
+    assert a["trace"] is None and a["worker_log"] is None
+
+
 # --- the whitelist is the contract ----------------------------------------
 def test_the_health_whitelist_names_no_prose_field():
     """Pinned as a set, so widening it is a decision and not an accident.
