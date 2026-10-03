@@ -21,8 +21,8 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Rows | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 4` (4 = metadata is allowlisted) |
-| Test suite | 347 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
-| AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Every stage so far has been 15–172 ms against a 1200 ms budget. **The 5 loops are live-test samples** (`model=opencode/space-bunny-free`), not production usage |
+| Test suite | 332 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| AgentOS advisor store | `/home/shade/Public/AgentOS/store/aos.db` — 16 telemetry events, 13 retrieval rows over 6 memories, 14 memories, 5 loops. **The TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request); `skillt agentos` is now the only surface that opens that store, and `test_tui_never_reads_the_advisor_store` pins that no tab reads it. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Every stage so far has been 15–172 ms against a 1200 ms budget. **The 5 loops are live-test samples** (`model=opencode/space-bunny-free`), not production usage |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 533 lines over 7.7 d, 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
@@ -216,58 +216,75 @@ state.
   A `set_interval` was tried first: on textual 8.2.8 **any** app timer created
   after the screens mount makes `run_test`'s teardown raise
   `LookupError: <ContextVar name='active_app'>` — reproduced with an empty
-  callback, on both App and Screen, and after `timer.stop()`. That takes 47 TUI
-  tests down. `test_tui_creates_no_app_timers` pins this.
+  callback, on both App and Screen, and after `timer.stop()`. That takes the whole
+  TUI file down with it — 62 tests today, 47 when it was first measured. `test_tui_creates_no_app_timers` pins this.
 - **A visual assertion must not ask the widget's own helper what it returned.**
   When the Dashboard ranking bars were being built, every rendered bar was
   compared to `rank_bar_width(...)` itself; flattening that ladder to a constant
   left all of them green — an expectation derived from the thing under test is not
   a guard. The column was later removed at the owner's request, and the lesson
-  stays: today `test_tui_trend_rows_are_a_fixed_width` names the absolute width
-  (20), and the advisor stage-chart tests name absolute block counts.
-- **The advisor's three recall counts are never collapsed into one.** `Searched`
-  is the engine's self-report, `Recalled` is `len(memory_ids)`, `Reached the
-  prompt` is `len(injected_memory_ids)`; a hypothesis can be injected on its own,
-  so merging them hides a real fact. The column that used to print `retrieved`
-  under a header saying "recall" was a reporting error, not a style problem —
-  `test_tui_advisor_searched_recalled_and_reached_are_three_numbers` pins it with
-  a fixture loop whose three numbers differ (`_make_store(extra_loop=True)`),
-  because with one loop they coincide by accident and no test could tell.
-- **Advisor rows are keyed positionally, and dispatch is an explicit kind list.**
-  `advisor#<n>` in the table, `("advisor", loop_id)` in `app.row_targets`.
-  `on_data_table_row_selected` ends in `else: return` — it used to end in the plugin
-  call, so any kind it had not heard of was handed three positional arguments it did
-  not have and the handler raised `IndexError`. A new kind needs a branch, never the
-  `else`.
-- **A screen that shows an advisor loop receives the projected dict and does no I/O
-  of its own**: no `open`, no `json.load`, no `sqlite3.connect`, and no path
-  assembled from a store-supplied id (the digest lists the directory and reads the id
-  out of the content, so a file name is not an identifier).
-  `test_tui_advisor_detail_reads_only_through_the_projection` greps the source for
-  exactly that, because a sentinel sweep only catches text the fixture happens to
-  contain.
-- **The stage chart's scale includes the budget, on purpose.** `bar()` multiplies
-  `value / peak * width`; with the peak taken from the stages alone, a real loop
-  (slowest stage 18 ms against a 1200 ms budget) drew **1467 blocks** and wrapped the
-  page. The fixture loop has a 4000 ms stage, which hid it completely.
-  `test_tui_advisor_detail_budget_row_fits_when_every_stage_is_fast` uses the real
-  numbers. Related: `bar()` compares its value, so a pending stage's `None` must
-  never reach it — TypeError, and the screen fails to mount.
-- **Double-click needs no new code, but does need the right coordinate.** Textual
-  posts `RowSelected` when a click lands on the cell that already holds the row
-  cursor, i.e. the second click; no click-chain timer, so the no-app-timers rule
-  still holds. Measured by instrumenting `_on_click` under the headless pilot:
-  `offset=(4, 1)` arrives with `meta={'row': 0, 'column': 0}` and opens the page,
-  while `(4, 2)` arrives with **empty meta** because it falls between cells. A wrong
-  offset looks exactly like a broken feature, so the test states why its offset is
-  what it is.
+  stays: `test_tui_trend_rows_are_a_fixed_width` names the absolute row width
+  (20) in its own breath, not just the equality between the lines.
+- **No page of the TUI opens the advisor store.** The Advisor tab was removed on
+  2026-10-03 at the owner's request; `skill_db.agentos_*` and `skillt agentos`
+  stayed, so that store is still readable headless — just not from a screen.
+  `test_tui_never_reads_the_advisor_store` spies on the one door into it and
+  visits every tab, mount and `refresh_all` included, and must see zero calls.
+- **The advisor's three recall counts are never collapsed into one.** `retrieved`
+  is the engine's self-report, `recalled` is `len(memory_ids)`, `injected` is
+  `len(injected_memory_ids)`; a hypothesis can be injected on its own, so merging
+  them hides a real fact. The field that used to be printed under a header saying
+  "recall" was a reporting error, not a style problem.
+  `test_the_recall_counts_surface_and_the_query_dict_does_not` pins the three
+  numbers on the projected dict; the fixture loop gives them different values,
+  because with equal ones no test could tell the difference.
+- **Row dispatch is an explicit kind list ending in `else: return`.** It used to
+  end in the plugin call, so any kind it had not heard of was handed three
+  positional arguments it did not have and the handler raised `IndexError`. A new
+  kind needs a branch, never the `else` —
+  `test_tui_row_dispatch_ignores_unknown_kinds` still pins it now that the advisor
+  kind is gone with its tab. Row identity never comes out of the key string: the
+  key is an opaque lookup token (`dash-skill:<name>`, `recent#<n>`) and the target
+  is the tuple stored in `app.row_targets`, because parsing a name back out of a
+  key — or out of a rendered cell — is how a value containing the separator turns
+  into the wrong row.
+- **The advisor store is reached only through `skill_db.agentos_*`, and only as a
+  projection.** The digest lists `store/loops/*.json`, `json.load`s one file at a
+  time and hands out what `_project_loop` names — a caller never receives
+  `task_text`, a recall `query` or a stage payload. The id comes from the file's
+  content, not its name, so no path is ever assembled from store-supplied text.
+  `test_task_text_and_payloads_are_never_read` and
+  `test_a_text_valued_count_field_is_never_counted` are the guards. The screen
+  that used to need the same rule was deleted with the tab, and its source-grepping
+  test went with it.
+- **`bar(value, peak, width)` overflows when `value > peak` and raises on `None`.**
+  The advisor's per-stage chart learned this on real data: with the peak taken from
+  the stages alone, a loop whose slowest stage was 18 ms against a 1200 ms budget
+  drew **1467 blocks** and wrapped the page — the fixture loop had a 4000 ms stage,
+  which hid it completely. That chart is gone with the tab. The dashboard trend
+  charts still call the same helper and are safe for the same two reasons: their
+  peak is `max()` of the values they plot, and a day with no calls is `0`, never
+  `None`.
+- **Double-click needs no new code, but does need a coordinate that is on a row.**
+  Textual posts `RowSelected` when a click lands on the cell that already holds the
+  row cursor, i.e. the second click; no click-chain timer, so the no-app-timers rule
+  still holds. Measured again on `#dash-top` at 120x40 with five rows: every body
+  coordinate tried — `(4, 1)`, `(2, 1)`, `(60, 1)`, `(3, 5)` — opens that row's
+  detail page, and `(4, 0)`, the header, opens nothing.
+  `test_tui_dashboard_row_double_click_opens_detail` asserts the header first so the
+  positive case cannot be vacuous. Note for anyone carrying old numbers over: the
+  Advisor table's `(4, 2)` negative was an artifact of that fixture holding **one**
+  row — on a table with several rows y=2 is a row and it opens the page.
 - **Table column widths are measured here, not by Textual.** `DataTable` recomputes
   auto widths in `_on_idle`, so the first painted frame gives every column its
   header's width (`frozen-gnome-fork-maintenance` → `froze`) and later frames lag by
   one. `fit_columns()` measures the cells it already has and sets `auto_width = False`;
   `_PAGE_TABLES` says which tables each page owns so only the page just written is
-  re-measured (3.1 ms for all nine tables, 1.6 ms of that being the 100-row Recent
-  table; `plain_len`'s no-bracket fast path is what took it from ~21 ms to ~3 ms).
+  re-measured 2026-10-03 on a read-only snapshot of the live database, after the
+  Advisor tab left: **≈3 ms for all eight tables** (four runs, 2.7–3.1 ms), the
+  100-row Recent table taking ~1.5 ms of that, and the whole `refresh_all()`
+  around it 21–24 ms. `plain_len`'s no-bracket fast path is what took that pass
+  from ~21 ms to ~3 ms when it was introduced.
   The tests read widths **without** a `pilot.pause()` first — pausing lets the idle
   pass repair the frame and the assertion would pass on broken code.
 - **A drawn chart row must not depend on its data for width.** The trend rows
@@ -314,8 +331,8 @@ late error text can be dropped by the `COALESCE` on metadata).
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
 | No log rotation (M17) | small | needs a policy decision (rotate vs. cap vs. rely on journald) |
-| The Advisor tab re-reads up to 30 loop files whenever the Advisor page refreshes (not when other tabs do), and opening a row reads them again | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns |
-| The Advisor tab reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one blanks those cells instead of breaking anything, and `_count_only` refuses to count text. A column that used to hold numbers showing `-` is the signal |
+| `skillt agentos` re-reads every loop file in `store/loops/` on each call (`--limit N` caps how many are projected, not how many are listed) | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns. It was the Advisor tab that made this a per-keystroke cost; the tab is gone, so the cost is now paid only when the command is run |
+| The advisor digest reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one empties those numbers instead of breaking anything, and `_count_only` refuses to count text. A printed count that used to be a number turning into `-` is the signal |
 | `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
 | `skill_versions` grows without bound | small | needs a retention decision; no pruning exists today |
 

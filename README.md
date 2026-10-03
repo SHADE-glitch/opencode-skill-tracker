@@ -152,7 +152,7 @@ skillt
 
 Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs, and `TERM` neither
 empty nor `dumb`). Pages: **Dashboard / Skills / MCP / Plugins / Recent /
-Categories / Advisor / Data** (Data is always last).
+Categories / Data** (Data is always last).
 
 The six Dashboard cards, each labelled below its number:
 
@@ -190,42 +190,17 @@ detail page. The **Recent** page merges all three kinds into one timeline;
 page re-reads **only that page** (and `r` re-reads every page), so each page
 prints its own `data as of HH:MM:SS` instead of one global timestamp.
 
-The **Advisor** page reads the AgentOS advisor's own store, read-only, and prints
-one row per advisor participation in a session: `Started`, `Outcome`,
-`Stages recorded` (out of the stages that loop actually wrote down, not out of the
-advisor's ten known stages), then **three different recall counts** — `Searched`
-(the engine's own tally), `Recalled` (memories it selected) and `Reached the
-prompt` (what was injected, with its size in characters) — then `Slowest vs
-budget`, `Measured calls` (what this tracker recorded for that same session) and a
-shortened session id. Keeping the three counts apart is the point: a hypothesis
-can be injected without being part of the recalled set, and one number would hide
-that. A legend under the table says all of this on the screen itself. The tab
-never writes to that store and never copies the task text stored beside these
-numbers.
-
-One thing this page is **not**: tracker measurements. The advisor registers no
-tool and no command, so it produces **zero usage rows** — nothing in
-`skill_usage`, `mcp_usage` or `plugin_usage` can name it, and `plugin_inventory`
-carries a single row for it with both the tool list and the command list empty.
-Every number on the page was written by the advisor itself, into **its own
-store**, and this tab only reads it back. That is also why the join column is
-worth reading: it says what the tracker *did* measure for the same session, which
-may well be nothing while the loop still ran.
-
-Enter (or a second click on the same row) opens that loop's own page: outcome and
-the stage it reached, start and last update, memory mode / provider / model, the
-postflight counters (warnings, whether an error was reported, candidates recorded,
-whether a human review is pending), the three recall numbers written out as one
-sentence, the measured-calls join, and a **per-stage bar chart**. The chart's scale
-includes the advisor's per-call budget, so a loop whose every stage is fast shows
-that margin instead of drawing a bar off the screen; a pending stage prints
-`pending, no timing recorded` rather than pretending 0 ms. `Esc` or `q` returns.
+There is **no Advisor page**: the tab was removed on 2026-10-03 at the owner's
+request. The read-only aggregation it showed still exists headless as
+`skillt agentos` (see Commands below), and that command is now the only surface
+that opens that store — no page of the TUI reads it, which is pinned by
+`test_tui_never_reads_the_advisor_store`.
 
 | Key | Action |
 |---|---|
 | `Tab` | switch page |
 | `↑` `↓` / `j` `k` | move cursor |
-| `Enter` / double-click | open the selected row's detail page (on Advisor, its per-stage timings) |
+| `Enter` / double-click | open the selected row's detail page (skill / MCP / plugin) |
 | `/` | jump to the Skills page and focus search |
 | `s` / `ctrl+s` | cycle sort (uses ↓ / recently used ↓ / success rate ↓ / name ↑) |
 | `Esc` | clear search and unfocus |
@@ -293,8 +268,12 @@ skillt agentos   [--json] [--limit N]
 
 - `agentos` — the **AgentOS advisor**, aggregated read-only from its own store.
   The advisor registers no tool and no command, so it can never appear in the
-  usage tables above; this reads its `store/aos.db` + `store/loops/*.json`
-  instead. Requires `AGENT_OS_ROOT` (or
+  usage tables above: it produces **zero usage rows** there, and
+  `plugin_inventory` carries a single row for it with both the tool list and the
+  command list empty. This reads its `store/aos.db` + `store/loops/*.json`
+  instead, and it is now the only surface that does — the TUI has no Advisor
+  page.
+  Requires `AGENT_OS_ROOT` (or
   `OPENCODE_SKILL_TRACKER_AGENTOS_DB`) and reports plainly when neither is set.
   Per loop it shows the stage statuses and timings, the slowest stage against
   the advisor's per-call budget, how much measured tool activity that same

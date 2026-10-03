@@ -23,8 +23,11 @@ usage** into a local SQLite database. Three layers, in dependency order:
    `delete` / `clear` / `backup` / `vacuum`.
 4. `scripts/skill_db.py::agentos_*` — a **read-only neighbour**, not a fourth
    layer: the AgentOS advisor registers no tool and no command, so it can never
-   appear in the usage tables, and `skillt agentos` / the Advisor tab read its
-   own store instead (`$AGENT_OS_ROOT/store/aos.db` + `store/loops/*.json`).
+   appear in the usage tables, and `skillt agentos` is the only surface that
+   reads its own store (`$AGENT_OS_ROOT/store/aos.db` + `store/loops/*.json`).
+   The Advisor tab that used to show this in the TUI was removed on 2026-10-03 at
+   the owner's request; the data layer and the command stayed on purpose, so the
+   page can come back without re-deriving the projection.
 
 `bin/skillt` is a bash dispatcher that resolves its own location through
 symlinks and execs one of the above.
@@ -114,12 +117,14 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   documents every section, and that
   both maintenance checklists name the same checks, commands and invariants —
   update all four when behaviour changes, or the suite fails.
-- **The advisor store is reached only through `skill_db.agentos_*`.** No UI-layer
-  I/O against it: a screen that shows a loop is handed the dict `_project_loop`
-  produced, and must not open the file, open the database, or assemble a path from
-  a store-supplied id. `test_tui_advisor_detail_reads_only_through_the_projection`
-  scans the source for that, because a sentinel sweep only catches text the
-  fixture happens to contain.
+- **The advisor store is reached only through `skill_db.agentos_*`, and only from
+  the CLI.** No TUI page may open it: `test_tui_never_reads_the_advisor_store`
+  spies on the single door and visits every tab. Whatever does read it receives
+  only the dict `_project_loop` produced — nobody may open the file, open the
+  database, or assemble a path from a store-supplied id.
+  `test_task_text_and_payloads_are_never_read` and
+  `test_a_text_valued_count_field_is_never_counted` are the guards; the
+  source-scanning TUI test that used to cover the screen went with that screen.
 - **A hand-drawn bar is scaled against a peak that includes every value it
   prints.** `bar()` multiplies `value / peak * width`, so a reference line (the
   advisor's per-call budget) that can exceed the data's own maximum overflows the
@@ -135,7 +140,8 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **No `set_interval`/`set_timer` in the TUI.** On textual 8.2.8, any app timer
   created after the screens mount makes `run_test`'s teardown raise
   `LookupError: <ContextVar name='active_app'>` (empty callback, App or Screen,
-  even after `timer.stop()`), which fails all 47 TUI tests at once. Refresh is
+  even after `timer.stop()`), which fails the whole TUI file at once (62 tests
+  today, 47 when it was first measured). Refresh is
   event-driven and per page: a keystroke (throttled by `REFRESH_STALE_AFTER_S`)
   and a tab activation re-read only the active page, `r` and the first paint
   re-read every page, and each page prints its own `data as of HH:MM:SS`.

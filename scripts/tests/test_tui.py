@@ -106,16 +106,15 @@ def test_tui_detail_screen_opens(seeded_db):
 
 
 def test_tui_detail_screens_share_one_shell():
-    """The four detail pages are one page: same shell, same back binding.
+    """The three detail pages are one page: same shell, same back binding.
 
-    Skill/MCP/plugin/advisor detail were four hand-copied screens. Converging
-    them means a subclass cannot quietly diverge from the shared escape/q
-    binding or the #detail-body shell the CSS styles.
+    Skill/MCP/plugin detail were three hand-copied screens. Converging them
+    means a subclass cannot quietly diverge from the shared escape/q binding or
+    the #detail-body shell the CSS styles.
     """
     classes = st._tui_classes()
     base = classes["DetailScreen"]
-    for name in ("SkillDetailScreen", "McpDetailScreen",
-                 "PluginDetailScreen", "AdvisorDetailScreen"):
+    for name in ("SkillDetailScreen", "McpDetailScreen", "PluginDetailScreen"):
         assert issubclass(classes[name], base), name
         assert classes[name] is not base
     bindings = {b.key: b.action for b in base.BINDINGS}
@@ -486,10 +485,9 @@ def test_duplicate_skill_names_do_not_crash(tmp_path):
 def test_tui_tab_order_is_pinned(seeded_db):
     """The tab contract: Data stays LAST; skills-adjacent tabs group together.
 
-    Order: Dashboard, Skills, MCP, Plugins, Advisor, Recent, Categories, Data.
-    Seven `tab` presses from Dashboard land on Data — Advisor sits with the
-    "who acted" group and Data stays last, because that is where the destructive
-    keys are.
+    Order: Dashboard, Skills, MCP, Plugins, Recent, Categories, Data. The Advisor
+    tab was removed at the owner's request (the data layer and `skillt agentos`
+    stayed), so the count from Dashboard to Data is six presses, not seven.
     """
     from textual.widgets import TabPane
 
@@ -499,7 +497,7 @@ def test_tui_tab_order_is_pinned(seeded_db):
             await pilot.pause()
             ids = [p.id for p in app.screen.query(TabPane)]
             assert ids == [
-                "tab-dash", "tab-skills", "tab-mcp", "tab-plugins", "tab-advisor",
+                "tab-dash", "tab-skills", "tab-mcp", "tab-plugins",
                 "tab-recent", "tab-cats", "tab-data",
             ], ids
 
@@ -513,8 +511,8 @@ def test_tui_tab_order_is_pinned(seeded_db):
             await pilot.pause()
             assert app.screen.query_one("TabbedContent").active == "tab-plugins"
 
-            # Four more land on Data, which is what the Data tests rely on.
-            for _ in range(4):
+            # Three more land on Data, which is what the Data tests rely on.
+            for _ in range(3):
                 await pilot.press("tab")
                 await pilot.pause()
             assert app.screen.query_one("TabbedContent").active == "tab-data"
@@ -890,6 +888,10 @@ def test_tui_trend_rows_are_a_fixed_width(seeded_mcp_db):
     """
     from rich.text import Text
 
+    # Named absolutely, not `TREND_BARW + …`: an expectation derived from the
+    # geometry under test cannot notice the geometry being flattened.
+    assert st.TREND_ROW_WIDTH == 20
+
     async def _run_it():
         app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
         async with app.run_test(size=(80, 40)) as pilot:
@@ -952,17 +954,6 @@ def test_tui_trend_css_height_matches_the_line_count():
 
 
 # --- the dashboard ranking: a bar column whose length *is* the call count ----
-def advisor_cell(table, label: str, row: int = 0) -> str:
-    """One Advisor cell, addressed by its header so the columns may move."""
-    column = next((c for c in table.columns.values() if str(c.label) == label), None)
-    if column is None:
-        raise AssertionError(
-            f"no {label!r} column; headers are "
-            f"{[str(c.label) for c in table.columns.values()]}"
-        )
-    return str(table.get_cell(list(table.rows)[row], column.key))
-
-
 # --- column widths must be right on the first frame, not one idle later ----
 def test_plain_len_counts_markup_as_what_it_renders():
     assert st.plain_len("[green]100%[/]") == 4
@@ -1002,26 +993,42 @@ def test_tui_dashboard_tables_fit_their_content_before_idle(seeded_mcp_db):
     _run(_run_it())
 
 
-def test_tui_advisor_table_fits_before_idle(seeded_db, tmp_path, monkeypatch):
-    """The Advisor table has the longest headers and the longest ids."""
-    import skill_db as db
-    from test_agentos import _make_store
+def test_tui_every_tab_table_fits_before_idle(seeded_db):
+    """No tab may paint header-wide columns — not just the dashboard ones.
 
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path, extra_loop=True))
+    `fit_columns` is driven by `_PAGE_TABLES`, so this deliberately ignores that
+    map and walks the real widget tree: every `TabPane`, every table mounted in
+    it. A page missing from the map then fails here too, not only in
+    `test_tui_page_tables_cover_every_tab`. The Advisor table used to be the one
+    this caught on its own; its page is gone, the check is not.
+    """
+    from textual.widgets import TabPane
 
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test(size=(160, 45)) as pilot:
             await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            table = app.screen.query_one("#advisor-table", DataTable)
-            for column in table.columns.values():
-                longest = max(st.plain_len(cell) for cell in table.get_column(column.key))
-                longest = max(longest, st.plain_len(column.label))
-                assert column.get_render_width(table) >= longest, (
-                    str(column.label), column.get_render_width(table), longest
-                )
+            app.screen.refresh_all()
+            found = 0
+            checked = 0
+            for tab in app.screen.query(TabPane):
+                for table in tab.query(DataTable):
+                    found += 1
+                    if not table.row_count or not table.columns:
+                        continue
+                    checked += 1
+                    for column in table.columns.values():
+                        longest = max(st.plain_len(cell) for cell in table.get_column(column.key))
+                        longest = max(longest, st.plain_len(column.label))
+                        assert column.get_render_width(table) >= longest, (
+                            tab.id, str(column.label),
+                            column.get_render_width(table), longest,
+                        )
+            # A walk that measured nothing would pass silently. `found` is the
+            # widget tree (8 tables across the tabs), `checked` the ones the
+            # fixture gave rows — a floor, not a second hardcoded contract.
+            assert found >= 8, found
+            assert checked >= 4, f"only {checked} of {found} tables were measured"
 
     _run(_run_it())
 
@@ -1358,17 +1365,19 @@ def test_tui_refreshes_when_a_tab_is_activated(seeded_db):
     _run(_run_it())
 
 
-def test_tui_skills_refresh_does_not_read_the_advisor(seeded_db, tmp_path, monkeypatch):
-    """Per-page refresh: only the Advisor page opens the advisor store.
+def test_tui_never_reads_the_advisor_store(seeded_db, tmp_path, monkeypatch):
+    """No page of the TUI may open the advisor store.
 
-    The advisor digest is the one refresh query that does per-file I/O, and it
-    is irrelevant to every other page. This spies on the only door into that
-    store and pins that switching to Skills never opens it. Before the refresh
-    was split per page, a Skills tab switch ran the full refresh and read the
-    advisor store every time.
+    This used to pin that only the Advisor tab read it, because the digest does
+    per-file I/O and was irrelevant to every other page. The tab was removed at
+    the owner's request, so the contract is now stronger: `skillt agentos` is the
+    only door into that store, and mounting, refreshing and visiting every tab
+    must never open it. A spy that records the call does not have to be cleared
+    at any point — there is no legitimate read to ignore.
     """
     import skill_db as db
     from test_agentos import _make_store
+    from textual.widgets import TabPane
 
     monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
 
@@ -1385,10 +1394,12 @@ def test_tui_skills_refresh_does_not_read_the_advisor(seeded_db, tmp_path, monke
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test(size=(120, 45)) as pilot:
             await pilot.pause()          # mount runs the full refresh
-            calls.clear()                # ignore the mount-time advisor read
-            app.screen.query_one("TabbedContent").active = "tab-skills"
-            await pilot.pause()
-            assert calls == [], "switching to Skills must not read the advisor store"
+            assert calls == [], "mount must not read the advisor store"
+            app.screen.refresh_all()
+            for tab in app.screen.query(TabPane):
+                app.screen.query_one("TabbedContent").active = tab.id
+                await pilot.pause()
+            assert calls == [], "no tab may read the advisor store"
             app.conn.close()
 
     _run(_run_it())
@@ -1460,239 +1471,64 @@ def test_tui_creates_no_app_timers(seeded_db):
     _run(_run_it())
 
 
-def test_tui_advisor_tab_renders_the_store(seeded_db, tmp_path, monkeypatch):
-    """The advisor registers no tool and no command, so it needs its own view."""
-    import skill_db as db
-    from test_agentos import TASK_PROSE, _make_store
-    from textual.widgets import DataTable, Static
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(140, 45)) as pilot:
-            await pilot.pause()
-            # The advisor loop's session_id must join to real tracker rows.
-            app.conn.execute(
-                "INSERT INTO skill_usage (skill_name, session_id, project_path,"
-                " trigger_type, status, timestamp, call_id) VALUES"
-                " ('grow','ses_test_1','/p','tool_call','success',"
-                " '2026-10-01T05:00:05.000Z','c-join')"
-            )
-            app.conn.commit()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            label = str(app.screen.query_one("#advisor-label", Static).content)
-            assert "LOOP-TEST-1" not in label
-            assert "memories" in label
-            # the budget number is now explained in the legend, not squeezed into
-            # the header line
-            assert "per-call budget of 1200 ms" in static_text(
-                app.screen.query_one("#advisor-legend", Static))
-            table = app.screen.query_one("#advisor-table", DataTable)
-            assert table.row_count == 1, table.row_count
-            assert table.cursor_type == "row"
-            cells = [str(table.get_cell(list(table.rows)[0], c)) for c in table.columns]
-            assert any("LOOP-TEST-1" in c for c in cells), cells
-            # route + recall completed, execute still pending. The denominator is
-            # the stages this loop *recorded*, not the advisor's ten known stages.
-            assert advisor_cell(table, "Stages recorded") == "2 of 3 recorded", cells
-            assert advisor_cell(table, "Outcome") == "partial", cells
-            # the join: give the loop's session a real usage row, then let the
-            # tab activation re-read — no manual refresh
-            assert advisor_cell(table, "Measured calls") == (
-                "1 skill, 0 mcp, 0 plugin"), cells
-            # three different counts, in three different columns: the engine's
-            # self-report, the memories selected, and what reached the prompt
-            assert advisor_cell(table, "Searched") == "3", cells
-            assert advisor_cell(table, "Recalled") == "3", cells
-            assert advisor_cell(table, "Reached the prompt") == "4 (1234 chars)", cells
-            assert "over budget by 2800ms" in advisor_cell(table, "Slowest vs budget"), cells
-            assert TASK_PROSE not in " ".join(cells) and TASK_PROSE not in label
-
-    _run(_run_it())
-
-
-def test_tui_advisor_tab_has_a_plain_language_legend(seeded_db, tmp_path, monkeypatch):
-    from test_agentos import _make_store
-    """The tab must explain itself, not depend on the reader knowing the jargon."""
-    import skill_db as db
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(140, 45)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            legend = static_text(app.screen.query_one("#advisor-legend", Static))
-            for phrase in ("one advisor participation", "Reached the prompt",
-                           "measured", "budget", "read-only"):
-                assert phrase.lower() in legend.lower(), (phrase, legend)
-            # the budget number is printed, so a reader can judge "over" at all
-            assert "1200" in legend, legend
-            headers = [str(c.label) for c in
-                       app.screen.query_one("#advisor-table", DataTable).columns.values()]
-            assert not any("sk/mcp/pl" in h for h in headers), headers
-            assert not any("→" in h for h in headers), headers
-
-    _run(_run_it())
-
-
-def test_tui_advisor_searched_recalled_and_reached_are_three_numbers(seeded_db, monkeypatch, tmp_path):
-    from test_agentos import _make_store
-    """`retrieved`, `len(memory_ids)` and `len(injected_memory_ids)` are not one number.
-
-    With a single fixture loop they coincide, which is how a column printing the
-    wrong one stayed invisible: 5 searched, 3 recalled, 4 reached the prompt.
-    """
-    import skill_db as db
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path, extra_loop=True))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(140, 45)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            table = app.screen.query_one("#advisor-table", DataTable)
-            assert table.row_count == 2, table.row_count
-            rows = {advisor_cell(table, "Loop", i): i for i in range(table.row_count)}
-            assert "LOOP-TEST-2" in rows, rows
-            i = rows["LOOP-TEST-2"]
-            assert advisor_cell(table, "Searched", i) == "5"
-            assert advisor_cell(table, "Recalled", i) == "3"
-            assert advisor_cell(table, "Reached the prompt", i) == "4 (1359 chars)"
-
-    _run(_run_it())
-
-
-def test_tui_advisor_columns_carry_no_abbreviations(seeded_db, monkeypatch, tmp_path):
-    from test_agentos import _make_store
-    """`1/0/0` and `2/3 ok` were guessable only by whoever wrote them."""
-    import skill_db as db
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(140, 45)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            table = app.screen.query_one("#advisor-table", DataTable)
-            cells = [str(table.get_cell(list(table.rows)[0], c)) for c in table.columns]
-            for cryptic in ("1/0/0", "2/3 ok", "3 → 4 (1234c)", "within", "over"):
-                assert cryptic not in cells, (cryptic, cells)
-
-    _run(_run_it())
-
-
 def test_tui_dead_bar_wrapper_is_gone():
     """`uses_bar` had no caller; a second name for one helper invites drift."""
     assert not hasattr(st, "uses_bar")
 
 
-# --- Advisor rows must open a detail page, like every other table ----------
-def _enter_advisor_row(seeded_db, tmp_path, monkeypatch, check, which=0):
-    """Mount the app on a stand-in advisor store and Enter one Advisor row.
-
-    `check` runs *inside* `run_test`: after the context exits the app is torn down
-    and `app.screen` raises `ScreenStackError`, which is what the first draft of
-    these tests mistook for a missing screen.
-    """
-    import skill_db as db
-    from test_agentos import _make_store
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            table = app.screen.query_one("#advisor-table", DataTable)
-            table.move_cursor(row=which)
-            table.focus()
-            await pilot.press("enter")
-            await pilot.pause()
-            check(app, [k.value for k in table.rows])
-
-    _run(_run_it())
-
-
-def test_tui_advisor_row_has_a_resolvable_key(seeded_db, tmp_path, monkeypatch):
-    """Advisor rows were added without `key=`, so every lookup missed.
-
-    `RowKey(None)` for all of them: Enter and the second click both landed on
-    `if not target: return` — the tab looked interactive and did nothing.
-    """
-    def check(app, keys):
-        assert keys, "no advisor rows rendered"
-        assert all(keys), f"rows still carry no key: {keys}"
-        for key in keys:
-            assert key in app.row_targets, key
-            assert app.row_targets[key][0] == "advisor", app.row_targets[key]
-        # identity travels in the tuple, never parsed back out of the key
-        assert app.row_targets[keys[0]][1] == "LOOP-TEST-1", app.row_targets[keys[0]]
-
-    _enter_advisor_row(seeded_db, tmp_path, monkeypatch, check)
-
-
-def test_tui_advisor_row_enter_opens_detail(seeded_db, tmp_path, monkeypatch):
-    def check(app, keys):
-        assert app.screen.__class__.__name__ == "AdvisorDetailScreen", app.screen
-
-    _enter_advisor_row(seeded_db, tmp_path, monkeypatch, check)
-
-
-def test_tui_advisor_row_double_click_opens_detail(seeded_db, tmp_path, monkeypatch):
-    """The mouse behaviour the other tables already have.
+def test_tui_dashboard_row_double_click_opens_detail(seeded_db):
+    """Double-click opens a detail page — re-probed on the dashboard table.
 
     Textual's `DataTable` posts `RowSelected` when a click lands on the cell that
     already holds the row cursor, so the *second* click of a double click is the
-    trigger — no timer and no click-chain bookkeeping of ours, which is what keeps
-    this inside the no-app-timers rule. This test is the evidence that the claim
-    holds under the headless pilot; it is not inherited from reading the widget.
+    trigger: no timer and no click-chain bookkeeping, which keeps this inside the
+    no-app-timers rule. The Advisor table used to be where this was proven, so the
+    coordinates were measured again here rather than inherited: with `#dash-top` at
+    120x40 and five rows, `(4, 1)` opens the page — as does every other body
+    coordinate tried — while `(4, 0)`, the header, opens nothing. The header case is
+    asserted first, because a test whose negative case is not negative proves
+    nothing about the positive one.
     """
-    import skill_db as db
-    from test_agentos import _make_store
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
+        async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            table = app.screen.query_one("#advisor-table", DataTable)
+            table = app.screen.query_one("#dash-top", DataTable)
+            assert table.row_count, "the fixture must give the dashboard a row to click"
+
             table.move_cursor(row=0)
             await pilot.pause()
-            # (4, 1) is the first body cell. A probe showed why the obvious y=2
-            # does not work: the click lands between cells, `DataTable._on_click`
-            # receives an empty style meta and returns without selecting, so a
-            # wrong offset reads as a broken feature. The offset is the test.
-            await pilot.double_click("#advisor-table", offset=(4, 1))
+            await pilot.double_click("#dash-top", offset=(4, 0))
             await pilot.pause()
-            assert app.screen.__class__.__name__ == "AdvisorDetailScreen", (
+            assert app.screen.__class__.__name__ == "MainScreen", (
+                "the header row opened a page, so the offset asserted below is not "
+                "doing the work this test claims it does"
+            )
+
+            table.move_cursor(row=0)
+            await pilot.pause()
+            await pilot.double_click("#dash-top", offset=(4, 1))
+            await pilot.pause()
+            assert app.screen.__class__.__name__ == "SkillDetailScreen", (
                 "double click did nothing: check whether the synthetic click still "
                 "carries the row/column style meta DataTable reads"
             )
+            app.pop_screen()
+            await pilot.pause()
+            assert app.screen.__class__.__name__ == "MainScreen"
+            app.conn.close()
 
     _run(_run_it())
 
 
+# --- Row dispatch: a kind it does not know must do nothing -----------------
 def test_tui_row_dispatch_ignores_unknown_kinds(seeded_db):
     """The dispatch chain ended in `else: _open_plugin_detail(rest[0..2])`.
 
     A kind it had never heard of was handed three positional arguments it did not
     have — an `IndexError` inside a message handler. Registering the advisor kind
     is what turned that latent bug into a certain one, so the branch order and the
-    terminal `else: return` are pinned here.
+    terminal `else: return` are pinned here even though that kind is gone.
     """
     from textual.widgets.data_table import RowKey
 
@@ -1711,272 +1547,3 @@ def test_tui_row_dispatch_ignores_unknown_kinds(seeded_db):
     _run(_run_it())
 
 
-def test_tui_advisor_label_says_the_tracker_cannot_see_the_advisor(seeded_db, tmp_path, monkeypatch):
-    """The page must state where its numbers come from.
-
-    A reader who assumes these are tracker-measured usage rows will believe the
-    advisor's behaviour was measured. It never can be: the plugin registers no
-    tool and no command, so no usage row can name it.
-    """
-    import skill_db as db
-    from test_agentos import _make_store
-    from textual.widgets import Static
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            label = static_text(app.screen.query_one("#advisor-label", Static))
-            assert "own store" in label, label
-            assert "no tool and no command" in label, label
-            assert "not measured here" in label, label
-
-    _run(_run_it())
-
-
-def test_tui_advisor_label_says_it_even_without_a_store(seeded_db, monkeypatch):
-    """The explanation belongs to the page, not to one of its branches."""
-    import skill_db as db
-    from textual.widgets import Static
-
-    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
-        monkeypatch.delenv(var, raising=False)
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            label = static_text(app.screen.query_one("#advisor-label", Static))
-            assert "not aggregated" in label, label
-            assert "own store" in label and "no tool and no command" in label, label
-
-    _run(_run_it())
-
-
-def test_tui_advisor_detail_dismisses_like_the_other_detail_screens(
-    seeded_db, tmp_path, monkeypatch
-):
-    """Esc and `q` both go back to the Advisor tab — the peers' contract."""
-    import skill_db as db
-    from test_agentos import _make_store
-    from textual.widgets import Static
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            table = app.screen.query_one("#advisor-table", DataTable)
-            table.focus()
-            for key in ("enter", "escape"):
-                await pilot.press(key)
-                await pilot.pause()
-                if key == "enter":
-                    assert app.screen.__class__.__name__ == "AdvisorDetailScreen"
-                else:
-                    assert app.screen.query_one("#advisor-table", DataTable)
-            # `q` on a detail screen is bound to Back too
-            await pilot.press("enter")
-            await pilot.pause()
-            await pilot.press("q")
-            await pilot.pause()
-            assert app.screen.query_one("#advisor-legend", Static)
-            assert table.row_count >= 1, "the tab it returns to must still be populated"
-
-    _run(_run_it())
-
-
-def test_tui_advisor_detail_draws_per_stage_bars(seeded_db, tmp_path, monkeypatch):
-    """The detail page is where 'what did it actually do' becomes a shape."""
-    import skill_db as db
-    from test_agentos import _make_store
-    from textual.widgets import Static
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            app.screen.query_one("#advisor-table", DataTable).focus()
-            await pilot.press("enter")
-            await pilot.pause()
-            chart = static_text(app.screen.query_one("#advisor-stage-chart", Static))
-            lines = [ln for ln in chart.splitlines() if ln.strip()]
-            by_name = {ln.split()[0]: ln for ln in lines}
-            for stage in ("route", "recall", "execute", "budget"):
-                assert stage in by_name, (stage, chart)
-            blocks = {k: v.count("█") for k, v in by_name.items()}
-            # recall (4000ms) is this loop's own peak, so it fills the column
-            assert blocks["recall"] == max(blocks.values()) == 22, blocks
-            assert blocks["route"] < blocks["recall"], blocks
-            # the budget sits on the same scale so a reader can see the margin
-            assert blocks["budget"] < blocks["recall"], blocks
-            assert blocks["execute"] == 0, by_name["execute"]
-            assert "pending, no timing recorded" in by_name["execute"], by_name["execute"]
-            assert "over" in by_name["recall"], "a 4000ms stage against 1200ms must say so"
-            # The advisor page shares the detail shell, so its title is the
-            # shared #detail-title (the loop id text is unchanged).
-            assert isinstance(app.screen.query_one("#detail-title", Static), Static)
-
-    _run(_run_it())
-
-
-def test_tui_advisor_detail_budget_row_fits_when_every_stage_is_fast(seeded_db):
-    """Real data, not the fixture: slowest stage 18ms against a 1200ms budget.
-
-    With the peak taken from the stages alone, `bar()` scales the budget as
-    1200/18*22 and that row printed 1466 blocks, wrapping the whole page. The
-    fixture loop has a 4000ms stage, so every earlier test was blind to it.
-    """
-    from rich.text import Text
-
-    loop = {
-        "loop_id": "LOOP-REALISH", "session_id": "ses_f0a1", "stage": "finalize",
-        "final_status": "partial", "created_at": "2026-10-01T05:27:14+00:00",
-        "updated_at": "2026-10-01T05:27:30+00:00", "memory_mode": "enabled",
-        "provider": "host_delegate", "model": "opencode/test-model", "errors": 0,
-        "stage_count": 3, "slowest_stage": {"name": "record", "ms": 18},
-        "over_budget_ms": False, "injection": None, "postflight": None,
-        "usage": {"skill": 0, "mcp": 0, "plugin": 0},
-        "stages": {
-            "route": {"status": "completed", "ms": 16, "failed": False},
-            "record": {"status": "completed", "ms": 18, "failed": False},
-            "execute": {"status": "pending", "ms": None, "failed": False},
-        },
-    }
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.push_screen(st._tui_classes()["AdvisorDetailScreen"](loop, 1200))
-            await pilot.pause()
-            chart = Text.from_markup(
-                str(app.screen.query_one("#advisor-stage-chart", Static).content)
-            ).plain
-            by_name = {ln.split()[0]: ln for ln in chart.splitlines() if ln.strip()}
-            counts = {k: v.count("█") for k, v in by_name.items()}
-            assert max(counts.values()) <= st.STAGE_CHART_WIDTH, counts
-            # the budget is the peak here, so it is the full column and every
-            # stage reads as the small fraction of it that it really is
-            assert counts["budget"] == st.STAGE_CHART_WIDTH, counts
-            assert 0 < counts["record"] < counts["budget"], counts
-            assert counts["execute"] == 0, counts
-
-    _run(_run_it())
-
-
-def test_tui_advisor_detail_never_renders_store_text(seeded_db, tmp_path, monkeypatch):
-    """The four sentinels live in the same files the tab reads. None may surface."""
-    import skill_db as db
-    from test_agentos import (
-        ERROR_PROSE,
-        QUERY_PROSE,
-        STAGE_PROSE,
-        TASK_PROSE,
-        _make_store,
-    )
-    from textual.widgets import Static
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            app.screen.query_one("#advisor-table", DataTable).focus()
-            await pilot.press("enter")
-            await pilot.pause()
-            seen = [static_text(w) for w in app.screen.query(Static)]
-            for table in app.screen.query(DataTable):
-                for row_key in table.rows:
-                    for col in table.columns.values():
-                        seen.append(str(table.get_cell(row_key, col.key)))
-            blob = " ".join(seen)
-            for prose in (TASK_PROSE, STAGE_PROSE, QUERY_PROSE, ERROR_PROSE):
-                assert prose not in blob, f"{prose} left the store"
-
-    _run(_run_it())
-
-
-def test_tui_advisor_detail_reads_only_through_the_projection():
-    """Source-level guard: the screen must not gain its own way into the store.
-
-    A sentinel sweep only catches text that is in the fixture. This catches the
-    change that would let anything out: a screen that opens the file or the
-    database itself, or that splats a dict into a widget.
-    """
-    import re
-
-    source = (Path(__file__).resolve().parents[1] / "skill-tui.py").read_text(
-        encoding="utf-8"
-    )
-    start = source.index("class AdvisorDetailScreen")
-    end = source.index("class HealthScreen", start)
-    screen_src = source[start:end]
-    start2 = source.index("def _open_advisor_detail")
-    end2 = source.index("def ", start2 + len("def _open_advisor_detail"))
-    open_src = source[start2:end2]
-
-    for forbidden in ("json.load", "open(", "sqlite3.connect", "loops/", "**loop",
-                      '"task_text"', '"query"', '"data"'):
-        assert forbidden not in screen_src, (forbidden, "in AdvisorDetailScreen")
-        assert forbidden not in open_src, (forbidden, "in _open_advisor_detail")
-    assert re.search(r"agentos_summary\(", open_src), "must read through the digest"
-
-
-def test_tui_advisor_detail_of_a_loop_that_is_gone_notifies(seeded_db, tmp_path, monkeypatch):
-    """The store is written by another process: the row may already be history."""
-    import skill_db as db
-    from test_agentos import _make_store
-    from textual.widgets import Static
-
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(160, 50)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            app.screen._open_advisor_detail("LOOP-THAT-IS-GONE")
-            await pilot.pause()
-            assert app.screen.__class__.__name__ == "MainScreen", app.screen
-            assert isinstance(app.screen.query_one("#advisor-legend", Static), Static)
-
-    _run(_run_it())
-
-
-def test_tui_advisor_tab_says_when_there_is_no_store(seeded_db, monkeypatch):
-    import skill_db as db
-    from test_agentos import _make_store
-    from textual.widgets import Static
-
-    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
-        monkeypatch.delenv(var, raising=False)
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(140, 45)) as pilot:
-            await pilot.pause()
-            app.screen.query_one("TabbedContent").active = "tab-advisor"
-            await pilot.pause()
-            label = str(app.screen.query_one("#advisor-label", Static).content)
-            assert "not aggregated" in label, label
-            assert "never writes" in label, label
-
-    _run(_run_it())

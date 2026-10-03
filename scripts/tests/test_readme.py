@@ -157,12 +157,13 @@ def test_readme_documents_ctrl_shortcuts_and_dashboard_cards():
     assert "删除 skill 的入口**只**在 Skills 页" in text
 
 
-def test_readmes_list_every_tab_page_including_advisor():
-    """The page list omitted Advisor, so a reader could not find the tab at all.
+def test_readmes_list_every_tab_page():
+    """A reader must find exactly the tabs that exist — no more, no fewer.
 
-    A guard for something that was only caught by reading: the list is asserted
-    against the TUI's own tab ids, so adding a TabPane without documenting it
-    reddens the build.
+    The Advisor tab was removed on 2026-10-03 and both page lists still advertised
+    it; that is the drift this catches from the documentation side. The widget-tree
+    half of the pair is `test_tui_tab_order_is_pinned`, which compares the real
+    `TabPane` ids.
     """
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
@@ -175,17 +176,19 @@ def test_readmes_list_every_tab_page_including_advisor():
     for label, segment in (("README.md", listed(en, "Pages: ")),
                            ("README.zh-CN.md", listed(zh, "页面："))):
         for page in ("Dashboard", "Skills", "MCP", "Plugins", "Recent",
-                     "Categories", "Advisor", "Data"):
+                     "Categories", "Data"):
             assert page in segment, f"{label} page list omits {page}: {segment[:120]!r}"
+        assert "Advisor" not in segment, f"{label} advertises a tab that is gone"
 
 
 def test_readmes_say_the_tracker_cannot_record_the_advisor():
-    """The Advisor page invites one wrong belief: that these numbers were measured.
+    """`skillt agentos` invites one wrong belief: that these numbers were measured.
 
-    Each language must say, in its own words, that the advisor registers no tool
-    and no command, so no usage row can ever name it — and that every number on
-    the page was written by the advisor into its own store. A translation that
-    drops the sentence drops the build.
+    The Advisor *page* is gone but the command is not, and the misunderstanding is
+    the same one the tab used to answer on screen. Each language must say, in its
+    own words, that the advisor registers no tool and no command, so no usage row
+    can ever name it — and that every number was written by the advisor into its
+    own store. A translation that drops the sentence drops the build.
     """
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
@@ -198,6 +201,7 @@ def test_readmes_say_the_tracker_cannot_record_the_advisor():
 
 def test_readme_documents_top_limit_alias():
     text = _text()
+    assert "--limit 3" in text or "`--limit" in text
 
 
 def test_readme_does_not_claim_message_text_is_stored():

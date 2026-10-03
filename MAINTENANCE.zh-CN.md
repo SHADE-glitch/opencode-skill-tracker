@@ -17,8 +17,8 @@
 | 行数 | 39 skills · 21 skill_usage · 550 mcp_usage · 53 plugin_usage · 76 skill_versions · 5 plugin_inventory |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
 | 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
-| 测试 | 347 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
-| AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。目前所有阶段都在 15–172ms，预算是 1200ms。**那 5 个 loop 是 live 测试样本**（`model=opencode/space-bunny-free`），不是真实用量 |
+| 测试 | 332 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| AgentOS 顾问存储 | `/home/shade/Public/AgentOS/store/aos.db`——16 条 telemetry、13 条召回（覆盖 6 条记忆）、14 条记忆、5 个 loop。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。目前所有阶段都在 15–172ms，预算是 1200ms。**那 5 个 loop 是 live 测试样本**（`model=opencode/space-bunny-free`），不是真实用量 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，7.7 天 533 行，`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
 | 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
@@ -165,38 +165,48 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 6. 刻意为之的偏离（别"顺手修回去"）
 
-- **TUI 里没有后台定时器。** 刷新是按页、事件驱动的：按键（5 秒节流）和切页只重读当前页，`r` 与首次绘制重读所有页；每页各自显示自己的 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会一次带走 47 个 TUI 测试。`test_tui_creates_no_app_timers` 把这条钉住。
-- **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** Dashboard 排名柱那版把每根渲染出来的柱都和 `rank_bar_width(...)` 的返回值比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫不是守卫。那一列后来按他的要求撤掉了，但这条教训留下：现在`test_tui_trend_rows_are_a_fixed_width` 断言的是绝对宽度（20），顾问阶段图的用例断言的也是绝对的格子数。
-- **顾问的三个召回计数绝不合并。** `Searched` 是引擎自报，`Recalled` 是
-  `len(memory_ids)`，`Reached the prompt` 是 `len(injected_memory_ids)`；假说可以被单独注入，
+- **TUI 里没有后台定时器。** 刷新是按页、事件驱动的：按键（5 秒节流）和切页只重读当前页，`r` 与首次绘制重读所有页；每页各自显示自己的 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会把整个 TUI 文件一次带走——今天 62 个用例，最初实测时是 47 个。`test_tui_creates_no_app_timers` 把这条钉住。
+- **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** Dashboard 排名柱那版把每根渲染出来的柱都和 `rank_bar_width(...)` 的返回值比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫不是守卫。那一列后来按他的要求撤掉了，但这条教训留下：`test_tui_trend_rows_are_a_fixed_width` 在同一句里把绝对行宽（20）也写死了，不只是断言各行彼此相等。
+- **TUI 的任何一页都不许打开顾问那个库。** Advisor 页在 2026-10-03 按 owner 的要求移除了；`skill_db.agentos_*` 和 `skillt agentos` 留着，所以那个库仍然能无头读，只是不能从页面上读。`test_tui_never_reads_the_advisor_store` 给唯一的入口装了探针，把 mount、`refresh_all` 和每一个页签都走一遍，调用数必须是 0。
+- **顾问的三个召回计数绝不合并。** `retrieved` 是引擎自报，`recalled` 是
+  `len(memory_ids)`，`injected` 是 `len(injected_memory_ids)`；假说可以被单独注入，
   合并就把一件真实的事藏起来了。以前在写着"recall"的列里打印 `retrieved` 是**报告错误**，
-  不是风格问题——`test_tui_advisor_searched_recalled_and_reached_are_three_numbers`
-  用一个三者互不相等的 fixture loop（`_make_store(extra_loop=True)`）钉住它，因为只有一个
+  不是风格问题。`test_the_recall_counts_surface_and_the_query_dict_does_not`
+  在投影出来的 dict 上钉住这三个数，fixture loop 故意让三者互不相等，因为只有一个
   loop 时三个数恰好相等，任何测试都分辨不出来。
-- **Advisor 行用位置式 key，分派是显式的 kind 列表。** 表里放 `advisor#<n>`，
-  `app.row_targets` 里放 `("advisor", loop_id)`。`on_data_table_row_selected` 以
-  `else: return` 收尾——它以前收尾在插件调用上，于是任何它没听过的 kind 都会被塞进三个它没有的
-  位置参数，处理器抛 `IndexError`。新增 kind 要加分支，不许落到 `else`。
-- **展示顾问 loop 的 screen 只接收投影好的 dict，自己不做任何 I/O**：不许 `open`、
-  `json.load`、`sqlite3.connect`，也不许用存储里给的 id 拼路径（聚合层是列目录后从文件内容里读
-  id 的，文件名并不是标识符）。
-  `test_tui_advisor_detail_reads_only_through_the_projection` 就是扫源码查这件事——哨兵文本
-  只能抓住 fixture 里恰好有的东西。
-- **阶段图的比例尺刻意把预算算进峰值。** `bar()` 是 `value / peak * width`，峰值只取阶段的话，
-  一个真实 loop（最慢阶段 18ms、预算 1200ms）会画出 **1467 格**并把整页折行；fixture 里那个
-  4000ms 的阶段把这个问题完全遮住了。
-  `test_tui_advisor_detail_budget_row_fits_when_every_stage_is_fast` 用的是真实数字。
-  相关：`bar()` 会拿值做比较，所以未跑完阶段的 `None` 绝不能传进去（TypeError，页面挂不起来）。
-- **双击不需要新代码，但需要正确的坐标。** Textual 在点击落在“已经持有行光标的那一格”时发
-  `RowSelected`，也就是第二击；不引入点击链计时器，所以“不许用 app timer”仍然成立。给
-  `_on_click` 装探针在 headless pilot 下实测：`offset=(4, 1)` 带着
-  `meta={'row': 0, 'column': 0}` 到达并打开详情页，而 `(4, 2)` 收到的是**空 meta**，因为它落在格子之间。
-  坐标选错和功能坏掉看起来一模一样，所以用例写明了它的落点为什么是这个。
+- **分派是显式的 kind 列表，以 `else: return` 收尾。** 它以前收尾在插件调用上，于是任何它没听过的
+  kind 都会被塞进三个它没有的位置参数，处理器抛 `IndexError`。新增 kind 要加分支，不许落到
+  `else`——Advisor 的 kind 跟着那一页一起删了，`test_tui_row_dispatch_ignores_unknown_kinds`
+  仍然把这条钉住。行的身份绝不从 key 字符串里读出来：key 只是个查表用的记号
+  （`dash-skill:<name>`、`recent#<n>`），真正的目标是 `app.row_targets` 里那个元组，因为把一个
+  名字从 key（或从渲染出来的单元格）里拆回来，就等于让一个含分隔符的值变成另一行。
+- **顾问的库只能从 `skill_db.agentos_*` 进，而且只以投影的形式出来。** 聚合层列
+  `store/loops/*.json`，一次 `json.load` 一个文件，交出去的是 `_project_loop` 点过名的字段——
+  调用方永远拿不到 `task_text`、召回 `query` 和阶段 payload。id 取自文件内容而不是文件名，
+  所以不会用存储给来的文本拼路径。守卫是
+  `test_task_text_and_payloads_are_never_read` 和
+  `test_a_text_valued_count_field_is_never_counted`。以前那条规矩还需要一个 screen 来守，
+  那个 screen 连同扫源码的用例一起被删掉了。
+- **`bar(value, peak, width)`：`value > peak` 就会溢出，传 `None` 就抛异常。**
+  顾问的逐阶段图是在真数据上学会这条的：峰值只取阶段时，一个真实 loop（最慢阶段 18ms、
+  预算 1200ms）会画出 **1467 格**并把整页折行；fixture 里那个 4000ms 的阶段把问题完全遮住了。
+  那张图跟着 Advisor 页一起没了。Dashboard 的趋势图还在调同一个函数，它们对这两条都安全，
+  理由也是同一个：峰值就是它自己要画的那些值的 `max()`，而没有调用的那一天是 `0`，
+  绝不是 `None`。
+- **双击不需要新代码，但落点必须在一行之上。** Textual 在点击落在“已经持有行光标的那一格”时发
+  `RowSelected`，也就是第二击；不引入点击链计时器，所以“不许用 app timer”仍然成立。
+  在 `#dash-top`（120x40、5 行）上重新实测过：`(4, 1)`、`(2, 1)`、`(60, 1)`、`(3, 5)`
+  这些落在行里的坐标都会打开那一行的详情页，而 `(4, 0)`——表头——什么也不打开。
+  `test_tui_dashboard_row_double_click_opens_detail` 先把表头这一条断言掉，正例才不会是空的。
+  给搬旧数字的人留一句：Advisor 表上那个 `(4, 2)` 的反例是**fixture 只有一行**造成的，
+  行数多于一个时 y=2 就是一行，它会打开页面。
 - **表格列宽在这里算，不交给 Textual 去发现。** `DataTable` 在 `_on_idle` 里重算自动列宽，
   所以第一帧每列恰好是表头的宽度（`frozen-gnome-fork-maintenance` 显示成 `froze`），之后每一帧
   都滞后一帧的内容。`fit_columns()` 用手里的单元格算宽并把 `auto_width` 关掉；`_PAGE_TABLES`
-  声明每个页拥有哪些表，于是只重测刚画过的那一页（九张表合计 3.1 ms，其中 100 行的 Recent 占
-  1.6 ms；`plain_len` 的“没有方括号就不解析”快路把这一趟从约 21 ms 降到约 3 ms）。
+  声明每个页拥有哪些表，于是只重测刚画过的那一页。Advisor 那页撤掉之后在 2026-10-03
+  用生产库的只读快照重测过：**八张表合计约 3 ms**（四次跑出来 2.7–3.1 ms），其中 100 行的
+  Recent 约占 1.5 ms，外圈整个 `refresh_all()` 是 21–24 ms；`plain_len` 的
+  “没有方括号就不解析”快路是当年把这一趟从约 21 ms 压到约 3 ms 的原因。
   用例读宽度时**故意不**先 `pilot.pause()`——一 pause，idle 就把那一帧修好了，坏代码也会绿。
 - **手画的图表行，宽度不许依赖数据。** 趋势行固定为 `TREND_ROW_WIDTH`（20），
   `.trend` 把高度钉到 `TREND_LINES`，`fmt_count` 把计数压到 5 字符以内。两条腿都不是摆设：
@@ -224,8 +234,8 @@ M1–M21 全文见 [README.zh-CN.md §9](#9-已知限制)（英文摘要在 [REA
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
 | 日志不轮转（M17） | 小 | 需要先定策略（轮转 / 截断 / 交给 journald） |
-| Advisor 页在自身刷新时最多重读 30 个 loop 文件（其他页刷新时不会），按 Enter 进详情会再读一遍 | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态 |
-| Advisor 页读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那两格变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的列变成 `-` 就是信号 |
+| 每次调用 `skillt agentos` 都会重读 `store/loops/` 下的 loop 文件（`--limit N` 限制的是投影多少条，不是列多少条） | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态。以前让这件事变成“每次按键都要付”的是 Advisor 页，页没了，现在只有跑命令时才付 |
+| 顾问聚合层读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那几个数变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的地方变成 `-` 就是信号 |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
 | `skill_versions` 无上限增长 | 小 | 需要保留策略；目前没有任何清理 |
 
