@@ -813,6 +813,68 @@ def test_tui_plugins_search_narrows_rows(seeded_plugin_db):
     _run(_run_it())
 
 
+def test_tui_plugins_inventory_says_where_each_plugin_was_seen(seeded_plugin_db):
+    """The page used to print every inventory row under "Loaded".
+
+    The inventory is a union refreshed at different scopes: global and local-dir
+    rows are rewritten by *every* OpenCode start, a project row only by a session
+    started in that project. So the heading is "Inventory", each entry carries the
+    age of its last sighting, and a project row goes on a line of its own — printed
+    together with the rest, a plugin removed from the global config keeps being
+    advertised as loaded.
+    """
+    import re
+
+    from rich.text import Text
+    from textual.widgets import Static
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-plugins"
+            await pilot.pause()
+            raw = str(app.screen.query_one("#plugins-label", Static).content)
+            lines = [
+                Text.from_markup(l).plain for l in raw.splitlines() if l.strip()
+            ]
+            assert not [l for l in lines if "Loaded" in l], lines
+            inv = [l for l in lines if l.startswith("Inventory")]
+            assert len(inv) == 1, lines
+            assert "@tarquinen/opencode-dcp@3.2.0" in inv[0], inv[0]
+            assert "opencode-conductor-plugin" not in inv[0], \
+                "a project-scoped row must not share the global line"
+            proj = [l for l in lines if "project config" in l]
+            assert len(proj) == 1, lines
+            assert "opencode-conductor-plugin" in proj[0], proj[0]
+            assert re.search(r"\d\d-\d\d \d\d:\d\d", inv[0]), inv[0]
+            assert "Excluded" in "\n".join(lines), lines
+
+    _run(_run_it())
+
+
+def test_cli_plugins_reports_scope_and_last_seen(seeded_plugin_db, capsys):
+    """The headless command carried the same overstatement as the page.
+
+    `skillt plugins` printed "Installed plugins" for a union that only OpenCode's
+    start refreshes; each row now names the config that claimed it and when it was
+    last seen, so a plugin removed from the global config reads as what it is.
+    """
+    import argparse
+
+    import skill_db as db
+
+    conn = db.open_db(seeded_plugin_db)
+    try:
+        assert st._cli_plugins(conn, argparse.Namespace(json=False, limit=10)) == 0
+    finally:
+        conn.close()
+    out = capsys.readouterr().out
+    assert "Installed" not in out, out
+    assert "seen at the last OpenCode start" in out, out
+    assert "global, seen" in out and "project, seen" in out, out
+
+
 def test_tui_dashboard_plugin_card_shows_count(seeded_plugin_db):
     async def _run_it():
         app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)

@@ -498,7 +498,10 @@ def _cli_plugins(conn, args) -> int:
         return 0
 
     if inventory:
-        print("Installed plugins")
+        # Not "installed": this table is a union that only OpenCode's start
+        # refreshes, and a `project` row is seen by no other session. Say where
+        # each entry came from and when it was last seen.
+        print("Plugins seen at the last OpenCode start")
         print("-" * 56)
         for p in inventory:
             label = _plugin_label(p)
@@ -508,10 +511,11 @@ def _cli_plugins(conn, args) -> int:
             if p["commands"]:
                 surface.append(f"{len(p['commands'])} command(s)")
             detail = ", ".join(surface) if surface else "no surface detected"
+            where = f"{p.get('scope') or 'unknown'}, seen {db.fmt_time(p['last_seen'])}"
             if p["skipped"]:
-                print(f"  {label:<44} excluded")
+                print(f"  {label:<44} excluded  ({where})")
             else:
-                print(f"  {label:<44} {detail}, {p['total']} call(s)")
+                print(f"  {label:<44} {detail}, {p['total']} call(s)  ({where})")
 
     shown = min(args.limit, len(items))
     print()
@@ -1906,7 +1910,11 @@ def _tui_classes() -> dict:
             # The inventory goes in the label rather than a second table: it is
             # a handful of rows, and keeping one table means sorting stays
             # unambiguous.
-            loaded, excluded = [], []
+            # The inventory is init-time state *and* a union: a project's config is
+            # only read by sessions started in that project, so its rows mean
+            # something different from the ones every session refreshes. Printing
+            # all of them under "Loaded" advertised plugins the user had removed.
+            current, project, excluded = [], [], []
             for r in db.plugin_inventory_rows(self.app.conn):
                 counts = []
                 if r["tools"]:
@@ -1916,21 +1924,39 @@ def _tui_classes() -> dict:
                 entry = r["plugin_name"]
                 if counts:
                     entry += f" ({', '.join(counts)})"
-                (excluded if r["skipped"] else loaded).append(entry)
+                # MM-DD HH:MM only: this is one of several entries on a line.
+                entry += f" [dim]{db.fmt_time(r['last_seen'])[5:]}[/dim]"
+                if r["skipped"]:
+                    excluded.append(entry)
+                elif r.get("scope") == "project":
+                    project.append(entry)
+                else:
+                    current.append(entry)
 
             lines = [
                 f"[dim]Sort: {SORT_LABELS[self.app.plugin_sort_mode]}   ·   "
                 f"showing {len(rows)} item(s)  ·  Enter opens detail[/dim]"
             ]
-            if loaded:
-                lines.append("[b]Loaded[/b]  " + " · ".join(loaded))
+            if current or project or excluded:
+                lines.append("[b]Inventory[/b]  " + "   ·   ".join(current))
+                lines.append(
+                    "[dim]what OpenCode loaded at its last start, with the age of"
+                    " that sighting. Rows for plugins the global config no longer"
+                    " lists are dropped at the next start; clearing usage does not"
+                    " touch this list.[/dim]"
+                )
             else:
                 lines.append(
                     "[dim]No inventory yet — the plugin records it when OpenCode "
                     "starts.[/dim]"
                 )
+            if project:
+                lines.append(
+                    "[dim]From a project config, so loaded only in that project: "
+                    + "   ·   ".join(project) + "[/dim]"
+                )
             if excluded:
-                lines.append("[dim]Excluded: " + " · ".join(excluded) + "[/dim]")
+                lines.append("[dim]Excluded: " + "   ·   ".join(excluded) + "[/dim]")
             self._page_status_base["tab-plugins"] = "\n".join(lines)
             self._paint_status("tab-plugins")
 
