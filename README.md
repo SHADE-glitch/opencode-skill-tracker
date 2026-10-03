@@ -499,11 +499,18 @@ The full audit — M1 through M19, with reproduction notes — lives in
   init** by a best-effort **static scan** of each plugin's source: the package's
   entry file, plus **one hop** into the modules it imports by relative path
   (bounded: 3 hops, 256 KiB each — a published `main` is often a few-hundred-byte
-  shim that re-exports the chunk holding the real registration). New,
+  shim that re-exports the chunk holding the real registration). Tool ids are the
+  keys at the **shallowest level** inside the `tool: { … }` object, so a tool's own
+  `args: { query: … }` is not mistaken for one. New,
   upgraded or renamed plugins (and the tools/commands they register) need an
   OpenCode restart to appear. An unattributable tool is recorded as
   `(unknown)`; an unattributable command is **not recorded** (fail closed, so
   builtin commands like `/init` never land in the table).
+  The inventory row records **which config listed the plugin** (`global`,
+  `localdir`, `project`), and a `global`/`localdir` row that a later start does not
+  see again is deleted — that is what makes the page's list mean "loaded", not
+  "seen once since this database was created". `project` rows are never deleted
+  from elsewhere, because a session started in another directory cannot see them.
 - **M13** The builtin-tool `allowlist` is hardcoded and pinned to OpenCode
   1.18.33. A builtin added by a later release would be attributed to a plugin
   as `(unknown)` until the list is refreshed — or set

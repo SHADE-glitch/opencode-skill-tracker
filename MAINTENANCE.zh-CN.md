@@ -13,13 +13,13 @@
 | 插件 SDK | `@opencode-ai/plugin` 1.18.4 |
 | 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
 | TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
-| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL，576 KiB |
-| 行数 | 39 skills · 23 skill_usage · 550 mcp_usage · 111 plugin_usage · 76 skill_versions · 7 plugin_inventory |
+| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL，592 KiB |
+| 行数（2026-10-03 重测，**owner 刚清空过用量**） | 39 skills · 1 skill_usage · 0 mcp_usage · 3 plugin_usage · 76 skill_versions · 8 plugin_inventory —— 清单这一列还是剪枝前的集合，要等 OpenCode 重启 |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2` |
-| 导出文档 | `schema_version = 4`（4 = metadata 走白名单） |
-| 测试 | 335 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| 导出文档 | `schema_version = 5`（4 = metadata 走白名单，5 = 多了 `plugin_inventory.scope`） |
+| 测试 | 347 passed / 0 failed —— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | AgentOS 顾问存储（2026-10-03 实测；那是另一个进程的状态，会变） | `/home/shade/Public/AgentOS/store/aos.db`——22 条 telemetry、51 条召回（覆盖 8 条记忆）、14 条记忆、**83 个 loop 文件**。阶段耗时已经不是小数：最新的 loop 里 `validate` 跑到 31–37 秒，是 1200ms 预算的约 30 倍。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。某个 loop 是 live 测试样本还是真实用量，不由本项目代答；这里对那个库只读，最新的 loop 自己带着 `model` 标签。 |
-| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，10.0 天 894 行（首行 2026-09-23），`[err]` 0 行 |
+| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，10.1 天 920 行（首行 2026-09-23），`[err]` 0 行 |
 | 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
 | 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
 | 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份），这个删除会在下一次夜间任务发生 |
@@ -208,11 +208,28 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
   绝不递归——因为发现过程跑在 `init()` 里，宿主是盯着截止时间的。这两条边界都是靠踩坏另一条找出来的：
   第一版把大小上限也加在入口上，于是悄悄丢了 DCP 的 `compress`（一个 300 KiB 的 bundle，以前一直是整份读的）；
   把工具键规则收紧成 `id: {` 又丢一次，因为 DCP 写的是 `compress: cond ? a() : b()`。
-  所以键规则保持宽松，改成过滤全大写的键——描述字符串里的 `MATCH USER LANGUAGE: ${…}`
-  在正则眼里就是个键（`TOOL_KEY_NOISE_RE`）。守卫是
-  `test_scan_follows_the_entry_shim_one_hop`、`test_scan_hops_are_bounded`、
+  守卫是 `test_scan_follows_the_entry_shim_one_hop`、`test_scan_hops_are_bounded`、
   `test_scan_reads_a_large_entry_file_in_full`。三个真实插件上整个 `init()` 的实测成本：
   改前中位 45.1 ms，改后 44.7 ms。
+- **工具 id 取"最浅的有键那一层"，不是"第一层"。** 以前那块是用一个停在第一个 `}` 的正则读的，
+  于是同时犯了两头的错：把工具自己 `args: { query: … }` 里的参数名当成工具（claude-mem 因此在
+  真正的 `claude_mem_search` 旁边多出一个 `query`），以及把写在嵌套对象**之后**的工具整个漏掉。
+  现在的路径会跳过字符串字面量，取最浅的那一层——DCP 的 `tool:{ ...cond && { compress: … } }`
+  和 opencode-mem 的 `tool: { memory: tool({ args: {…} }) }` 在这条规则下都是对的。
+  先试过的"过滤全大写的键"已经删掉：它治的是症状，而且真有一个工具引用常量命名的话会被它误杀。
+  守卫是 `test_scan_reports_tool_ids_not_parameter_names`、
+  `test_scan_finds_a_tool_registered_behind_a_spread`。
+- **清单是并集，四种来源里只有两种可删。** `scope` 记下这一行是哪份配置声明的：`global` 和
+  `localdir` 每个会话都会读，所以本次启动没再见到的就是用户已经删掉的插件，`loadPlugins()`
+  结束时删掉——页面那一列于是说的真是"上次启动加载了什么"，不再是"这个库建好以来见过什么"。
+  `project` 行绝不在别处删（换个目录启动的会话看不见它）；建列之前的旧行按 `global` 处理——
+  猜错的代价只是这一行，用量还在，那个项目的下次启动会把它加回来。另有两道闸，每道都是靠把它
+  关掉来证明有效的：`OPENCODE_SKILL_TRACKER_PLUGINS` 覆盖时一律不删；全局配置文件一个都没解析成功
+  时一律不删——配置坏了或没了，看起来和"没装插件"一模一样。守卫是
+  `test_the_inventory_prunes_a_plugin_the_global_config_dropped`、
+  `test_a_project_scoped_plugin_survives_a_session_started_elsewhere`、
+  `test_the_env_spec_override_never_prunes`、`test_an_unreadable_global_config_never_prunes`、
+  `test_a_project_scope_row_is_never_downgraded`。
 - **表格列宽在这里算，不交给 Textual 去发现。** `DataTable` 在 `_on_idle` 里重算自动列宽，
   所以第一帧每列恰好是表头的宽度（`frozen-gnome-fork-maintenance` 显示成 `froze`），之后每一帧
   都滞后一帧的内容。`fit_columns()` 用手里的单元格算宽并把 `auto_width` 关掉；`_PAGE_TABLES`
@@ -231,7 +248,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
   因为 `Static.content` 返回的原串带着标记。
 - **行身份绝不从 row key 里 parse 回来。** 名字本身含分隔符（`@scope/pkg`、`conductor:newTrack`、带 `_` 的 server 名），所以每张表在渲染时把 `(kind, ...parts)` 注册进 `app.row_targets`。不要恢复 `split()`。
 - **`unified_recent_rows` 额外返回详情页需要的列**（`skill_name`、`server_name`+`tool_name`、`plugin_name`+`item_kind`+`item_name`），显示用的 `name` 不是主键。
-- **导出对 metadata 走白名单**（`EXPORT_METADATA_KEYS`）而不是整列倒出。文档形状因此升到 `schema_version = 4`；再改形状要升版本并同步 `test_export.py` / `test_plugin_db.py`。
+- **导出对 metadata 走白名单**（`EXPORT_METADATA_KEYS`）而不是整列倒出，文档形状因此升到 `schema_version = 4`；后来给 `plugin_inventory` 加 `scope` 又把它推到 5。再改形状要升版本并同步 `test_export.py` / `test_plugin_db.py`。
 - **`scrub-metadata` 原地改行而不是删行**，且 `--yes` 之前必先备份。
 
 ## 7. 已知限制

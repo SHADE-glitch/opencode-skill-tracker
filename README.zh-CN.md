@@ -121,7 +121,7 @@ skillt
 
 **没有 Advisor 页**：这一页在 2026-10-03 按 owner 的要求移除了。它当时展示的只读聚合仍然存在，只是退回无头命令 `skillt agentos`（见下文命令一览）；那条命令现在是唯一打开那个库的入口，TUI 的任何一页都不再读它——这一点由 `test_tui_never_reads_the_advisor_store` 钉住。
 
-**Plugins 页**每个 `(plugin, kind, item)` 组合一行，显示调用次数、成功率、平均耗时、最近使用时间；页面上方同时显示初始化时扫描到的插件清单、工具/命令数量和被排除的插件。插件工具归属失败时显示 `(unknown)`（壳层转发的插件在修好前也会落到 `(unknown)`）；插件命令只在扫描明确归属时记录。
+**Plugins 页**每个 `(plugin, kind, item)` 组合一行，显示调用次数、成功率、平均耗时、最近使用时间；页面上方是 **Inventory**：初始化时扫描到的插件清单，每条带上工具/命令数量、**最后被看到的时刻**，以及它是被哪一份配置声明的（`global` / `localdir` / `project`）——只有全局配置和本地插件目录那两类会在每次启动时被刷新，某次启动没再见到的就会被删掉，所以这一列现在说的是"启动时加载了什么"，不再是"这个库建好以来曾经见过什么"。来自某个项目配置的清单单独一行，因为换个目录启动的会话看不见它。插件工具归属失败时显示 `(unknown)`；插件命令只在扫描明确归属时记录。
 
 | 按键 | 作用 |
 |---|---|
@@ -163,7 +163,7 @@ skillt agentos   [--json] [--limit N]
 - `sync`：重新扫描 `SKILL.md`，把内容变更记录进 `skill_versions`；`--dry-run` 只统计不写。
 - `health`：把每个 skill 分成 **活跃（≤30 天）/ 沉寂（30–90 天）/ 未使用（>90 天或从未）**，并给出风险标记与建议。会显示**观察样本**（N 个 session、D 天）；样本不足 **20 个 session 或 14 天**时只输出一行"数据不足"，不给剪枝建议——在样本足够之前，"0 次使用"没有意义。**只读、只建议、绝不自动删除。**
 - `mcp`：MCP 工具使用情况——按 server 汇总，再列出调用最多的工具（次数、成功率、最近使用）。**只读。**
-- `plugins`：插件清单（来源、版本、工具/命令面、排除状态）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
+- `plugins`：插件清单（来源、版本、工具/命令面、排除状态、`scope` 与最后被看到的时刻）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（**三张表分别**报最新一条距今多少天，例如 `skill_usage 0.0d · mcp_usage 2.2d · plugin_usage 0.0d`，阈值 `--freshness-days`，默认 7；从没记过行的流报 `no rows`，不算停滞；`OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` 可以把某条流排除在判定之外，但它仍会被打印并标注 `(excluded)`）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）。这三项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
@@ -203,7 +203,7 @@ skillt help
   `tool_name = '*'` 表示只知道 server、不知道具体工具（权限拒绝路径）。
   `arg_names` 是调用**参数名**组成的 JSON 数组——参数**值**从不读取，因此不可能被存进来。
 - **`plugin_usage`**：每次插件工具/命令调用一行，按 `(plugin_name, kind, item_name)` 汇总，使用同样的 `UNIQUE(session_id, call_id)` 去重。插件工具的未知归属显示为 `(unknown)`；插件命令 `trigger_type = command_call` 且状态通常是 `unknown`。
-- **`plugin_inventory`**：插件初始化扫描清单，一行一个插件，保存版本、来源、静态发现的 tools/commands 以及 `skipped` 排除标记。清单不会因清空 usage 而删除。
+- **`plugin_inventory`**：插件初始化扫描清单，一行一个插件，保存版本、来源、静态发现的 tools/commands、`skipped` 排除标记，以及 `scope`——这一行是被哪份配置声明的（`global` / `localdir` / `project` / 早期遗留为 NULL，按 `global` 处理）。`loadPlugins()` 结束时删掉 `global`/`localdir` 里本次没再见到的行；`project` 行不删（换个目录启动的会话看不见它）。清空 usage 不会动这张表。
 - **`skill_versions`**：内容哈希历史，`UNIQUE(skill_name, content_hash)`。
 
 ### 5.2 视图
@@ -216,7 +216,7 @@ skillt help
 - `v_mcp_history`：MCP 版的历史视图，额外带 `arg_names`。
 - `v_plugin_totals` / `v_plugin_last30` / `v_plugin_history`：插件用量总计、近 30 天和历史视图。
 
-插件来源和归属是**初始化时的一次性静态扫描**：入口文件加上它相对 import 的那一层。新增、升级、改名插件或其命令/工具面后，需要重启 OpenCode 才会刷新清单；扫描无法解析的工具只记 `(unknown)`，无法明确归属的命令直接不记。
+插件来源和归属是**初始化时的一次性静态扫描**：入口文件加上它相对 import 的那一层；工具 id 取 `tool: {` 里**最浅的有键那一层**（再深就是某个工具自己的 `args`，不是工具）。新增、升级、改名插件或其命令/工具面后，需要重启 OpenCode 才会刷新清单；扫描无法解析的工具只记 `(unknown)`，无法明确归属的命令直接不记。
 
 ### 5.3 运行参数
 
@@ -377,7 +377,7 @@ rm -rf ~/.local/share/opencode/backups
 - **M8 未做容量上限（已修复）。** `branchByDir` / `pendingSkillPerms` 现与 `sessionCtx` / `callCtx` 一样走 `setCapped`（上限 `MAP_CAP`），不再随进程生命周期增长。另：`skill_db.h()` 仍是死代码（0 调用）。
 - **M9 重试静默失效（已修复）。** 旧版 `initDone = true` 在 `init()` 完成**之前**置位，任何早退都会让后续重试静默 no-op。现在 `initDone` 仅在 schema 创建成功后置位，并发调用由 `initInFlight` 去重，失败后仍可重试。
 - **M11 MCP 服务列表只在插件初始化时解析一次。** 新增或改名一个 MCP 服务后，必须**重启 OpenCode** 它的调用才会被记录；在那之前这些调用是**不可见**的（只是被跳过，**不会**记错）。检测**失败即关闭**：若一个服务都识别不出来，宁可不写，也不去猜哪些工具是 MCP。只记**参数名**、绝不记参数值。
-- **M12 插件清单和归属只在初始化时解析一次。** 静态扫描尽力从插件源码识别工具/命令：读包入口文件，再**跟着它自己 import 的相对路径模块跳一层**（有上界：3 个跳转、每个 256 KiB——发布出去的 `main` 常常只是几百字节的转发壳，真正的注册在它 import 的 chunk 里）；新增、升级、改名插件或它注册的工具/命令后，必须**重启 OpenCode** 才会刷新。工具无法归属时记录为 `(unknown)`；命令无法明确归属时**不记录**（失败即关闭，避免把 `/init` 等内置命令误记成插件）。
+- **M12 插件清单和归属只在初始化时解析一次。** 静态扫描尽力从插件源码识别工具/命令：读包入口文件，再**跟着它自己 import 的相对路径模块跳一层**（有上界：3 个跳转、每个 256 KiB——发布出去的 `main` 常常只是几百字节的转发壳，真正的注册在它 import 的 chunk 里）；工具 id 取 `tool: {` 里**最浅的有键那一层**，再深就是某个工具自己的 `args: { query: … }`，不是工具。新增、升级、改名插件或它注册的工具/命令后，必须**重启 OpenCode** 才会刷新。工具无法归属时记录为 `(unknown)`；命令无法明确归属时**不记录**（失败即关闭，避免把 `/init` 等内置命令误记成插件）。每一行还记下**是哪份配置声明了它**（`global` / `localdir` / `project`）：后一次启动再见不到的 `global`/`localdir` 行会被删掉，所以页面上那一列说的是"启动时加载了什么"，不再是"这个库建好以来曾经见过什么"；`project` 行不在别处删——换个目录启动的会话本来就看不见它。
 - **M13 内置工具 allowlist 与 OpenCode 1.18.33 对齐并硬编码。** 如果 OpenCode 升级后新增了内置工具，而 tracker 尚未更新，它可能被当作 `(unknown)` 插件工具记录；可用 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` 覆盖 allowlist，或等待 tracker 更新。
 
 ### 编码

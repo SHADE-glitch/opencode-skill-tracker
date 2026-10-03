@@ -17,13 +17,13 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Plugin SDK | `@opencode-ai/plugin` 1.18.4 |
 | Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
 | TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
-| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 576 KiB |
-| Rows | 39 skills · 23 skill_usage · 550 mcp_usage · 111 plugin_usage · 76 skill_versions · 7 plugin_inventory |
+| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 592 KiB |
+| Rows (recounted 2026-10-03, **after the owner cleared usage**) | 39 skills · 1 skill_usage · 0 mcp_usage · 3 plugin_usage · 76 skill_versions · 8 plugin_inventory — the inventory is still the pre-prune set until OpenCode restarts |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
-| Export document | `schema_version = 4` (4 = metadata is allowlisted) |
-| Test suite | 335 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| Export document | `schema_version = 5` (4 = metadata is allowlisted, 5 = `plugin_inventory.scope`) |
+| Test suite | 347 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | AgentOS advisor store (measured 2026-10-03; it is another process's state and moves) | `/home/shade/Public/AgentOS/store/aos.db` — 22 telemetry events, 51 retrieval rows over 8 memories, 14 memories, **83 loop files**. Stages are no longer small: the newest loops run `validate` at 31–37 s, i.e. ~30× the 1200 ms budget. **The TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request); `skillt agentos` is now the only surface that opens that store, and `test_tui_never_reads_the_advisor_store` pins that no tab reads it. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Whether a loop is a live-test sample or real usage is not this project's call to make; the store is read-only here and the newest loops are labelled with their own `model`. |
-| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 894 lines over 10.0 d (first line 2026-09-23), 0 `[err]` |
+| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 920 lines over 10.1 d (first line 2026-09-23), 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
 | Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots) — that deletion happens on the next nightly run |
@@ -287,12 +287,39 @@ state.
   breaking the other one: a first attempt capped the entry too and silently lost
   DCP's `compress` (a 300 KiB bundle that had always been read in full), and a
   stricter tool-key rule (`id: {`) lost it again, because DCP registers
-  `compress: cond ? a() : b()`. So the key rule stays loose and an ALL_CAPS key is
-  filtered instead — `MATCH USER LANGUAGE: ${…}` inside a description string reads
-  as a key to a regex (`TOOL_KEY_NOISE_RE`). Guards:
+  `compress: cond ? a() : b()`. Guards:
   `test_scan_follows_the_entry_shim_one_hop`, `test_scan_hops_are_bounded`,
   `test_scan_reads_a_large_entry_file_in_full`. Measured cost of the whole `init()`
   over the three real plugins: median 45.1 ms before, 44.7 ms after.
+- **Tool ids are the keys at the shallowest level that has any — not "level one".**
+  The block used to be matched with a regex that stopped at the first `}`, which did
+  two wrong things at once: it invented tools (the keys of a nested
+  `args: { query: … }` — claude-mem listed `query` beside its real
+  `claude_mem_search`) and it lost them (any tool written *after* a nested object).
+  The walk now skips string literals and takes the shallowest populated level, which
+  is the level where DCP's `tool:{ ...cond && { compress: … } }` and opencode-mem's
+  `tool: { memory: tool({ args: {…} }) }` both come out right. An ALL_CAPS filter
+  was tried first and has been removed: it patched the symptom, and a tool genuinely
+  named after a constant reference would have been dropped by it. Guards:
+  `test_scan_reports_tool_ids_not_parameter_names`,
+  `test_scan_finds_a_tool_registered_behind_a_spread`.
+- **The inventory is a union, and only two of its four claims are prunable.**
+  `scope` records which config listed a plugin. `global` and `localdir` are read by
+  *every* session, so a row of theirs that this init did not see again is a plugin
+  the user removed, and it is deleted at the end of `loadPlugins()` — that is what
+  lets the page's list mean "loaded at the last start" instead of "seen once since
+  this database was created". `project` rows are never deleted from elsewhere (a
+  session started in another directory cannot see them), and a row that predates the
+  column reads as `global`: being wrong there costs only the row, since usage stays
+  and the next session from that project re-adds it. Two more guards, each provoked
+  by disabling it: an `OPENCODE_SKILL_TRACKER_PLUGINS` override never prunes, and
+  nothing prunes unless a global config file actually parsed — a broken or missing
+  config looks exactly like "no plugins installed". Guards:
+  `test_the_inventory_prunes_a_plugin_the_global_config_dropped`,
+  `test_a_project_scoped_plugin_survives_a_session_started_elsewhere`,
+  `test_the_env_spec_override_never_prunes`,
+  `test_an_unreadable_global_config_never_prunes`,
+  `test_a_project_scope_row_is_never_downgraded`.
 - **Table column widths are measured here, not by Textual.** `DataTable` recomputes
   auto widths in `_on_idle`, so the first painted frame gives every column its
   header's width (`frozen-gnome-fork-maintenance` → `froze`) and later frames lag by
@@ -323,8 +350,9 @@ state.
   `server_name`+`tool_name`, `plugin_name`+`item_kind`+`item_name`) in addition to
   the display `name`. The display string is not a key.
 - **Export allowlists metadata** (`EXPORT_METADATA_KEYS`) instead of dumping the
-  column. This changed the document to `schema_version = 4`; bump on any further
-  shape change and update `test_export.py` / `test_plugin_db.py`.
+  column. That changed the document to `schema_version = 4`; adding
+  `plugin_inventory.scope` made it 5. Bump on any further shape change and update
+  `test_export.py` / `test_plugin_db.py`.
 - **`scrub-metadata` edits rows in place rather than deleting them**, and only
   after a backup when `--yes`.
 

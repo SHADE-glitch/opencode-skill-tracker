@@ -15,7 +15,8 @@ usage** into a local SQLite database. Three layers, in dependency order:
    are captured alongside skills; an MCP tool id is `{server}_{tool}` and is
    resolved against the configured server list by longest-prefix match. Plugin
    surfaces are best-effort statically scanned once at init (the entry file plus
-   one hop into its relative imports); unresolved tools
+   one hop into its relative imports; tool ids are the keys at the shallowest
+   level of the `tool: { … }` object); unresolved tools
    become `(unknown)`, while unresolved commands are dropped fail-closed.
 2. `scripts/skill_db.py` — the shared data layer (schema, migrations, queries,
    export, backup). Imported by both the TUI and the tests.
@@ -89,9 +90,16 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   made every real rejection write nothing. Both spellings are handled. Before
   changing a permission handler, re-run the `/tmp` probe recipe in
   `MAINTENANCE.md` §5 rather than trusting the SDK.
-- **Plugin inventory is init-time state.** A new/renamed plugin or surface needs
-  an OpenCode restart to be discovered; `plugin_inventory` is retained when
-  usage is cleared.
+- **Plugin inventory is init-time state, and every row says which config claimed
+  it.** A new/renamed plugin or surface needs an OpenCode restart to be discovered;
+  `plugin_inventory` is retained when usage is cleared. `scope` is
+  `global` / `localdir` / `project` (or `NULL`, from before the column, treated as
+  `global`), and the prune at the end of `loadPlugins()` deletes only
+  `global`/`localdir` rows this init did not see again — every session reads those
+  two, whereas a project's config is read only by sessions started in it. Never
+  prune on the basis of an `OPENCODE_SKILL_TRACKER_PLUGINS` override, and never
+  prune at all unless a global config file parsed: a broken or missing config looks
+  exactly like "no plugins installed".
 - **The schema lives in two places and must not drift**: `TABLES_SQL` /
   `VIEWS_SQL` in the plugin, and `SCHEMA_SQL` in `skill_db.py`. Nothing else
   carries a copy — `skill-stats.py` imports `skill_db`, and the test fixtures
@@ -154,7 +162,7 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **Export allowlists metadata** (`EXPORT_METADATA_KEYS` in `skill_db.py`).
   Older builds stored the user's prompt text as `metadata.summary`; the writer
   is gone but rows in real databases are not (`skillt scrub-metadata`). The
-  export document is `schema_version = 4` — bump it with any shape change.
+  export document is `schema_version = 5` (5 = `plugin_inventory.scope`) — bump it with any shape change.
 - Commit messages follow Conventional Commits (`feat:`, `docs:`, `chore:`,
   `fix:`), code before docs.
 - The test suite must be green before pushing. Tests locate files via
