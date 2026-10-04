@@ -2642,6 +2642,13 @@ def _tui_classes() -> dict:
 
         def __init__(self, db_path: str, no_sync: bool = False):
             super().__init__()
+            # Textual slides the tab-bar underline for 0.3 s on every switch
+            # (`Tabs._highlight_active` animates at level "basic", so the global
+            # "basic" setting does not remove it — only "none" does). Measured on
+            # a 44-skill database: a Dashboard->Skills switch is ~500 ms with the
+            # animation and ~190 ms without; it is ~305 ms of that. The screen
+            # exists to read numbers, so it snaps instead of sliding.
+            self.animation_level = "none"
             self.db_path = db_path
             self.no_sync = no_sync
             self.conn = None

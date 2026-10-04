@@ -1872,6 +1872,26 @@ def test_tui_creates_no_app_timers(seeded_db):
     _run(_run_it())
 
 
+def test_tui_disables_textual_animations(seeded_db):
+    """The tab underline must not slide: it is ~305 ms of every tab switch.
+
+    Textual animates `Tabs`' underline for 0.3 s at level "basic", so the global
+    "basic" setting does not remove it — only "none" does. Measured on a 44-skill
+    database: a Dashboard->Skills switch is ~500 ms with the animation and ~190 ms
+    without. Pin the setting so a Textual bump or a refactor cannot quietly bring
+    the animation back.
+    """
+    app = SkillTUI(db_path=seeded_db, no_sync=True)
+    assert app.animation_level == "none"
+
+    async def _run_it():
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            assert app.animation_level == "none", "run_test must not re-enable it"
+            app.conn.close()
+    _run(_run_it())
+
+
 def test_tui_dead_bar_wrapper_is_gone():
     """`uses_bar` had no caller; a second name for one helper invites drift."""
     assert not hasattr(st, "uses_bar")
