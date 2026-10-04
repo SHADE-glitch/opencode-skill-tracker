@@ -161,3 +161,95 @@ def test_a_legacy_db_without_mcp_or_plugin_tables_still_lists_agents(conn):
 
 def test_an_empty_database_lists_no_agents(conn):
     assert db.agent_usage_rows(conn) == []
+
+
+def add_spawn(c, subagent, parent_session, call, status, ts, meta_agent="build"):
+    """One recorded subagent run, written the way the plugin writes it."""
+    c.execute(
+        "INSERT INTO subagent_usage (parent_session_id, child_session_id, call_id,"
+        " subagent, project_path, trigger_type, status, timestamp, duration_ms, metadata)"
+        " VALUES (?,?,?,?,?,?,?,?,?,json_object('agent',?))",
+        (parent_session, f"child-{call}", call, subagent, "/p", "event_detected",
+         status, ts, 100, meta_agent),
+    )
+
+
+# --- subagents as first-class rows ----------------------------------------
+def test_a_subagent_that_made_no_measured_call_still_gets_a_row(conn):
+    """`explore` can spend a whole run on builtins and leave no usage row anywhere.
+
+    Without a row of its own the Agents page cannot show it at all, which is the
+    complaint this answers: the spawn record is the only evidence it ran.
+    """
+    add_skill(conn, "grow", "s0", "success", "2026-10-01T00:00:00.000Z")
+    add_spawn(conn, "explore", "s0", "c1", "success", "2026-10-02T00:00:00.000Z")
+    add_spawn(conn, "explore", "s0", "c2", "error", "2026-10-02T01:00:00.000Z")
+    conn.commit()
+    rows = _by_agent(db.agent_usage_rows(conn))
+    assert "explore" in rows, sorted(rows, key=str)
+    e = rows["explore"]
+    assert (e["skill"], e["mcp"], e["plugin"], e["total"]) == (0, 0, 0, 0), e
+    assert e["runs_as"] == 2 and e["runs_errors"] == 1, e
+    assert e["subagent"] == 0, e
+    assert e["is_subagent"] is True, e
+    assert rows["build"]["is_subagent"] is False, rows["build"]
+
+
+def test_a_name_that_is_both_parent_and_child_is_one_row_two_counts(conn):
+    """`plan` can be a primary agent and a spawned subagent in the same window.
+
+    Two rows for one name would read as two different agents; merging the two
+    counts into one number would lose which role each was.
+    """
+    add_skill(conn, "grow", "s0", "success", "2026-10-01T00:00:00.000Z", meta=META_PLAN)
+    add_spawn(conn, "plan", "s0", "c1", "success", "2026-10-02T00:00:00.000Z")
+    add_spawn(conn, "auditor", "s1", "c2", "success", "2026-10-02T01:00:00.000Z",
+              meta_agent="plan")
+    conn.commit()
+    rows = _by_agent(db.agent_usage_rows(conn))
+    assert [r["agent"] for r in db.agent_usage_rows(conn)].count("plan") == 1
+    p = rows["plan"]
+    assert p["runs_as"] == 1 and p["subagent"] == 1, p
+    assert p["is_subagent"] is True, p
+    assert p["total"] == 1 and p["skill"] == 1, p
+
+
+def test_spawns_and_runs_are_two_columns_and_never_inside_total(conn):
+    """`Spawned` is a parent's count, `Ran as` a child's — one column cannot hold both.
+
+    The invariant this protects: `Total` means skill + MCP + plugin calls on every
+    row, whichever row that is. Folding an event in would let the same column mean
+    two things depending on whether a session happened to delegate.
+    """
+    add_skill(conn, "grow", "s0", "success", "2026-10-01T00:00:00.000Z")
+    add_spawn(conn, "explore", "s0", "c1", "success", "2026-10-02T00:00:00.000Z")
+    add_spawn(conn, "explore", "s0", "c2", "success", "2026-10-02T00:00:01.000Z")
+    conn.commit()
+    rows = _by_agent(db.agent_usage_rows(conn))
+    build, explore = rows["build"], rows["explore"]
+    assert (build["subagent"], build["runs_as"]) == (2, 0), build
+    assert (explore["subagent"], explore["runs_as"]) == (0, 2), explore
+    for row in rows.values():
+        assert row["total"] == row["skill"] + row["mcp"] + row["plugin"], row
+    assert sum(r["total"] for r in rows.values()) == 1, rows
+    assert sum(r["runs_as"] for r in rows.values()) == 2, rows
+
+
+def test_a_spawn_with_no_parent_agent_lands_in_unknown_not_an_invented_name(conn):
+    """The parent's agent is metadata; missing metadata has one home, `(unknown)`."""
+    add_spawn(conn, "explore", "sx", "c1", "success", "2026-10-02T00:00:00.000Z",
+              meta_agent=None)
+    conn.commit()
+    rows = _by_agent(db.agent_usage_rows(conn))
+    assert None in rows, sorted(rows, key=str)
+    assert rows[None]["subagent"] == 1, rows[None]
+    assert rows["explore"]["runs_as"] == 1, rows["explore"]
+
+
+def test_no_subagent_rows_means_no_extra_agent_names(conn):
+    """The page must not invent names the spawn table never mentioned."""
+    add_skill(conn, "grow", "s0", "success", "2026-10-01T00:00:00.000Z")
+    conn.commit()
+    rows = db.agent_usage_rows(conn)
+    assert {r["agent"] for r in rows} == {"build"}, rows
+    assert all(r["runs_as"] == 0 and r["is_subagent"] is False for r in rows), rows

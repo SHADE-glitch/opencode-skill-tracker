@@ -901,6 +901,30 @@ AGENT_EXPR = ("CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.age
               " END")
 
 
+def _agent_name(value):
+    """An agent name, or None for the `(unknown)` bucket.
+
+    A number, a blank string or a non-string is not an agent name: it belongs to
+    the unknown bucket rather than becoming a label invented out of nothing.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _agent_slot(agent):
+    """One row of the Agents table. `total` is only ever the three call streams."""
+    return {
+        "agent": agent, "skill": 0, "mcp": 0, "plugin": 0, "total": 0,
+        "success": 0, "errors": 0, "denied": 0, "last_used": None,
+        "subagent": 0,            # spawns this agent started (an event, not a call)
+        "runs_as": 0,             # times this name was run as somebody's subagent
+        "runs_ok": 0, "runs_errors": 0,
+        "is_subagent": False,     # renders as `name ⟨sub⟩` on the page
+    }
+
+
 def agent_usage_rows(conn) -> list[dict]:
     """Call counts grouped by the agent each usage row reported.
 
@@ -938,15 +962,8 @@ def agent_usage_rows(conn) -> list[dict]:
         FROM {table} GROUP BY agent
         """).fetchall()
         for r in rows:
-            value = r["agent"]
-            # A number, or a blank string, is not an agent name: it belongs to the
-            # unknown bucket rather than becoming a label invented out of nothing.
-            agent = value.strip() if isinstance(value, str) and value.strip() else None
-            slot = per_agent.setdefault(agent, {
-                "agent": agent, "skill": 0, "mcp": 0, "plugin": 0, "total": 0,
-                "success": 0, "errors": 0, "denied": 0, "last_used": None,
-                "subagent": 0,
-            })
+            agent = _agent_name(r["agent"])
+            slot = per_agent.setdefault(agent, _agent_slot(agent))
             slot[kind] += r["n"]
             slot["total"] += r["n"]
             slot["success"] += r["success"] or 0
@@ -956,23 +973,40 @@ def agent_usage_rows(conn) -> list[dict]:
                                    or r["last_used"] > slot["last_used"]):
                 slot["last_used"] = r["last_used"]
 
-    # Spawns are a count, not a fourth stream inside `total`: the three columns
-    # above are calls this tracker measured, and a subagent run is one event that
-    # may contain none. Folding them would make `total` mean two things depending
-    # on whether a session happened to delegate.
+    # Two roles, two columns, and never inside `total`: the three columns above are
+    # calls this tracker measured, while a spawn is one event that may contain none
+    # of them. Folding the two roles into one number would make `Total` mean
+    # "calls" or "calls plus events" depending on whether a session delegated.
     if _subagent_available(conn):
         for r in conn.execute(f"""
         SELECT {AGENT_EXPR} AS agent, COUNT(*) AS n
         FROM subagent_usage GROUP BY agent
         """).fetchall():
-            value = r["agent"]
-            agent = value.strip() if isinstance(value, str) and value.strip() else None
-            slot = per_agent.setdefault(agent, {
-                "agent": agent, "skill": 0, "mcp": 0, "plugin": 0, "total": 0,
-                "success": 0, "errors": 0, "denied": 0, "last_used": None,
-                "subagent": 0,
-            })
+            agent = _agent_name(r["agent"])
+            slot = per_agent.setdefault(agent, _agent_slot(agent))
             slot["subagent"] += r["n"]
+
+        for r in conn.execute("""
+        SELECT subagent, COUNT(*) AS n,
+               SUM(status = 'success') AS successes,
+               SUM(status = 'error')   AS errors,
+               MAX(timestamp)          AS last_used
+        FROM subagent_usage GROUP BY subagent
+        """).fetchall():
+            # A spawn with no recorded name is counted against its parent above and
+            # gets no row here: there is no name to print, and inventing one would
+            # put a fake agent on a page about agents.
+            name = _agent_name(r["subagent"])
+            if name is None:
+                continue
+            slot = per_agent.setdefault(name, _agent_slot(name))
+            slot["runs_as"] += r["n"]
+            slot["runs_ok"] += r["successes"] or 0
+            slot["runs_errors"] += r["errors"] or 0
+            slot["is_subagent"] = True
+            if r["last_used"] and (slot["last_used"] is None
+                                   or r["last_used"] > slot["last_used"]):
+                slot["last_used"] = r["last_used"]
     return sorted(per_agent.values(), key=lambda row: (-row["total"], row["agent"] or ""))
 
 

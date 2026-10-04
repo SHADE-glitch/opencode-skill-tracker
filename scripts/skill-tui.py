@@ -1899,19 +1899,29 @@ def _tui_classes() -> dict:
             """Calls per agent, most first. Read-only, no filter, no sort cycle."""
             table = self.query_one("#agents-table", DataTable)
             table.clear(columns=True)
-            # `Spawned` sits after `Total`, never inside it: the four numbers before
-            # it are calls this tracker measured, and a spawn is one event that may
-            # contain none of them.
+            # `Spawned` and `Ran as` sit after `Total`, never inside it: the four
+            # numbers before them are calls this tracker measured, and a spawn is
+            # one event that may contain none. Two columns, because starting a
+            # subagent and being one are different facts about the same name.
             table.add_columns(
-                "Agent", "Skill", "MCP", "Plugin", "Total", "Spawned",
+                "Agent", "Skill", "MCP", "Plugin", "Total", "Spawned", "Ran as",
                 "Success rate", "Last used"
             )
             rows = db.agent_usage_rows(conn)
             for r in rows:
+                label = r["agent"] or "(unknown)"
+                if r["is_subagent"]:
+                    label += " ⟨sub⟩"
+                # A child-only row has no calls to rate, but its runs did succeed or
+                # fail, and printing `-` would throw that away. `Total` stays the
+                # sum of the three call streams on every row either way.
+                rate = (rate_text(r["total"], r["success"]) if r["total"]
+                        else rate_text(r["runs_as"], r["runs_ok"]))
                 table.add_row(
-                    r["agent"] or "(unknown)", str(r["skill"]), str(r["mcp"]),
+                    label, str(r["skill"]), str(r["mcp"]),
                     str(r["plugin"]), str(r["total"]), str(r["subagent"]),
-                    rate_text(r["total"], r["success"]),
+                    str(r["runs_as"]),
+                    rate,
                     db.fmt_time(r["last_used"]),
                 )
             unknown = sum(r["total"] for r in rows if r["agent"] is None)
@@ -1922,6 +1932,13 @@ def _tui_classes() -> dict:
                 f" ({unknown} such call(s) now). It is not 'the agent that ran this"
                 " call'. See M23.[/dim]"
             )
+            note += (
+                "\n[dim]Spawned = subagents this agent started. Ran as = times this"
+                " name ran as somebody else's subagent (those rows carry ⟨sub⟩) — a"
+                " child that only used builtin tools has no calls to show, so its"
+                " rate is over runs, not calls. Neither column is ever added into"
+                " Total, which stays skill + MCP + plugin. See M24.[/dim]"
+            )
             subs = db.subagent_summary_rows(conn)
             if subs:
                 bits = []
@@ -1931,10 +1948,9 @@ def _tui_classes() -> dict:
                     last = f", last {db.fmt_time(s['last_used'])}" if s["last_used"] else ""
                     bits.append(f"{label} ×{s['runs']}{tail}{last}")
                 note += (
-                    "\n[dim]Subagents the host started: " + "   ·   ".join(bits)
-                    + " — a subagent is measured by the same three streams, so one"
-                    " with no row of its own made no measured calls (a builtin-only"
-                    " run has no measured calls). See M24.[/dim]"
+                    "\n[dim]Started here: " + "   ·   ".join(bits) + ". A name that is"
+                    " absent did not run since OpenCode last started, not never —"
+                    " rows begin where the writer begins (M24).[/dim]"
                 )
             self._page_status_base["tab-agents"] = note
             self._paint_status("tab-agents")

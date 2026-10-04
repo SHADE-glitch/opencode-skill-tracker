@@ -545,7 +545,7 @@ def test_tui_agents_tab_renders_rows(seeded_db):
             assert table.row_count, "the fixture seeds agent=build rows"
             headers = [str(c.label) for c in table.columns.values()]
             assert headers == [
-                "Agent", "Skill", "MCP", "Plugin", "Total", "Spawned",
+                "Agent", "Skill", "MCP", "Plugin", "Total", "Spawned", "Ran as",
                 "Success rate", "Last used",
             ], headers
             first = [str(c) for c in table.get_row(list(table.rows)[0])]
@@ -602,7 +602,56 @@ def test_tui_agents_page_shows_spawns_and_names_the_subagents(seeded_db):
             assert "general ×2" in note, note
             # A spawn whose name was not label-shaped is counted, not named.
             assert "(unnamed) ×1" in note, note
-            assert "no measured calls" in note, note
+            assert "no calls to show" in note, note
+
+    _run(_run_it())
+
+
+def test_tui_agents_table_marks_a_subagent_only_row(seeded_db):
+    """`explore ⟨sub⟩` must not look like an agent that did no work.
+
+    A name that only ever ran as somebody's subagent has no measured calls of its
+    own. Marked, it reads as "this is the child"; unmarked, the row looks like a
+    lazy primary agent and the page quietly becomes wrong.
+    """
+    import skill_db as db
+    from rich.text import Text
+    from textual.widgets import Static
+
+    conn = db.open_db(seeded_db, readonly=False)
+    db.ensure_schema(conn)
+    parent = conn.execute("SELECT session_id FROM skill_usage LIMIT 1").fetchone()[0]
+    for call, status in (("c-sub-1", "success"), ("c-sub-2", "error")):
+        conn.execute(
+            "INSERT INTO subagent_usage (parent_session_id, child_session_id, call_id,"
+            " subagent, status, trigger_type, duration_ms, metadata)"
+            " VALUES (?, ?, ?, 'explore', ?, 'event_detected', 900,"
+            " json_object('agent','build'))",
+            (parent, f"child-{call}", call, status),
+        )
+    conn.commit()
+    conn.close()
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-agents"
+            await pilot.pause()
+            table = app.screen.query_one("#agents-table", DataTable)
+            rows = [[str(c) for c in table.get_row(k)] for k in table.rows]
+            marked = [r for r in rows if "⟨sub⟩" in r[0]]
+            assert len(marked) == 1, rows
+            e = marked[0]
+            assert e[0] == "explore ⟨sub⟩", e
+            assert (e[1], e[2], e[3], e[4]) == ("0", "0", "0", "0"), e
+            assert e[5] == "0" and e[6] == "2", e      # Spawned as parent, Ran as child
+            # Cells carry markup, so compare what the user reads, not the codes.
+            assert Text.from_markup(e[7]).plain == "50%", e   # 1 of its 2 runs ok
+            build = [r for r in rows if r[0] == "build"][0]
+            assert build[5] == "2" and build[6] == "0", build
+            note = str(app.screen.query_one("#agents-label", Static).content)
+            assert "Ran as" in note and "M24" in note, note
 
     _run(_run_it())
 
