@@ -8,6 +8,7 @@ loaded with importlib when needed.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sqlite3
 import sys
@@ -81,6 +82,47 @@ def isolate_claude_mem_store(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB",
                        str(tmp_path / "no-claude-mem.db"))
     monkeypatch.delenv("CLAUDE_MEM_DIR", raising=False)
+
+
+# The three files claude-mem leaves beside its database. Short, synthetic, and in
+# the exact shapes the reader parses: a bare `injected` line, one with `source=`,
+# `[time] [level] [category] message` log lines, and a pid file with a token.
+CM_TRACE_LINES = [
+    "2026-10-03T13:20:40.381Z loaded project=opencode",
+    "2026-10-03T13:20:41.000Z injected project=opencode len=120",
+    "2026-10-03T14:34:21.000Z injected source=search project=opencode len=1440",
+]
+CM_WORKER_LINES = [
+    "[2026-10-03 13:20:40.381] [INFO ] [WORKER] ready",
+    "[2026-10-03 13:20:41.381] [ERROR] [CHROMA_SYNC] sync failed",
+    "[2026-10-03 13:20:42.381] [ERROR] [CHROMA_SYNC] sync failed again",
+]
+
+
+def write_claude_mem_files(root, *, trace=CM_TRACE_LINES, worker=CM_WORKER_LINES,
+                           pid=None, port=37701, dated=True,
+                           token="SENTINEL-WORKER-TOKEN"):
+    """Write those files under `root`, the directory that holds `claude-mem.db`.
+
+    `None` for `trace`/`worker`/`pid` skips that file, which is how a test asks
+    what happens when the neighbour is only partly there. `token` is whatever the
+    caller's sentinel happens to be: it must never leave the reader.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    if trace is not None:
+        (root / "inject-trace.log").write_text("\n".join(trace) + "\n", encoding="utf-8")
+    if worker is not None:
+        logs = root / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        name = "claude-mem-2026-10-03.log" if dated else "manual-restart-203731.log"
+        (logs / name).write_text("\n".join(worker) + "\n", encoding="utf-8")
+    if pid is not None:
+        (root / "worker.pid").write_text(json.dumps({
+            "pid": pid, "port": port, "startToken": token,
+            "startedAt": "2026-10-03T12:54:49.179Z",
+        }), encoding="utf-8")
+    return str(root / "claude-mem.db")
 
 
 @pytest.fixture(autouse=True)

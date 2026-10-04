@@ -2092,6 +2092,43 @@ def _tui_classes() -> dict:
                 except Exception:  # noqa: BLE001 - table empty
                     pass
 
+        def _claude_mem_activity_line(self) -> str:
+            """What claude-mem's own files say, in one line.
+
+            Its injection runs in hooks, so no call of ours records it — whether or
+            not the same plugin also registers tools, which is a surface this page
+            already counts separately.
+
+            Files only, never HTTP: this repaints on every keypress and every tab
+            change, and one network wait there freezes the interface — the same
+            freeze the no-timers rule guards against, arrived at by a different
+            mechanism. Liveness is `os.kill(pid, 0)`, a syscall, not a request.
+            """
+            store = db.claude_mem_store()
+            activity = db.claude_mem_activity(store=store)
+            if not activity["available"]:
+                return ""
+            trace = activity.get("trace") or {}
+            log = activity.get("worker_log") or {}
+            bits = []
+            if trace:
+                bits.append(f"injected {trace['injected']:,}")
+                if trace.get("loaded"):
+                    bits.append(f"loaded {trace['loaded']:,}")
+                if trace.get("unrecognized"):
+                    bits.append(f"{trace['unrecognized']} trace line(s) of an unknown shape")
+            if log:
+                bits.append(f"worker ERROR {(log.get('levels') or {}).get('ERROR', 0):,}")
+            worker = db.claude_mem_worker(store=store)
+            if worker["available"]:
+                bits.append(f"worker up :{worker['port']}" if worker["alive"]
+                            else "worker down")
+            if trace.get("truncated") or log.get("truncated"):
+                bits.append("counts are floors: the byte cap cut a file short")
+            return ("[dim]claude-mem, from its own log files — its injection hooks"
+                    " make no call for the tables below to count: "
+                    + " · ".join(bits) + "[/dim]")
+
         def render_plugins(self, rows=None) -> None:
             if rows is None:
                 rows = db.plugin_stats_rows(self.app.conn)
@@ -2166,6 +2203,9 @@ def _tui_classes() -> dict:
                 )
             if excluded:
                 lines.append("[dim]Excluded: " + "   ·   ".join(excluded) + "[/dim]")
+            activity_line = self._claude_mem_activity_line()
+            if activity_line:
+                lines.append(activity_line)
             self._page_status_base["tab-plugins"] = "\n".join(lines)
             self._paint_status("tab-plugins")
 

@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 
 import pytest
-from conftest import load_module
+from conftest import load_module, write_claude_mem_files
 
 import skill_db as db
 
@@ -340,16 +340,16 @@ WORKER_LINES = [
 
 
 def add_activity_files(tmp_path, trace=None, worker=None, dated=True):
-    """The two files claude-mem writes for itself, next to the fixture store."""
-    root = tmp_path / "cm"
-    logs = root / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    trace = TRACE_LINES if trace is None else trace
-    (root / "inject-trace.log").write_text("\n".join(trace) + "\n", encoding="utf-8")
-    name = "claude-mem-2026-10-03.log" if dated else "manual-restart-203731.log"
-    body = "\n".join(worker if worker is not None else WORKER_LINES)
-    (logs / name).write_text(body + "\n", encoding="utf-8")
-    return root
+    """The two files claude-mem writes for itself, next to the fixture store.
+
+    The writer itself is in `conftest` because the TUI tests need the same three
+    files; these lines are the ones this suite's assertions are written against.
+    """
+    write_claude_mem_files(tmp_path / "cm",
+                           trace=TRACE_LINES if trace is None else trace,
+                           worker=WORKER_LINES if worker is None else worker,
+                           dated=dated)
+    return tmp_path / "cm"
 
 
 def test_activity_counts_injections_whatever_shape_they_have(tmp_path, tracker_db):
@@ -467,12 +467,8 @@ def test_activity_is_optional_and_silent_when_the_files_are_absent(tmp_path, tra
 # --- the worker: pid file first, HTTP last ---------------------------------
 def add_pid_file(root, *, pid=None, port=37701):
     """The file the worker writes for itself. `startToken` authenticates to it."""
-    (root / "worker.pid").write_text(json.dumps({
-        "pid": pid or os.getpid(),
-        "port": port,
-        "startToken": SENTINEL,
-        "startedAt": "2026-10-03T12:54:49.179Z",
-    }), encoding="utf-8")
+    write_claude_mem_files(root, trace=None, worker=None, token=SENTINEL,
+                           pid=pid or os.getpid(), port=port)
 
 
 def _free_pid():
