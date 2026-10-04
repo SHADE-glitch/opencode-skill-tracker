@@ -804,7 +804,7 @@ def test_tui_plugin_detail_screen_opens(seeded_plugin_db):
                 await pilot.press("tab")
                 await pilot.pause()
             table = app.screen.query_one("#plugins-table", DataTable)
-            assert table.row_count == 4, "one row per (plugin, kind, item)"
+            assert table.row_count == 5, "one row per (plugin, kind, item), registered or called"
             await pilot.press("j")
             await pilot.pause()
             await pilot.press("enter")
@@ -893,6 +893,75 @@ def test_no_http_is_reachable_from_the_tui_refresh_path(seeded_plugin_db, tmp_pa
     _run(_run_it())
 
 
+def test_tui_plugins_table_lists_a_registered_item_with_no_calls(seeded_plugin_db):
+    """The page must not read as "nothing is recorded" when an item has no calls.
+
+    `dcp-compress` is in the fixture's inventory and has never been called. The table
+    used to be built from `plugin_usage` alone, so it never appeared — which is the
+    exact shape the owner kept reporting as "插件无法记录".
+    """
+    from textual.widgets import Static, TabbedContent
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one(TabbedContent).active = "tab-plugins"
+            await pilot.pause()
+            table = app.screen.query_one("#plugins-table", DataTable)
+            rows = [[str(c) for c in table.get_row(k)] for k in table.rows]
+            items = [r[2] for r in rows]
+            assert "dcp-compress" in items, items
+            assert table.row_count == 5, items      # 4 with usage + 1 registered only
+            assert [r[3] for r in rows if r[2] == "dcp-compress"] == ["0"], rows
+            # Sorted most-called first, so the zeros sit at the bottom, not on top.
+            assert items[-1] == "dcp-compress", items
+            note = str(app.screen.query_one("#plugins-label", Static).content)
+            assert "1 registered surface item(s) never called yet" in note, note
+            assert "not that it was missed" in note, note
+
+    _run(_run_it())
+
+
+def test_tui_enter_on_a_never_called_row_warns_instead_of_opening_empty(
+        seeded_plugin_db):
+    """A registered item with no calls has no history, and Enter must say so.
+
+    `_open_plugin_detail` deliberately refuses to push an empty detail screen, so
+    the row is selectable but Enter warns. That is the contract: the new 0 rows are
+    neither dead keys nor blank pages.
+    """
+    from textual.widgets import TabbedContent
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            # Walk there with Tab: setting `.active` swaps the pane but leaves the
+            # focus elsewhere, and then `j`/`Enter` would drive a different table.
+            for _ in range(3):
+                await pilot.press("tab")
+                await pilot.pause()
+            assert app.screen.query_one(TabbedContent).active == "tab-plugins"
+            table = app.screen.query_one("#plugins-table", DataTable)
+            keys = list(table.rows)
+            target = [i for i, k in enumerate(keys)
+                      if str(table.get_row(k)[2]) == "dcp-compress"][0]
+            # Walk the cursor onto that row by name, not by a lucky press count: the
+            # point is the 0-call row specifically.
+            for _ in range(target):
+                await pilot.press("j")
+                await pilot.pause()
+            assert table.cursor_coordinate.row == target, (table.cursor_coordinate, target)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not app.screen.query("#detail-history"), \
+                "there is no history, so no page may open"
+            assert app.screen.query("#plugins-table"), "and the row must not be a dead key"
+
+    _run(_run_it())
+
+
 def test_tui_sort_modes_are_independent_per_table(seeded_mcp_db):
     """Cycling sort on MCP must not reshuffle the Skills table mode."""
     from textual.widgets import TabbedContent
@@ -941,15 +1010,17 @@ def test_tui_plugins_search_narrows_rows(seeded_plugin_db):
         app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.screen.query_one("#plugins-table", DataTable).row_count == 4
+            # 5, not 4: the union adds the registered-but-never-called `dcp-compress`.
+            assert app.screen.query_one("#plugins-table", DataTable).row_count == 5
             app.screen.query_one("#plugins-search", Input).value = "compress"
             app.screen.render_plugins()
             await pilot.pause()
-            assert app.screen.query_one("#plugins-table", DataTable).row_count == 1
+            # 2, not 1: the called tool and the never-called command both match.
+            assert app.screen.query_one("#plugins-table", DataTable).row_count == 2
             app.screen.query_one("#plugins-search", Input).value = ""
             app.screen.render_plugins()
             await pilot.pause()
-            assert app.screen.query_one("#plugins-table", DataTable).row_count == 4
+            assert app.screen.query_one("#plugins-table", DataTable).row_count == 5
 
     _run(_run_it())
 
@@ -1014,6 +1085,34 @@ def test_cli_plugins_reports_scope_and_last_seen(seeded_plugin_db, capsys):
     assert "Installed" not in out, out
     assert "seen at the last OpenCode start" in out, out
     assert "global, seen" in out and "project, seen" in out, out
+    # Headless parity: the command must not hide the surface the page now shows.
+    assert "dcp-compress" in out, out
+    assert "never called" in out, out
+
+
+def test_cli_plugins_json_separates_registered_from_called(seeded_plugin_db, capsys):
+    """A `--json` consumer gets the same two claims as the page, not one merged 0.
+
+    `total: 0` alone cannot tell "this tool exists and nobody used it" from "the
+    recorder missed it" — which is the whole ambiguity this closes.
+    """
+    import argparse
+    import json
+
+    import skill_db as db
+
+    conn = db.open_db(seeded_plugin_db)
+    try:
+        assert st._cli_plugins(conn, argparse.Namespace(json=True, limit=10)) == 0
+    finally:
+        conn.close()
+    doc = json.loads(capsys.readouterr().out)
+    by_id = {r["item_id"]: r for r in doc["items"]}
+    never = by_id["@tarquinen/opencode-dcp@3.2.0/command/dcp-compress"]
+    assert never["total"] == 0, never
+    assert never["registered"] is True and never["ever_called"] is False, never
+    called = by_id["(unknown)/tool/mystery_tool"]
+    assert called["registered"] is False and called["ever_called"] is True, called
 
 
 def test_tui_dashboard_plugin_card_shows_count(seeded_plugin_db):

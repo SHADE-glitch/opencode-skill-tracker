@@ -93,6 +93,80 @@ def test_plugin_item_detail_includes_history(seeded_plugin_db):
 
 
 # ---------------------------------------------------------------------------
+def test_plugin_surface_rows_list_a_registered_item_that_was_never_called(seeded_plugin_db):
+    """`dcp-compress` is in the inventory and has 0 usage rows — it must still show.
+
+    The Plugins page used to be built from `plugin_usage` alone, so a plugin that
+    registers eleven surfaces and gets called twice looks exactly like "the
+    tracker records nothing about plugins". That is a display gap, not a capture
+    gap, and it is the thing the owner kept reading as a broken recorder.
+    """
+    conn = db.open_db(seeded_plugin_db)
+    by_id = {r["item_id"]: r for r in db.plugin_surface_rows(conn)}
+    key = f"{DCP}/command/dcp-compress"
+    assert key in by_id, sorted(by_id)
+    never = by_id[key]
+    assert never["total"] == 0 and never["last_used"] is None, never
+    assert never["ever_called"] is False and never["registered"] is True, never
+
+
+def test_plugin_surface_rows_union_both_sides_without_double_counting(seeded_plugin_db):
+    """Registered-but-uncalled plus called-but-unregistered, each exactly once."""
+    conn = db.open_db(seeded_plugin_db)
+    rows = db.plugin_surface_rows(conn)
+    ids = [r["item_id"] for r in rows]
+    assert len(ids) == len(set(ids)), ids
+    by_id = {r["item_id"]: r for r in rows}
+    assert by_id[f"{DCP}/tool/compress"]["total"] == 4, by_id[f"{DCP}/tool/compress"]
+    assert by_id[f"{DCP}/tool/compress"]["registered"] is True
+    assert by_id[f"{DCP}/tool/compress"]["ever_called"] is True
+    assert by_id["(unknown)/tool/mystery_tool"]["registered"] is False
+    assert by_id["(unknown)/tool/mystery_tool"]["ever_called"] is True
+    assert set(ids) == {
+        f"{DCP}/tool/compress",
+        f"{DCP}/tool/expand",
+        f"{DCP}/command/dcp-compress",
+        f"{CONDUCTOR}/command/conductor:status",
+        "(unknown)/tool/mystery_tool",
+    }, ids
+
+
+def test_plugin_surface_rows_never_list_an_excluded_plugin(seeded_plugin_db):
+    """The tracker itself and the notifier are seen but deliberately unmonitored.
+
+    Listing their surfaces would invent rows for a plugin that is never going to
+    be measured, which is the false signal this page must not add.
+    """
+    conn = db.open_db(seeded_plugin_db)
+    names = {r["plugin_name"] for r in db.plugin_surface_rows(conn)}
+    assert "/cfg/plugin/skill-tracker.js" not in names, names
+    assert "@mohak34/opencode-notifier@0.4.0" not in names, names
+
+
+def test_plugin_surface_rows_on_a_db_without_the_inventory(seeded_plugin_db):
+    """An older database has usage rows and no inventory table at all."""
+    write = db.open_db(seeded_plugin_db, readonly=False)
+    write.execute("DROP TABLE plugin_inventory")
+    write.commit()
+    write.close()
+    conn = db.open_db(seeded_plugin_db)
+    rows = db.plugin_surface_rows(conn)
+    assert len(rows) == 4, [r["item_id"] for r in rows]
+    assert all(r["registered"] is False for r in rows), rows
+
+
+def test_plugin_item_detail_is_empty_for_a_registered_only_item(seeded_plugin_db):
+    """Why Enter on a 0 row warns instead of opening: there is genuinely no history.
+
+    The page shows the row, the detail query still returns nothing, and the screen
+    refuses to push an empty page. Both halves are deliberate, so pin the data side.
+    """
+    conn = db.open_db(seeded_plugin_db)
+    assert db.plugin_item_detail(conn, DCP, "command", "dcp-compress") in ([], None)
+    assert db.plugin_item_detail(conn, DCP, "tool", "compress"), "the called one has rows"
+    conn.close()
+
+
 # Inventory
 # ---------------------------------------------------------------------------
 def test_plugin_inventory_rows_joins_usage_and_parses_surface(seeded_plugin_db):

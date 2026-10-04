@@ -609,7 +609,11 @@ def _plugin_label(row) -> str:
 
 def _cli_plugins(conn, args) -> int:
     inventory = db.plugin_inventory_rows(conn)
-    items = db.plugin_stats_rows(conn)
+    # The union, not just the usage rows: a registered tool with no calls is a fact
+    # about the plugin, and printing only `plugin_usage` made it look like the
+    # recorder was blind to that plugin.
+    items = db.plugin_surface_rows(conn)
+    never = sum(1 for it in items if not it["ever_called"])
 
     if args.json:
         print(json.dumps({"inventory": inventory, "items": items}, ensure_ascii=False, indent=2))
@@ -645,6 +649,9 @@ def _cli_plugins(conn, args) -> int:
     shown = min(args.limit, len(items))
     print()
     print(f"Top items (showing {shown} of {len(items)})")
+    if never:
+        print(f"  {never} of them are registered but never called yet — a 0 means"
+              " nobody used that tool, not that the recorder missed it")
     print("-" * 56)
     for it in items[: args.limit]:
         sr = db.success_rate(it["total"], it["success"])
@@ -2132,7 +2139,10 @@ def _tui_classes() -> dict:
 
         def render_plugins(self, rows=None) -> None:
             if rows is None:
-                rows = db.plugin_stats_rows(self.app.conn)
+                # The union of what the scan registered and what was called: a
+                # tool nobody has used still has to appear, or an empty-looking
+                # page reads as a broken recorder.
+                rows = db.plugin_surface_rows(self.app.conn)
             try:
                 needle = self.query_one("#plugins-search", Input).value.strip().lower()
             except Exception:  # noqa: BLE001 - before mount in tests
@@ -2204,6 +2214,13 @@ def _tui_classes() -> dict:
                 )
             if excluded:
                 lines.append("[dim]Excluded: " + "   ·   ".join(excluded) + "[/dim]")
+            never = sum(1 for r in rows if not r["ever_called"])
+            if never:
+                lines.append(
+                    f"[dim]{never} registered surface item(s) never called yet"
+                    " — a 0 here means the tool was not used, not that it was"
+                    " missed[/dim]"
+                )
             activity_line = self._claude_mem_activity_line()
             if activity_line:
                 lines.append(activity_line)

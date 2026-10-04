@@ -1081,6 +1081,54 @@ def plugin_stats_rows(conn) -> list[dict]:
     return rows_to_dicts(conn.execute(sql))
 
 
+def plugin_surface_rows(conn) -> list[dict]:
+    """Every plugin surface the tracker knows about — whether or not it was called.
+
+    `plugin_stats_rows` can only report a triple that already has a usage row, so a
+    plugin with ten registered tools and two calls rendered as two rows and read as
+    "plugins are not being recorded". This unions the init-time inventory with the
+    usage totals and keeps two separate claims on each row: `registered` (the scan
+    saw it at OpenCode start) and `ever_called` (usage exists). Most-called first,
+    so the zero rows sit at the bottom rather than crowding out the signal.
+
+    Rows are still keyed by the unparseable `plugin/kind/item` id — see the note in
+    `render_plugins`; nothing downstream may split it back apart.
+    """
+    if not (_plugin_available(conn) or _plugin_inventory_available(conn)):
+        return []
+
+    rows: dict[str, dict] = {}
+
+    def slot(plugin, kind, item):
+        key = f"{plugin}/{kind}/{item}"
+        return rows.setdefault(key, {
+            "plugin_name": plugin, "kind": kind, "item_name": item, "item_id": key,
+            "total": 0, "success": 0, "errors": 0, "denied": 0, "last_used": None,
+            "uses_30d": 0, "sessions": 0, "projects": 0, "avg_ms": None,
+            "registered": False, "ever_called": False,
+        })
+
+    for r in plugin_stats_rows(conn):
+        row = slot(r["plugin_name"], r["kind"], r["item_name"])
+        for field in ("total", "success", "errors", "denied", "last_used",
+                      "uses_30d", "sessions", "projects", "avg_ms"):
+            row[field] = r[field]
+        row["ever_called"] = True
+
+    for inv in plugin_inventory_rows(conn):
+        # An excluded plugin has no surface to list: its absence is a decision, and
+        # printing a 0 for it would invent a row that can never become anything.
+        if inv["skipped"]:
+            continue
+        for kind, names in (("tool", inv["tools"]), ("command", inv["commands"])):
+            for item in names:
+                if isinstance(item, str) and item.strip():
+                    slot(inv["plugin_name"], kind, item.strip())["registered"] = True
+
+    return sorted(rows.values(), key=lambda r: (-r["total"], r["plugin_name"],
+                                                r["kind"], r["item_name"]))
+
+
 def plugin_inventory_rows(conn) -> list[dict]:
     """One row per plugin seen at init, joined with its usage totals.
 
