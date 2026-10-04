@@ -152,8 +152,8 @@ skillt
 ```
 
 Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs, and `TERM` neither
-empty nor `dumb`). Pages: **Dashboard / Skills / MCP / Plugins / Recent /
-Categories / Agents / Data** (Data is always last).
+empty nor `dumb`). Pages: **Dashboard / Skills / MCP / Plugins / Agents /
+Recent / Categories / Data** (Data is always last).
 
 The six Dashboard cards, each labelled below its number:
 

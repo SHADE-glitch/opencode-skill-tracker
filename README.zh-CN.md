@@ -100,7 +100,7 @@ skillt
 ```
 
 需要真正的终端（`stdin`/`stdout`/`stderr` 三者都必须是 TTY，且 `TERM` 不能为空或 `dumb`）。
-页面：**Dashboard / Skills / MCP / Plugins / Recent / Categories / Agents / Data**（Data 永远在最后）。
+页面：**Dashboard / Skills / MCP / Plugins / Agents / Recent / Categories / Data**（Data 永远在最后）。
 
 **Dashboard 顶部的 6 张卡片**（名字在下、数字在上）：
 

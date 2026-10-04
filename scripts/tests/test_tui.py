@@ -165,7 +165,7 @@ def test_tui_data_page_backup_and_export(seeded_db, tmp_path):
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for _ in range(7):          # Dashboard -> Skills -> MCP -> Plugins -> Recent -> Cats -> Data
+            for _ in range(7):   # Dashboard -> Skills -> MCP -> Plugins -> Agents -> Recent -> Cats -> Data
                 await pilot.press("tab")
                 await pilot.pause()
 
@@ -485,10 +485,11 @@ def test_duplicate_skill_names_do_not_crash(tmp_path):
 def test_tui_tab_order_is_pinned(seeded_db):
     """The tab contract: Data stays LAST; skills-adjacent tabs group together.
 
-    Order: Dashboard, Skills, MCP, Plugins, Recent, Categories, Agents, Data. The
-    walk to Data is counted from the id list instead of a hand-written number:
-    adding a tab used to mean editing a press loop, and forgetting it failed as
-    "the Data page is broken" rather than "the order changed".
+    Order: Dashboard, Skills, MCP, Plugins, Agents, Recent, Categories, Data — Agents
+    sits with the other "who did what" pages, right after Plugins. The walk to Data is
+    counted from the id list instead of a hand-written number: adding a tab used to
+    mean editing a press loop, and forgetting it failed as "the Data page is broken"
+    rather than "the order changed".
     """
     from textual.widgets import TabPane
 
@@ -499,7 +500,7 @@ def test_tui_tab_order_is_pinned(seeded_db):
             ids = [p.id for p in app.screen.query(TabPane)]
             assert ids == [
                 "tab-dash", "tab-skills", "tab-mcp", "tab-plugins",
-                "tab-recent", "tab-cats", "tab-agents", "tab-data",
+                "tab-agents", "tab-recent", "tab-cats", "tab-data",
             ], ids
             assert ids[-1] == "tab-data", "Data is the contract every Data test leans on"
 

@@ -1516,6 +1516,13 @@ def _tui_classes() -> dict:
                     t = DataTable(id="plugins-table", zebra_stripes=True)
                     t.cursor_type = "row"
                     yield t
+                with TabPane("Agents", id="tab-agents"):
+                    yield Static(id="agents-label")
+                    t = DataTable(id="agents-table", zebra_stripes=True)
+                    # `row`, not the default `cell`: a cell cursor leaves
+                    # `active_row` None and Enter then selects nothing.
+                    t.cursor_type = "row"
+                    yield t
                 with TabPane("Recent", id="tab-recent"):
                     yield Static(
                         "[dim]Skills + MCP + plugins in one timeline  ·  "
@@ -1528,13 +1535,6 @@ def _tui_classes() -> dict:
                 with TabPane("Categories", id="tab-cats"):
                     yield Static(id="cats-label")
                     t = DataTable(id="cats-table", zebra_stripes=True)
-                    t.cursor_type = "row"
-                    yield t
-                with TabPane("Agents", id="tab-agents"):
-                    yield Static(id="agents-label")
-                    t = DataTable(id="agents-table", zebra_stripes=True)
-                    # `row`, not the default `cell`: a cell cursor leaves
-                    # `active_row` None and Enter then selects nothing.
                     t.cursor_type = "row"
                     yield t
                 with TabPane("Data", id="tab-data"):
