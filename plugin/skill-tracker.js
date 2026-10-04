@@ -52,9 +52,19 @@ const DB_PATH =
   path.join(HOME, ".local/share/opencode/skill-usage.db");
 const SKILLS_DIR =
   process.env.OPENCODE_SKILL_TRACKER_SKILLS_DIR || path.join(CFG_DIR, "skills");
-const LOG_PATH =
-  process.env.OPENCODE_SKILL_TRACKER_LOG ||
-  path.join(CFG_DIR, "logs/skill-tracker.log");
+// The log `doctor log.errors` reads. `OPENCODE_SKILL_TRACKER_LOG` moves it.
+const SHARED_LOG_PATH = path.join(CFG_DIR, "logs/skill-tracker.log");
+const LOG_PATH = process.env.OPENCODE_SKILL_TRACKER_LOG || SHARED_LOG_PATH;
+// `__selftest()` isolates its database, and it has to isolate this too: the
+// documented hand-run recipe sets only `OPENCODE_SKILL_TRACKER_DB`, so a selftest
+// that failed wrote `[err] selftest FAIL` into the log the owner's doctor counts,
+// mixed in with the real host's lines. The override is a `let` so the selftest can
+// move it for the duration of its own run; an explicit path from the runner is
+// honoured, because that runner has already isolated it on purpose.
+let LOG_PATH_OVERRIDE = LOG_PATH;
+function logPath() {
+  return LOG_PATH_OVERRIDE;
+}
 const SKILL_TOOL = process.env.OPENCODE_SKILL_TRACKER_TOOL || "skill";
 const DISABLED = process.env.OPENCODE_SKILL_TRACKER_DISABLE === "1";
 const DEBUG = process.env.OPENCODE_SKILL_TRACKER_DEBUG === "1";
@@ -109,8 +119,9 @@ const PLUGIN_EXCLUDE_EXTRA = (process.env.OPENCODE_SKILL_TRACKER_PLUGIN_EXCLUDE 
 // ---------------------------------------------------------------------------
 function log(level, msg) {
   try {
-    fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
-    fs.appendFileSync(LOG_PATH, `${new Date().toISOString()} [${level}] ${msg}\n`);
+    const target = logPath();
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.appendFileSync(target, `${new Date().toISOString()} [${level}] ${msg}\n`);
   } catch {
     /* logging must never break anything */
   }
@@ -2282,6 +2293,14 @@ export async function __selftest() {
     if (!cond) log("err", "selftest FAIL: " + label);
   };
 
+  // Same isolation, different file: unless the runner chose a log explicitly, a
+  // selftest writes beside its own throwaway database and nowhere else.
+  if (logPath() === SHARED_LOG_PATH) {
+    LOG_PATH_OVERRIDE = path.join(path.dirname(envDb), "skill-tracker-selftest.log");
+  }
+  assert(logPath() !== SHARED_LOG_PATH, "selftest never logs to the shared plugin log");
+  log("info", `selftest start db=${envDb} log=${logPath()}`);
+
   // Pin the MCP server set so detection never reads the developer's real
   // opencode.json. Two servers, one a prefix of the other, to exercise the
   // longest-prefix match.
@@ -2321,6 +2340,7 @@ export async function __selftest() {
     // Bail before any db.query() so a failed init reports cleanly instead of
     // throwing out of the selftest.
     spawnGit = prevSpawnGit;
+    LOG_PATH_OVERRIDE = LOG_PATH;      // same reason as at the normal end
     try {
       fs.unlinkSync(selftestPluginPath);
     } catch {
@@ -2800,6 +2820,17 @@ export async function __selftest() {
     /* ignore */
   }
   const failed = results.filter((r) => !r.ok);
+  // Written before the override goes back, so the selftest's own record ends up in
+  // the selftest's file — including a failed run's `[err]` lines.
+  log(
+    failed.length ? "err" : "info",
+    `selftest done: ${results.length - failed.length}/${results.length} passed` +
+      (failed.length ? " FAILED" : "")
+  );
+  // A selftest and a live session can share one module instance: leave the log
+  // pointed at the scratch file and every later real `[err]` would vanish from the
+  // log doctor reads.
+  LOG_PATH_OVERRIDE = LOG_PATH;
   for (const r of results) console.log(`${r.ok ? "PASS" : "FAIL"}  ${r.label}`);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);
   return failed.length === 0;

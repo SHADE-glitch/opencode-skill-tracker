@@ -136,7 +136,10 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
                    # The subagent round: three names a future editor would have to
                    # delete on purpose to make the docs disagree with the code.
                    "subagent_usage", "SUBAGENT_LABEL_RE", "Spawned",
-                   "plugin_surface_rows", "ever_called"):
+                   "plugin_surface_rows", "ever_called",
+                   # The selftest log isolation, named the same in both languages.
+                   "logPath()", "OPENCODE_SKILL_TRACKER_LOG",
+                   "skill-tracker-selftest.log"):
         assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
 
     assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"

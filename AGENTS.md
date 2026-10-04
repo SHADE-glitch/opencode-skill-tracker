@@ -162,7 +162,17 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   `SCHEMA_VERSION`, then stamps it. Bump `SCHEMA_VERSION` whenever a view
   definition changes, or existing databases keep the old view.
 - `__selftest()` requires `OPENCODE_SKILL_TRACKER_DB` to point somewhere other
-  than the production database; it refuses to run otherwise.
+  than the production database; it refuses to run otherwise. It isolates its
+  **log** the same way: unless `OPENCODE_SKILL_TRACKER_LOG` names a path of its
+  own, `__selftest` redirects writes to `skill-tracker-selftest.log` beside that
+  temp database, because the documented hand-run recipe sets only the DB and a
+  failed selftest used to leave `[err] selftest FAIL` lines in the log
+  `skillt doctor`'s `log.errors` counts. The redirect is undone at both exits
+  (normal and aborted) — a selftest and a live session can share one module
+  instance, and leaving the override in place would hide every later real error.
+  Guards: `test_a_hand_run_selftest_never_writes_the_shared_plugin_log`,
+  `test_an_explicit_selftest_log_is_honoured_not_overridden`, and the selftest's
+  own `selftest never logs to the shared plugin log` assertion.
 
 ## Conventions
 

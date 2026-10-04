@@ -605,6 +605,56 @@ def test_loader_does_not_enumerate_exports(tmp_path):
 
 
 @requires_bun
+def test_a_hand_run_selftest_never_writes_the_shared_plugin_log(tmp_path):
+    """The documented recipe isolates the database and says nothing about the log.
+
+    That is how four `[err] selftest FAIL:` lines landed in the owner's live
+    `~/.config/opencode/logs/skill-tracker.log` on 2026-10-04: `doctor`'s
+    `log.errors` counts them forever, and a green run left no trace at all. The
+    plugin has to isolate its own log, because the runner clearly will not.
+    """
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    env = _isolated(tmp_path)
+    env["OPENCODE_SKILL_TRACKER_CONFIG_DIR"] = str(cfg)
+    del env["OPENCODE_SKILL_TRACKER_LOG"]          # the hand-run shape
+    r = _run_bun("""
+    const m = await import(process.env.PLUGIN_PATH);
+    const ok = await m.__selftest();
+    console.log(ok ? 'SELFTEST_OK' : 'SELFTEST_FAILED');
+    """, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "SELFTEST_OK" in r.stdout, r.stdout
+    assert "FAIL " not in r.stdout, r.stdout
+
+    shared = cfg / "logs" / "skill-tracker.log"
+    assert not shared.exists(), \
+        f"selftest wrote into the config's shared log: {shared.read_text()[:400]}"
+    scratch = tmp_path / "skill-tracker-selftest.log"
+    assert scratch.is_file(), "a successful selftest must leave its own trace"
+    text = scratch.read_text(encoding="utf-8")
+    assert "selftest start" in text and "selftest done" in text, text[:300]
+    assert "[err]" not in text, text[:300]
+
+
+@requires_bun
+def test_an_explicit_selftest_log_is_honoured_not_overridden(tmp_path):
+    """The redirect is a default, not a demand: the suite's own harness sets a path."""
+    chosen = tmp_path / "chosen.log"
+    env = _isolated(tmp_path)
+    env["OPENCODE_SKILL_TRACKER_LOG"] = str(chosen)
+    r = _run_bun("""
+    const m = await import(process.env.PLUGIN_PATH);
+    const ok = await m.__selftest();
+    console.log(ok ? 'SELFTEST_OK' : 'SELFTEST_FAILED');
+    """, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert chosen.is_file(), "an explicit OPENCODE_SKILL_TRACKER_LOG must win"
+    assert "selftest done" in chosen.read_text(encoding="utf-8")
+    assert not (tmp_path / "skill-tracker-selftest.log").exists()
+
+
+@requires_bun
 def test_selftest_still_refuses_without_isolated_db(tmp_path):
     """The H2 guard must survive: a bare `__selftest()` never touches prod."""
     script = """
@@ -645,7 +695,10 @@ def test_selftest_is_green_end_to_end(tmp_path):
     m = re.search(r"\n(\d+)/(\d+) passed", r.stdout)
     assert m, r.stdout
     assert m.group(1) == m.group(2), r.stdout
-    assert int(m.group(2)) >= 45, f"selftest lost assertions: {m.group(0)}"
+    # 62+ assertions ship today (53 before the subagent drive, 61 after it, +1 for
+    # the log-isolation guard). The floor is deliberately just under the real count:
+    # a deleted assertion should fail here, not silently lower the bar.
+    assert int(m.group(2)) >= 62, f"selftest lost assertions: {m.group(0)}"
 
 
 @requires_bun

@@ -386,6 +386,7 @@ OpenCode runtime
 | `OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE` | `1` stops plugin tool/command recording only |
 | `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE` | `1` stops recording that a subagent was started (the builtin `task` tool). The other three streams are unaffected |
 | `OPENCODE_SKILL_TRACKER_DISABLE` | `1` disables the plugin entirely |
+| `OPENCODE_SKILL_TRACKER_LOG` | the plugin's own log file (default `~/.config/opencode/logs/skill-tracker.log`, the one `skillt doctor` reads). `__selftest()` ignores the **default** value and writes beside its temp database instead — a failed selftest must not land in the owner's error count |
 | `OPENCODE_SKILL_TRACKER_DEBUG` | `1` enables per-call debug lines in the plugin log |
 | `OPENCODE_SKILL_TRACKER_STREAMS` | read side: comma list of streams `doctor` may call stalled (default: all three). An excluded stream is still printed, marked `(excluded)` |
 | `SKILLT_SCRIPTS` | override the `scripts/` directory the launcher uses |
@@ -722,6 +723,15 @@ Always run it like this:
 OPENCODE_SKILL_TRACKER_DB=/tmp/st-selftest-$$.db \
   bun -e 'import("~/.config/opencode/plugin/skill-tracker.js").then(m => m.__selftest())'
 ```
+
+The selftest isolates its **log** as well as its database: unless
+`OPENCODE_SKILL_TRACKER_LOG` names a path of its own, its lines go to
+`skill-tracker-selftest.log` beside that temp database, never to the
+`~/.config/opencode/logs/skill-tracker.log` that `skillt doctor` reads. Before this,
+a hand-run selftest that failed wrote `[err] selftest FAIL` into the shared log and
+`doctor log.errors` counted them as plugin errors forever. A successful run now
+leaves its own record (`selftest start` / `selftest done: N/N passed`) where you can
+find it, and nowhere else.
 
 If the database was polluted historically, clean it with
 `skillt cleanup-selftest --yes`.

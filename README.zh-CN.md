@@ -432,6 +432,8 @@ rm -rf ~/.local/share/opencode/backups
 
   如果历史上被污染过，用 `skillt cleanup-selftest --yes` 清理。
 
+- **自测现在连日志一起隔离。** 它会写自己的 `skill-tracker-selftest.log`，位置就在那个临时库旁边——除非你用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定了别的路径（那样就尊重你的选择）。在此之前，一次**手工跑的失败自测**会把 `[err] selftest FAIL` 写进 `~/.config/opencode/logs/skill-tracker.log`，也就是 `skillt doctor` 读的那份日志，于是 `log.errors` 会长期把它们当成插件故障来报。现在成功的运行也会留下自己的两行（`selftest start` / `selftest done: N/N passed`），而且只留在自己的文件里。
+
 ### 插件导出契约（重要）
 
 - **`plugin/skill-tracker.js` 只能通过 `export default { id, server }` 暴露插件工厂。**
