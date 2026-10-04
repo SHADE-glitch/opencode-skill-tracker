@@ -62,6 +62,16 @@ const DEBUG = process.env.OPENCODE_SKILL_TRACKER_DEBUG === "1";
 const MCP_DISABLED = process.env.OPENCODE_SKILL_TRACKER_MCP_DISABLE === "1";
 // Plugin-provided tool/command recording has a third one, for the same reason.
 const PLUGIN_DISABLED = process.env.OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE === "1";
+// And a fourth for subagent runs, which are the one thing here that comes from a
+// builtin tool: an owner who does not want the tracker looking at `task` at all
+// can turn this off without touching the other three streams.
+const SUBAGENT_DISABLED =
+  process.env.OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE === "1";
+// The builtin tool that starts a subagent, and the shape of the one field of its
+// arguments this plugin is willing to look at: a name, not prose.
+const TASK_TOOL = "task";
+const SUBAGENT_MAX = 40;
+const SUBAGENT_LABEL_RE = /^[A-Za-z0-9_.:-]{1,40}$/;
 
 const SANITIZE_MAX = 120;
 const META_TEXT_MAX = 200; // cap for sanitized free-text metadata (title/error)
@@ -203,6 +213,30 @@ CREATE TABLE IF NOT EXISTS plugin_inventory (
   first_seen  TEXT NOT NULL,
   last_seen   TEXT NOT NULL
 );
+
+-- One row per subagent the host started through the builtin task tool. It is
+-- not a fourth usage stream: the columns are identifiers only, because the same
+-- payload carries the task text and the subagent's report. Keyed by the *parent*
+-- session and the call, so a spawn that is seen twice (hook plus event) is one row.
+CREATE TABLE IF NOT EXISTS subagent_usage (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_session_id TEXT    NOT NULL,
+  child_session_id  TEXT,
+  call_id           TEXT,
+  subagent          TEXT,
+  project_path      TEXT,
+  trigger_type      TEXT    NOT NULL
+                    CHECK (trigger_type IN ('tool_call','event_detected','manual')),
+  status            TEXT    NOT NULL DEFAULT 'unknown'
+                    CHECK (status IN ('success','error','ask','unknown')),
+  timestamp         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  duration_ms       INTEGER,
+  metadata          TEXT,
+  UNIQUE (parent_session_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_name    ON subagent_usage(subagent);
+CREATE INDEX IF NOT EXISTS idx_subagent_ts      ON subagent_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_subagent_session ON subagent_usage(parent_session_id);
 `;
 
 // Views use json_extract (JSON1). Wrapped separately so a missing JSON1 build
@@ -371,6 +405,39 @@ ON CONFLICT(session_id, call_id) DO UPDATE SET
 WHERE plugin_usage.duration_ms IS NULL
    OR plugin_usage.status IN ('unknown','ask')
    OR (excluded.status = 'error' AND plugin_usage.status = 'success')
+`;
+
+// Subagent runs, keyed by the parent session plus the call id. Two paths can see
+// the same spawn (the hook pair and the event stream), and which one the host
+// actually fires for a builtin is not something this plugin assumes — so both
+// write, and the conflict rule fills in whatever the first one left unknown
+// instead of overwriting it. Same one-way status rule as the other tables.
+const UPSERT_SUBAGENT_SQL = `
+INSERT INTO subagent_usage
+  (parent_session_id, child_session_id, call_id, subagent, project_path,
+   trigger_type, status, timestamp, duration_ms, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, ?)
+ON CONFLICT(parent_session_id, call_id) DO UPDATE SET
+  child_session_id = COALESCE(subagent_usage.child_session_id, excluded.child_session_id),
+  subagent         = CASE
+                       WHEN subagent_usage.subagent IS NULL
+                            AND excluded.subagent IS NOT NULL
+                        THEN excluded.subagent
+                       ELSE subagent_usage.subagent END,
+  duration_ms      = COALESCE(subagent_usage.duration_ms, excluded.duration_ms),
+  status           = CASE
+                       WHEN excluded.status = 'error' AND subagent_usage.status = 'success'
+                         THEN 'error'
+                       WHEN subagent_usage.status IN ('success','error')
+                         THEN subagent_usage.status
+                       ELSE excluded.status END,
+  metadata         = COALESCE(subagent_usage.metadata, excluded.metadata),
+  project_path     = COALESCE(subagent_usage.project_path, excluded.project_path)
+WHERE subagent_usage.duration_ms IS NULL
+   OR subagent_usage.status = 'unknown'
+   OR subagent_usage.subagent IS NULL
+   OR subagent_usage.child_session_id IS NULL
+   OR (excluded.status = 'error' AND subagent_usage.status = 'success')
 `;
 
 // One row per plugin seen at init. first_seen is deliberately never updated,
@@ -1601,6 +1668,102 @@ async function recordPluginUsage(
   }
 }
 
+// A subagent's name is a config token (`general`, `explore`). Anything that is
+// not label-shaped becomes null rather than a sentence on the terminal — the same
+// gate the read side applies to a foreign enum (`_short_label`), applied here at
+// the door so nothing prose-shaped can ever be stored.
+// It is a shape test, not a prose detector: a 39-character hyphenated token is
+// indistinguishable from an agent name and would pass. What it buys is the bound
+// that matters — no spaces, no path, no newline, at most 40 characters.
+function subagentLabel(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return SUBAGENT_LABEL_RE.test(text) ? text.slice(0, SUBAGENT_MAX) : null;
+}
+
+// One spawn: which agent ran, which session it ran in, whether it finished, how
+// long it took. Nothing else from the payload is read — the sibling fields of
+// `subagent_type` carry the task in prose and the subagent's report in prose, and
+// a failed one reports prose too, so this function names no field but these.
+async function recordSubagentRun({
+  parentSessionID, childSessionID, callID, subagent,
+  projectPath, triggerType, status, durationMs,
+}) {
+  if (!db || SUBAGENT_DISABLED || !parentSessionID) return;
+  try {
+    const { ctx, dir, branch } = await resolveWriteContext(parentSessionID, projectPath);
+    const metadata = buildMetadata(
+      ctx,
+      branch,
+      callID,
+      triggerType === "event_detected" ? "event" : "hook",
+      subagent ? `subagent/${subagent}` : "subagent",
+      null
+    );
+    db.query(UPSERT_SUBAGENT_SQL).run(
+      parentSessionID,
+      childSessionID ?? null,
+      callID ?? null,
+      subagent ?? null,
+      dir,
+      triggerType,
+      status || "unknown",
+      durationMs ?? null,
+      JSON.stringify(metadata)
+    );
+    debug(
+      `recorded subagent ${subagent || "?"} (${triggerType}/${status}) parent=${parentSessionID} call=${callID}`
+    );
+  } catch (e) {
+    log("err", "recordSubagentRun: " + errMsg(e));
+  }
+}
+
+// The event view of a task call. Structural fields only: the subagent's name in
+// the arguments, the child session id in state metadata, the timing bracket, and
+// the status. `part.sessionID` is the parent; the metadata pair is preferred when
+// the host fills it, because that is the session the subagent actually ran in.
+async function trackSubagentPart(part) {
+  const st = part.state || {};
+  const md = st.metadata || {};
+  const label = subagentLabel(st.input && st.input.subagent_type);
+  const child = typeof md.sessionId === "string" ? md.sessionId : null;
+  const parent =
+    typeof md.parentSessionId === "string" ? md.parentSessionId : part.sessionID;
+  const key = callKey(parent, part.callID);
+
+  if (st.status === "pending" || st.status === "running") {
+    if (!callCtx.has(key)) {
+      setCapped(callCtx, key, {
+        sessionID: parent,
+        startMs: st.time && st.time.start ? st.time.start : Date.now(),
+        kind: "subagent",
+        subagent: label,
+        child,
+      });
+    }
+    return;
+  }
+
+  if (st.status === "completed" || st.status === "error") {
+    const ctx = callCtx.get(key);
+    callCtx.delete(key);
+    const duration =
+      st.time && st.time.start && st.time.end
+        ? st.time.end - st.time.start
+        : ctx && ctx.startMs ? Date.now() - ctx.startMs : null;
+    await recordSubagentRun({
+      parentSessionID: parent,
+      childSessionID: child ?? (ctx && ctx.child) ?? null,
+      callID: part.callID,
+      subagent: label ?? (ctx && ctx.subagent) ?? null,
+      triggerType: "event_detected",
+      status: st.status === "completed" ? "success" : "error",
+      durationMs: duration,
+    });
+  }
+}
+
 function errMsg(e) {
   return e && e.message ? e.message : String(e);
 }
@@ -1644,6 +1807,18 @@ async function skillTrackerPlugin(input) {
     // -- primary path -------------------------------------------------------
     "tool.execute.before": safe("tool.execute.before", async (hookInput, hookOutput) => {
       if (!hookInput) return;
+      // A builtin, so `classify` would drop it: recorded as a spawn, never as usage.
+      if (hookInput.tool === TASK_TOOL) {
+        const a = hookOutput && hookOutput.args;
+        setCapped(callCtx, callKey(hookInput.sessionID, hookInput.callID), {
+          sessionID: hookInput.sessionID,
+          startMs: Date.now(),
+          kind: "subagent",
+          subagent: subagentLabel(a && a.subagent_type),
+          child: null,
+        });
+        return;
+      }
       const c = classify(hookInput.tool);
       if (!c) return;
       const args = hookOutput && hookOutput.args;
@@ -1665,6 +1840,21 @@ async function skillTrackerPlugin(input) {
 
     "tool.execute.after": safe("tool.execute.after", async (hookInput) => {
       if (!hookInput) return;
+      if (hookInput.tool === TASK_TOOL) {
+        const key = callKey(hookInput.sessionID, hookInput.callID);
+        const ctx = callCtx.get(key);
+        callCtx.delete(key);
+        await recordSubagentRun({
+          parentSessionID: hookInput.sessionID,
+          childSessionID: (ctx && ctx.child) || null,
+          callID: hookInput.callID,
+          subagent: (ctx && ctx.subagent) || null,
+          triggerType: "tool_call",
+          status: "success",
+          durationMs: ctx && ctx.startMs ? Date.now() - ctx.startMs : null,
+        });
+        return;
+      }
       const c = classify(hookInput.tool);
       if (!c) return;
       const key = callKey(hookInput.sessionID, hookInput.callID);
@@ -1828,6 +2018,12 @@ async function skillTrackerPlugin(input) {
         case "message.part.updated": {
           const part = props.part;
           if (!part || part.type !== "tool") return;
+          // Checked before `classify`, which returns null for a builtin and would
+          // drop the only witness that a subagent ran.
+          if (part.tool === TASK_TOOL) {
+            await trackSubagentPart(part);
+            return;
+          }
           const c = classify(part.tool);
           if (!c) return;
           const st = part.state || {};
@@ -2233,6 +2429,87 @@ export async function __selftest() {
   assert(
     errMeta.error && errMeta.error.includes("[REDACTED]") && !errMeta.error.includes("sk-abcdefgh"),
     "error text is sanitized before storage"
+  );
+
+  // --- subagent runs -------------------------------------------------------
+  // The builtin `task` tool is not usage, so nothing else in this database says a
+  // subagent ran. Its payload carries the task and the report in prose: every text
+  // field below gets a sentinel, and the row must hold none of it.
+  const TASK_TEXT = "SENTINEL-TASK-TEXT-MUST-NEVER-BE-STORED";
+  await plugin["tool.execute.before"](
+    { tool: "task", sessionID: sid, callID: "call-test-task-1" },
+    { args: { subagent_type: "general", description: TASK_TEXT, prompt: TASK_TEXT + " " + TASK_TEXT } }
+  );
+  await plugin["tool.execute.after"]({ tool: "task", sessionID: sid, callID: "call-test-task-1" });
+  const sub1 = db.query("SELECT * FROM subagent_usage WHERE call_id=?").get("call-test-task-1");
+  assert(
+    sub1 && sub1.subagent === "general" && sub1.parent_session_id === sid,
+    "the hook pair records the spawn and the subagent name"
+  );
+  assert(
+    sub1 && sub1.trigger_type === "tool_call" && sub1.status === "success" && sub1.duration_ms !== null,
+    "hook path stamps tool_call/success with a bracketed duration"
+  );
+  assert(sub1 && sub1.child_session_id === null, "a hook cannot know the child session; it stays unknown");
+
+  // The same call seen by the event stream must fill in the child session rather
+  // than write a second row — which path the host fires for a builtin is not
+  // assumed here, so both do and the dedup decides.
+  await plugin.event({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "pt1", sessionID: sid, messageID: "mt1", type: "tool", callID: "call-test-task-1", tool: "task",
+          state: {
+            status: "completed",
+            input: { subagent_type: "general", description: TASK_TEXT, prompt: TASK_TEXT },
+            title: TASK_TEXT, output: TASK_TEXT,
+            metadata: { sessionId: "ses-child-1", parentSessionId: sid, truncated: false },
+            time: { start: 3000, end: 3750 },
+          },
+        },
+      },
+    },
+  });
+  const sub1b = db.query("SELECT * FROM subagent_usage WHERE call_id=?").get("call-test-task-1");
+  assert(sub1b && sub1b.child_session_id === "ses-child-1", "the event fills the child session onto the same row");
+  assert(
+    db.query("SELECT COUNT(*) AS n FROM subagent_usage").get().n === 1,
+    "two paths, one subagent row"
+  );
+
+  // Event-only spawn, failed, with a name that is not label-shaped: counted, and
+  // never named. Prose arriving in the name field is the leak this guards.
+  await plugin.event({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "pt2", sessionID: sid, messageID: "mt2", type: "tool", callID: "call-test-task-2", tool: "task",
+          state: {
+            status: "error",
+            input: { subagent_type: TASK_TEXT + " runs a corpus job",
+                     description: TASK_TEXT },
+            error: TASK_TEXT,
+            metadata: { sessionId: "ses-child-2", parentSessionId: sid },
+            time: { start: 4000, end: 4200 },
+          },
+        },
+      },
+    },
+  });
+  const sub2 = db.query("SELECT * FROM subagent_usage WHERE call_id=?").get("call-test-task-2");
+  assert(
+    sub2 && sub2.subagent === null && sub2.status === "error" && sub2.duration_ms === 200,
+    "event error path, and a non-label name is dropped rather than stored"
+  );
+
+  const subBlob = JSON.stringify(db.query("SELECT * FROM subagent_usage").all());
+  assert(!subBlob.includes(TASK_TEXT), "no task text, report or error may reach the subagent table");
+  assert(
+    !/prompt|description|title|output/i.test(Object.keys(sub1).concat(Object.keys(sub2)).join(",")),
+    "the table itself holds no prose column to leak through"
   );
 
   // Permission denial via hook.

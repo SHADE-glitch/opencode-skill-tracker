@@ -12,7 +12,7 @@ SYSTEMD = ROOT / "skill-tracker" / "systemd"
 # Every documented limitation, in both languages. M14-M18 came out of the
 # full capture/UI audit; M19 out of the privacy cleanup that followed it; M22-M23
 # out of the claude-mem neighbour and the Agents page.
-LIMITATIONS = tuple(f"M{i}" for i in range(1, 24))
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 25))
 
 
 def _text():
@@ -51,6 +51,8 @@ def test_readme_documents_every_known_limitation():
         "只数、不读",                    # `q=` is the user's own prompt text
         "共用一个总截止时间",            # three endpoints, one budget
         "采集顺序",                        # M23: `(unknown)` is not anonymous work
+        # M24: the subagent stream's two promises, easy to lose in a summary.
+        "subagent_usage", "Spawned", "散文探测器",
     ):
         assert keyword in text, f"known-limitation detail missing: {keyword}"
 
@@ -79,8 +81,17 @@ def test_english_readme_documents_every_known_limitation():
         "counted, never read",   # M22: `q=` holds the user's prompt text
         "one shared deadline",   # M22: three endpoints, not three timeouts
         "capture order",         # M23: `(unknown)` is not anonymous work
+        # M24: the gate is a shape bound, and saying "prose detector" is the lie
+        # a future edit would tell. Both READMEs must also name the two things
+        # the owner looks for on screen.
+        "not a prose detector",
+        "subagent_usage",
+        "Spawned",
     ):
         assert keyword in text, f"English limitation detail missing: {keyword}"
+    zh = _text()
+    for keyword in ("散文探测器", "subagent_usage", "Spawned"):
+        assert keyword in zh, f"Chinese limitation detail missing: {keyword}"
 
 
 # --- maintenance checklists -----------------------------------------------
@@ -121,7 +132,11 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
     # categories instead of levels, and put the HTTP probe on a repaint path.
     for needle in ("set_interval", "active_app", "row_targets", "schema_version",
                    "CLAUDE_MEM_LOG_BYTES_CAP", "truncated", "unparsed",
-                   "_LOG_LINE_RE", "claude_mem_worker"):
+                   "_LOG_LINE_RE", "claude_mem_worker",
+                   # The subagent round: three names a future editor would have to
+                   # delete on purpose to make the docs disagree with the code.
+                   "subagent_usage", "SUBAGENT_LABEL_RE", "Spawned",
+                   "plugin_surface_rows", "ever_called"):
         assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
 
     assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"

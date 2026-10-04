@@ -5,7 +5,9 @@ Guidance for AI coding agents working in this repository.
 ## What this is
 
 An OpenCode plugin plus a CLI/TUI that records **skill, MCP tool and plugin
-usage** into a local SQLite database. Three layers, in dependency order:
+usage** into a local SQLite database, plus one builtin exception: that a
+**subagent** was started (`subagent_usage`, identifiers only — see the rule
+below). Three layers, in dependency order:
 
 1. `plugin/skill-tracker.js` — the **only writer**. Runs inside OpenCode's Bun
    runtime. Listens on `tool.execute.before` / `tool.execute.after` /
@@ -108,6 +110,20 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   calls `Object.keys()` and must never read a property. The MCP server list is
   resolved once at init and detection fails closed (no servers → nothing
   written). `OPENCODE_SKILL_TRACKER_MCP_DISABLE=1` is the kill switch.
+- **The one builtin that is recorded is `task`, and only as an event.** A
+  subagent spawn goes in `subagent_usage` — `subagent`, the two session ids,
+  `status`, `trigger_type`, `duration_ms` — and nothing else, because the same
+  payload carries the task in prose (`prompt`), a prose `description`, a prose
+  `title`, and the subagent's own prose report. `recordSubagentRun`,
+  `trackSubagentPart` and `subagentLabel` name no other field, and
+  `test_the_subagent_writer_never_names_a_text_field` scans those bodies to keep
+  that true while `__selftest` drives a task part whose text fields all carry a
+  sentinel. The name is admitted only if `SUBAGENT_LABEL_RE` accepts it (no
+  spaces, no path, ≤ 40 characters): a shape bound, not a prose detector. Do not
+  fold spawns into `Total`, do not add another builtin to this path without the
+  same field audit, and do not assume either write path (hook pair vs
+  `message.part.updated`) is the one the host fires — both write, and
+  `UNIQUE(parent_session_id, call_id)` decides.
 - **Plugin attribution is deliberately asymmetric.** Non-builtin tools fail
   open to `(unknown)` when the static scan cannot resolve an owner; commands
   fail closed because there is no builtin command allowlist. The default plugin
@@ -156,7 +172,7 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   `README.zh-CN.md` (Chinese, the exhaustive reference), plus
   `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
   `scripts/tests/test_readme.py` asserts that **both** READMEs document every
-  limitations M1–M21 (the range `test_readme.py` pins), that `README.zh-CN.md`
+  limitations M1–M24 (the range `test_readme.py` pins), that `README.zh-CN.md`
   documents every section, and that
   both maintenance checklists name the same checks, commands and invariants —
   update all four when behaviour changes, or the suite fails.
@@ -196,7 +212,8 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - **Export allowlists metadata** (`EXPORT_METADATA_KEYS` in `skill_db.py`).
   Older builds stored the user's prompt text as `metadata.summary`; the writer
   is gone but rows in real databases are not (`skillt scrub-metadata`). The
-  export document is `schema_version = 5` (5 = `plugin_inventory.scope`) — bump it with any shape change.
+  export document is `schema_version = 6` (5 = `plugin_inventory.scope`,
+  6 = the `subagent_usage` key) — bump it with any shape change.
 - Commit messages follow Conventional Commits (`feat:`, `docs:`, `chore:`,
   `fix:`), code before docs.
 - The test suite must be green before pushing. Tests locate files via

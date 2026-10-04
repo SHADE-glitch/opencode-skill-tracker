@@ -1882,14 +1882,18 @@ def _tui_classes() -> dict:
             """Calls per agent, most first. Read-only, no filter, no sort cycle."""
             table = self.query_one("#agents-table", DataTable)
             table.clear(columns=True)
+            # `Spawned` sits after `Total`, never inside it: the four numbers before
+            # it are calls this tracker measured, and a spawn is one event that may
+            # contain none of them.
             table.add_columns(
-                "Agent", "Skill", "MCP", "Plugin", "Total", "Success rate", "Last used"
+                "Agent", "Skill", "MCP", "Plugin", "Total", "Spawned",
+                "Success rate", "Last used"
             )
             rows = db.agent_usage_rows(conn)
             for r in rows:
                 table.add_row(
                     r["agent"] or "(unknown)", str(r["skill"]), str(r["mcp"]),
-                    str(r["plugin"]), str(r["total"]),
+                    str(r["plugin"]), str(r["total"]), str(r["subagent"]),
                     rate_text(r["total"], r["success"]),
                     db.fmt_time(r["last_used"]),
                 )
@@ -1901,6 +1905,20 @@ def _tui_classes() -> dict:
                 f" ({unknown} such call(s) now). It is not 'the agent that ran this"
                 " call'. See M23.[/dim]"
             )
+            subs = db.subagent_summary_rows(conn)
+            if subs:
+                bits = []
+                for s in subs:
+                    label = s["subagent"] or "(unnamed)"
+                    tail = f", {s['errors']} failed" if s["errors"] else ""
+                    last = f", last {db.fmt_time(s['last_used'])}" if s["last_used"] else ""
+                    bits.append(f"{label} ×{s['runs']}{tail}{last}")
+                note += (
+                    "\n[dim]Subagents the host started: " + "   ·   ".join(bits)
+                    + " — a subagent is measured by the same three streams, so one"
+                    " with no row of its own made no measured calls (a builtin-only"
+                    " run has no measured calls). See M24.[/dim]"
+                )
             self._page_status_base["tab-agents"] = note
             self._paint_status("tab-agents")
 

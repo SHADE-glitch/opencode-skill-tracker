@@ -160,6 +160,30 @@ CREATE TABLE IF NOT EXISTS plugin_inventory (
   first_seen  TEXT NOT NULL,
   last_seen   TEXT NOT NULL
 );
+
+-- One row per subagent the host started through the builtin task tool. It is
+-- not a fourth usage stream: the columns are identifiers only, because the same
+-- payload carries the task text and the subagent's report. Keyed by the *parent*
+-- session and the call, so a spawn that is seen twice (hook plus event) is one row.
+CREATE TABLE IF NOT EXISTS subagent_usage (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_session_id TEXT    NOT NULL,
+  child_session_id  TEXT,
+  call_id           TEXT,
+  subagent          TEXT,
+  project_path      TEXT,
+  trigger_type      TEXT    NOT NULL
+                    CHECK (trigger_type IN ('tool_call','event_detected','manual')),
+  status            TEXT    NOT NULL DEFAULT 'unknown'
+                    CHECK (status IN ('success','error','ask','unknown')),
+  timestamp         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  duration_ms       INTEGER,
+  metadata          TEXT,
+  UNIQUE (parent_session_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_name    ON subagent_usage(subagent);
+CREATE INDEX IF NOT EXISTS idx_subagent_ts      ON subagent_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_subagent_session ON subagent_usage(parent_session_id);
 """
 
 VIEWS_SQL = """
@@ -921,6 +945,7 @@ def agent_usage_rows(conn) -> list[dict]:
             slot = per_agent.setdefault(agent, {
                 "agent": agent, "skill": 0, "mcp": 0, "plugin": 0, "total": 0,
                 "success": 0, "errors": 0, "denied": 0, "last_used": None,
+                "subagent": 0,
             })
             slot[kind] += r["n"]
             slot["total"] += r["n"]
@@ -930,7 +955,78 @@ def agent_usage_rows(conn) -> list[dict]:
             if r["last_used"] and (slot["last_used"] is None
                                    or r["last_used"] > slot["last_used"]):
                 slot["last_used"] = r["last_used"]
+
+    # Spawns are a count, not a fourth stream inside `total`: the three columns
+    # above are calls this tracker measured, and a subagent run is one event that
+    # may contain none. Folding them would make `total` mean two things depending
+    # on whether a session happened to delegate.
+    if _subagent_available(conn):
+        for r in conn.execute(f"""
+        SELECT {AGENT_EXPR} AS agent, COUNT(*) AS n
+        FROM subagent_usage GROUP BY agent
+        """).fetchall():
+            value = r["agent"]
+            agent = value.strip() if isinstance(value, str) and value.strip() else None
+            slot = per_agent.setdefault(agent, {
+                "agent": agent, "skill": 0, "mcp": 0, "plugin": 0, "total": 0,
+                "success": 0, "errors": 0, "denied": 0, "last_used": None,
+                "subagent": 0,
+            })
+            slot["subagent"] += r["n"]
     return sorted(per_agent.values(), key=lambda row: (-row["total"], row["agent"] or ""))
+
+
+def subagent_rows(conn) -> list[dict]:
+    """Every recorded subagent run, whitelisted columns only.
+
+    The table itself holds nothing else, but this is the surface that would grow
+    the leak if it ever did, so the columns are named here rather than `SELECT *`.
+    """
+    if not _subagent_available(conn):
+        return []
+    return [
+        {k: r[k] for k in ("subagent", "parent_session_id", "child_session_id",
+                           "call_id", "status", "duration_ms", "timestamp",
+                           "agent", "model")}
+        for r in conn.execute(f"""
+        SELECT subagent, parent_session_id, child_session_id, call_id, status,
+               duration_ms, timestamp,
+               {AGENT_EXPR} AS agent,
+               CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.model') END AS model
+        FROM subagent_usage ORDER BY timestamp DESC
+        """).fetchall()
+    ]
+
+
+def subagent_summary_rows(conn) -> list[dict]:
+    """Per subagent *name*: runs, failures, the longest and the most recent.
+
+    This is what makes a subagent that only used builtin tools visible at all. Its
+    calls are not measured by design, so without the spawn record the Agents page
+    has nothing to say about it — which the owner reasonably read as "not recorded".
+    """
+    if not _subagent_available(conn):
+        return []
+    rows = conn.execute("""
+    SELECT subagent,
+           COUNT(*)                                AS runs,
+           SUM(status = 'error')                   AS errors,
+           SUM(status = 'success')                 AS successes,
+           MAX(timestamp)                          AS last_used,
+           MAX(duration_ms)                        AS max_ms,
+           CAST(AVG(duration_ms) AS INTEGER)       AS avg_ms
+    FROM subagent_usage GROUP BY subagent
+    """).fetchall()
+    out = []
+    for r in rows:
+        name = r["subagent"]
+        out.append({
+            "subagent": name.strip() if isinstance(name, str) and name.strip() else None,
+            "runs": r["runs"], "errors": r["errors"] or 0,
+            "successes": r["successes"] or 0, "last_used": r["last_used"],
+            "max_ms": r["max_ms"], "avg_ms": r["avg_ms"],
+        })
+    return sorted(out, key=lambda row: (-row["runs"], row["subagent"] or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1042,6 +1138,10 @@ def _plugin_available(conn) -> bool:
 
 def _plugin_inventory_available(conn) -> bool:
     return _table_exists(conn, "plugin_inventory")
+
+
+def _subagent_available(conn) -> bool:
+    return _table_exists(conn, "subagent_usage")
 
 
 def _load_json_list(raw) -> list:
@@ -1361,7 +1461,11 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
         # 5 adds `plugin_inventory.scope` (which config listed the plugin, and so
         # whether the plugin may prune it). Additive for the rows that have it;
         # rows written before the column existed export it as null.
-        "schema_version": 5,
+        # 6 adds `subagent_usage`: one row per subagent the host started, with
+        # identifiers and durations only. Additive for a v5 consumer, but a
+        # database that has the table and a database that does not are different
+        # documents, so the version says which one this is.
+        "schema_version": 6,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "db_path": db_file_of(conn),
         "skills": [],
@@ -1370,6 +1474,7 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
         "mcp_usage": [],
         "plugin_usage": [],
         "plugin_inventory": [],
+        "subagent_usage": [],
     }
     for s in stats_rows(conn):
         doc["skills"].append(
@@ -1435,6 +1540,18 @@ def export_document(conn, include_usage: bool = True, include_insight: bool = Tr
             for col in ("tools", "commands"):
                 row[col] = _load_json_list(row.get(col))
             doc["plugin_inventory"].append(row)
+
+    # Columns named on purpose: this table holds identifiers and durations only, and
+    # `SELECT *` would quietly export whatever a future column adds.
+    if _subagent_available(conn):
+        for r in conn.execute(
+            "SELECT parent_session_id, child_session_id, call_id, subagent,"
+            " project_path, trigger_type, status, timestamp, duration_ms, metadata"
+            " FROM subagent_usage ORDER BY timestamp DESC"
+        ):
+            row = dict(r)
+            row["metadata"] = _export_metadata(row.get("metadata"))
+            doc["subagent_usage"].append(row)
 
     if include_insight:
         doc["insight"] = insight(conn)

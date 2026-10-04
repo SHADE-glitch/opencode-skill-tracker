@@ -295,7 +295,7 @@ def test_delete_skill_leaves_plugin_rows_untouched(seeded_plugin_db):
 def test_export_includes_plugin_usage_and_inventory(seeded_plugin_db):
     conn = db.open_db(seeded_plugin_db)
     doc = db.export_document(conn)
-    assert doc["schema_version"] == 5
+    assert doc["schema_version"] == 6
     assert len(doc["plugin_usage"]) == 7
     assert len(doc["plugin_inventory"]) == 4
     row = next(r for r in doc["plugin_usage"] if r["item_name"] == "compress")

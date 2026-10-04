@@ -191,14 +191,31 @@ detail page. The **Recent** page merges all three kinds into one timeline;
 page re-reads **only that page** (and `r` re-reads every page), so each page
 prints its own `data as of HH:MM:SS` instead of one global timestamp.
 
+The **Plugins** page lists a registered surface even when it has never been
+called: `total` comes from the union of what the scan saw at OpenCode's start and
+what has usage, so a `0` means nobody used that tool — not that the tracker
+missed it. The footer says how many rows are in that state. `Enter` on one of
+them warns that there is no history rather than pushing an empty detail page, and
+`skillt plugins --json` carries both claims as `registered` and `ever_called` so
+a consumer cannot merge them into one zero either.
+
 The **Agents** page answers "which agent did this work" with one row per agent
-and its calls split by kind — `Skill`, `MCP`, `Plugin`, `Total`, `Success rate`,
-`Last used`, most calls first. Read its footer before believing it: the agent
-shown is the one the row's **session first reported**, not the one that ran that
-call, and a call recorded before its session named an agent stays in `(unknown)`
-forever. That bucket is printed with its own count instead of being hidden
-(see M23). `s` deliberately does nothing here — the page has no sort of its own
-to cycle.
+and its calls split by kind — `Skill`, `MCP`, `Plugin`, `Total`, `Spawned`,
+`Success rate`, `Last used`, most calls first. Read its footer before believing
+it: the agent shown is the one the row's **session first reported**, not the one
+that ran that call, and a call recorded before its session named an agent stays
+in `(unknown)` forever. That bucket is printed with its own count instead of
+being hidden (see M23). `s` deliberately does nothing here — the page has no sort
+of its own to cycle.
+
+`Spawned` sits after `Total` and is deliberately outside it: it counts times the
+host started a **subagent** through the builtin `task` tool, which is not one of
+the three kinds of call measured above. The footer lists those subagents by name
+with their run counts. This is the only place a subagent can appear when it did
+nothing measurable: a subagent that spent its whole run shelling and editing
+leaves no usage row anywhere, because builtins are not what this tracker measures
+(M13). The row holds that it ran, under what name, in which child session, and
+how long — never the task text that spawned it (M24).
 
 There is **no Advisor page**: the tab was removed on 2026-10-03 at the owner's
 request. The read-only aggregation it showed still exists headless as
@@ -366,6 +383,8 @@ OpenCode runtime
 | `OPENCODE_SKILL_TRACKER_DB` | override the database path (the plugin) |
 | `OPENCODE_SKILL_TRACKER_MCP_SERVERS` | comma-separated MCP server names; **when set, automatic detection is skipped** (even when empty) |
 | `OPENCODE_SKILL_TRACKER_MCP_DISABLE` | `1` stops MCP recording while skill recording stays on |
+| `OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE` | `1` stops plugin tool/command recording only |
+| `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE` | `1` stops recording that a subagent was started (the builtin `task` tool). The other three streams are unaffected |
 | `OPENCODE_SKILL_TRACKER_DISABLE` | `1` disables the plugin entirely |
 | `OPENCODE_SKILL_TRACKER_DEBUG` | `1` enables per-call debug lines in the plugin log |
 | `OPENCODE_SKILL_TRACKER_STREAMS` | read side: comma list of streams `doctor` may call stalled (default: all three). An excluded stream is still printed, marked `(excluded)` |
@@ -387,8 +406,28 @@ OpenCode runtime
   permission paths). `arg_names` is a JSON array of the call's **argument key
   names only** — argument values are never read, so they cannot be stored.
 - `skill_versions` — content-hash history, `UNIQUE(skill_name, content_hash)`.
+- `plugin_usage` — one row per plugin tool/command call, keyed by
+  `(plugin_name, kind, item_name)` with the same `UNIQUE(session_id, call_id)`.
+  A tool that no installed plugin could be resolved to lands in `(unknown)`;
+  an unresolvable **command** is dropped instead (fail-closed, no command
+  allowlist exists).
+- `plugin_inventory` — one row per plugin seen when OpenCode started: the tool
+  and command lists the static scan found, `skipped` for the excluded ones, and
+  `scope` (`global` / `localdir` / `project`) naming which config claimed it.
+  Retained when usage is cleared; pruned only at the next OpenCode start.
+- `subagent_usage` — one row per subagent the host started, keyed by
+  `(parent_session_id, call_id)`. Identifiers and durations only:
+  `subagent`, `child_session_id`, `status`, `trigger_type`, `duration_ms`. The
+  task text, the one-line description, the title and the subagent's own report
+  are not read by the writer at all (M24). Both the hook pair and the event
+  stream may report one spawn; the conflict rule fills in what the first
+  observation left unknown rather than overwriting it, so it is still one row.
 - Views: `v_skill_totals`, `v_skill_last30`, `v_skill_history`, plus the MCP
-  analogues `v_mcp_totals`, `v_mcp_last30`, `v_mcp_history`.
+  analogues `v_mcp_totals`, `v_mcp_last30`, `v_mcp_history`, and the plugin
+  analogues `v_plugin_totals`, `v_plugin_last30`, `v_plugin_history`.
+- `skillt export` writes `schema_version = 6` (4 = metadata is allowlisted,
+  5 = `plugin_inventory.scope`, 6 = the `subagent_usage` key). `skillt
+  scrub-metadata` reports 0 rows on a clean database.
 - `journal_mode = WAL`, `busy_timeout = 5000`, `synchronous = NORMAL`, file mode
   `0600`. The `source` (personal / open-source) column is derived from
   `category` at query time, not stored.
@@ -477,7 +516,7 @@ The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 
 ## 🚧 Known limitations
 
-The full audit — M1 through M23, with reproduction notes — lives in
+The full audit — M1 through M24, with reproduction notes — lives in
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制). Highlights:
 
 - **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
@@ -624,6 +663,24 @@ The full audit — M1 through M23, with reproduction notes — lives in
   agents did this". Measured on the two 2026-10-03 backups — 619 and 664 rows, 0
   of them without an agent — so on a healthy machine the bucket is empty; it is
   written down because it is not derivable from the page.
+- **M24** A subagent's work is invisible unless it used a measured tool. The
+  `task` tool is a builtin and builtins are not measured (M13), so the spawn
+  record is the only witness that a subagent ran at all: the name the host asked
+  for, the child session it got, whether it finished, and how long it took. Two
+  things follow. `Spawned` on the Agents page counts spawns and is never folded
+  into `Total`, so one column cannot mean "calls" one day and "calls plus events"
+  the next. And the name arrives in the host's `subagent_type` argument, so it is
+  admitted only when it is label-shaped (`SUBAGENT_LABEL_RE`: no spaces, no path,
+  at most 40 characters) — that is a **shape** test, not a prose detector, and a
+  value that fails it is counted as `(unnamed)` rather than printed. The row holds
+  none of the task text, description, title, report or error string that sit in
+  the same payload: the writer names no field but those identifiers. The stream
+  also starts empty on an existing database — the table appears the next time a
+  migrating surface runs (`skillt`, `sync`, `doctor`), and a running OpenCode
+  picks the writer up only after a restart, so `Spawned` reads 0 for sessions that
+  began before either happened. `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1` turns
+  it off; which of the two write paths the host actually fires for a builtin is
+  not assumed, so both write and the `(parent_session_id, call_id)` key decides.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 

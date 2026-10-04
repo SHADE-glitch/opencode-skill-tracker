@@ -17,14 +17,14 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Plugin SDK | `@opencode-ai/plugin` 1.18.4 |
 | Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
 | TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
-| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 592 KiB |
-| Rows (recounted 2026-10-03, **after the owner cleared usage**) | 39 skills · 1 skill_usage · 1 mcp_usage · 6 plugin_usage · 76 skill_versions · 5 plugin_inventory — the inventory has been pruned once for real (8 → 5 at the 14:32Z start: agent-os.js, opencode-mem and both conductor spellings gone), and `claude-mem.js` now lists `claude_mem_search`. Rewritten at 23:32 on 2026-10-03, `claude-mem-inject.js` registers **9 tools** (`claude_mem_timeline` and friends, proxying to the worker) — with **0 recorded calls** so far, so the inventory line and the activity line on that page are still describing two different surfaces |
-| Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
-| Export document | `schema_version = 5` (4 = metadata is allowlisted, 5 = `plugin_inventory.scope`) |
-| Test suite | 396 passed, 0 failed (re-counted 2026-10-04, after the Agents page and the claude-mem file/HTTP readers) — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL; 606,208 bytes on 2026-10-04 (was 592 KiB on 2026-10-01) |
+| Rows (recounted 2026-10-04 15:56, live) | 44 skills · 1 skill_usage · 2 mcp_usage · 14 plugin_usage · 81 skill_versions · 5 plugin_inventory · **0 subagent_usage** — the new table exists in the live database and is empty, because the running OpenCode has not loaded the writer yet (M24). `claude_mem_search` has now been called (1 row); the 9 corpus tools `claude-mem-inject.js` registered on 2026-10-03 23:32 are still at 0, so `skillt plugins` reports 12 surfaces of which 10 are never called |
+| Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2`. `subagent_usage` was added 2026-10-04 **without** a bump: the counter exists because a view cannot be redefined by `CREATE VIEW IF NOT EXISTS`, and this is a table, which `ensure_schema()` creates idempotently on every run |
+| Export document | `schema_version = 6` (4 = metadata is allowlisted, 5 = `plugin_inventory.scope`, 6 = the `subagent_usage` key). `PRAGMA user_version` / `SCHEMA_VERSION` stayed at **2**: that counter exists because `CREATE VIEW IF NOT EXISTS` cannot re-define a view, and this round added a table, not a view — `ensure_schema()` runs the table DDL every time, so no bump was owed |
+| Test suite | 415 passed, 0 failed (re-counted 2026-10-04, after the Plugins-page union and the subagent stream) — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | AgentOS advisor store (measured 2026-10-03; it is another process's state and moves) | `/home/shade/Public/AgentOS/store/aos.db` — 22 telemetry events, 51 retrieval rows over 8 memories, 14 memories, **83 loop files**. Stages are no longer small: the newest loops run `validate` at 31–37 s, i.e. ~30× the 1200 ms budget. **The TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request); `skillt agentos` is now the only surface that opens that store, and `test_tui_never_reads_the_advisor_store` pins that no tab reads it. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Whether a loop is a live-test sample or real usage is not this project's call to make; the store is read-only here and the newest loops are labelled with their own `model`. |
-| claude-mem neighbour (re-measured 2026-10-04; another process's state, and it moves) | `~/.claude-mem/` — its ledger: 210 observations, 16 sdk_sessions, newest 0.1 d. Its own files: `inject-trace.log` 112 lines → **68 injected** (59 bare + 9 with `source=`), 35 loaded, 9 worker ensures, 160,498 chars, `unrecognized` 0; `logs/claude-mem-2026-10-03.log` 609,860 bytes / 3,919 lines → INFO 3,391 · WARN 461 · **ERROR 57**, 10 lines not in `[time] [level] [category]` shape; `worker.pid` → pid alive, port 37700, `startToken` never read. Reading all three costs **8.2–15.8 ms** (five runs) — that is what the Plugins page's dim line pays on a repaint, and why `claude_mem_http` is never called from it. The 9 tools `claude-mem-inject.js` now registers have **0** recorded calls, so the inventory line and the activity line still describe different things. |
-| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 1033 lines over 10.2 d (first line 2026-09-23), 0 `[err]` |
+| claude-mem neighbour (re-measured 2026-10-04 15:56; another process's state, and it moves) | `~/.claude-mem/` — its ledger: 403 observations, newest 0.0 d. Its own files: `inject-trace.log` 157 lines → **103 injected** (59 bare + 44 with `source=`), 40 loaded, `unrecognized` 0; the worker log **rolled over to `logs/claude-mem-2026-10-04.log`** (374,014 bytes / 2,463 lines) → INFO 2,290 · WARN 168 · **ERROR 5**, `unparsed` 0 — the reader took the newest dated file by mtime and left 2026-10-03's 609,860-byte log (with its 57 ERROR lines) alone, which is `test_only_the_dated_worker_log_is_read` playing out on real data; `worker.pid` → pid alive, port 37700, `startToken` never read. Reading all three costs **8.2–15.8 ms** (five runs) — that is what the Plugins page's dim line pays on a repaint, and why `claude_mem_http` is never called from it. The 9 tools `claude-mem-inject.js` now registers have **0** recorded calls, so the inventory line and the activity line still describe different things. |
+| Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 1138 lines over 11.3 d (first line 2026-09-23). It holds **4 `[err]` lines, all `selftest FAIL: …`, written by this project on 2026-10-04 07:32Z** while the subagent assertions were still red — `doctor`'s `log.errors` warns on them, and they are residue from a test run, not a capture fault. **The gap they expose is real:** `__selftest()` isolates its **database** (`OPENCODE_SKILL_TRACKER_DB`) but not its **log**, which defaults to this shared file, so any hand-run or CI selftest pollutes the owner's error count. Fixing that means routing selftest log lines to the isolated path or marking them so `log.errors` can tell them apart — not deleting lines from a live log by hand. |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
 | Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots) — that deletion happens on the next nightly run |
@@ -374,8 +374,10 @@ state.
   the display `name`. The display string is not a key.
 - **Export allowlists metadata** (`EXPORT_METADATA_KEYS`) instead of dumping the
   column. That changed the document to `schema_version = 4`; adding
-  `plugin_inventory.scope` made it 5. Bump on any further shape change and update
-  `test_export.py` / `test_plugin_db.py`.
+  `plugin_inventory.scope` made it 5, and adding the `subagent_usage` key made
+  it 6. Bump on any further shape change and update
+  `test_export.py` / `test_plugin_db.py` — the shape test now pins the full key
+  set, so a new key cannot arrive silently.
 - **`scrub-metadata` edits rows in place rather than deleting them**, and only
   after a backup when `--yes`.
 - **A neighbour's log is scanned from the start, not from the tail.** Its worker
@@ -409,6 +411,35 @@ state.
   `tab-agents`; falling through to the `else` would cycle the *Skills* sort while
   the user stands on Agents and sees nothing change. Its `(unknown)` row is real
   and explained on the page (M23).
+- **The Plugins page is a union, and `plugin_stats_rows` is not.** The page and
+  `skillt plugins` read `plugin_surface_rows` (inventory ∪ usage) because a
+  registered tool nobody called produced no row at all — eleven surfaces rendered
+  as one line, and the owner read that as a broken recorder. The dashboard's
+  Top Plugins still uses the usage-only view: a top-10 of zeros is not a ranking.
+  Excluded plugins get no 0 rows; they have no surface by decision. `registered`
+  and `ever_called` stay two separate fields so no consumer can merge them into
+  one ambiguous zero.
+- **A subagent is recorded as an event, never as a fourth stream.** `Spawned` sits
+  beside `Total` and not inside it, because `task` is a builtin and its run may
+  contain zero measured calls — folding it in would let one column mean "calls"
+  or "calls plus events" depending on whether a session delegated. Held by
+  `test_agent_rows_gain_a_spawned_count_and_total_stays_the_three_streams`.
+- **Both write paths are wired, because which one the host fires for a builtin is
+  not known and not assumed.** The hook pair and `message.part.updated` each call
+  the writer, and `UNIQUE(parent_session_id, call_id)` with a fill-only rule turns
+  the two into one row: the event adds the child session id a hook cannot know,
+  and never overwrites a name already recorded. `__selftest` drives both and
+  asserts one row. **Which path a real OpenCode uses is still unverified** — that
+  needs one live session after a restart, and the answer would not change the code.
+- **`subagent_type` is gated by shape, not by meaning.** `SUBAGENT_LABEL_RE`
+  admits no spaces, no path, at most 40 characters; anything else is counted as
+  `(unnamed)`. That is a bound, not a prose detector — a 39-character hyphenated
+  token passes it, and this round's own sentinel slipped through exactly that way
+  until the test value was made a sentence. The payload's prose fields
+  (`prompt`, `description`, `title`, `output`, `error`) are named nowhere in the
+  writer; `test_the_subagent_writer_never_names_a_text_field` reads those three
+  function bodies to keep it true, and a source scan that cries wolf on its own
+  comment is a scan nobody can edit.
 
 ## 7. Known limitations
 

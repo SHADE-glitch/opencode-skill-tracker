@@ -544,7 +544,8 @@ def test_tui_agents_tab_renders_rows(seeded_db):
             assert table.row_count, "the fixture seeds agent=build rows"
             headers = [str(c.label) for c in table.columns.values()]
             assert headers == [
-                "Agent", "Skill", "MCP", "Plugin", "Total", "Success rate", "Last used",
+                "Agent", "Skill", "MCP", "Plugin", "Total", "Spawned",
+                "Success rate", "Last used",
             ], headers
             first = [str(c) for c in table.get_row(list(table.rows)[0])]
             assert first[0] == "build", first
@@ -553,6 +554,54 @@ def test_tui_agents_tab_renders_rows(seeded_db):
             ).plain
             assert "first" in note and "(unknown)" in note, note
             assert "M23" in note, note
+
+    _run(_run_it())
+
+
+def test_tui_agents_page_shows_spawns_and_names_the_subagents(seeded_db):
+    """A subagent that only used builtins leaves no usage row anywhere.
+
+    The spawn record is therefore the only thing that can show it ran at all, so
+    both halves have to reach the screen: the count per parent agent, and the
+    subagent's own name — which is exactly what the owner could not see.
+    """
+    import skill_db as db
+    from rich.text import Text
+    from textual.widgets import Static
+
+    conn = db.open_db(seeded_db, readonly=False)
+    db.ensure_schema(conn)
+    parent = conn.execute("SELECT session_id FROM skill_usage LIMIT 1").fetchone()[0]
+    for call, name in (("c-spawn-1", "general"), ("c-spawn-2", "general"),
+                       ("c-spawn-3", None)):
+        conn.execute(
+            "INSERT INTO subagent_usage (parent_session_id, call_id, subagent, status,"
+            " trigger_type, duration_ms, metadata)"
+            " VALUES (?,?,?,?,?,?,json_object('agent','build'))",
+            (parent, call, name, "success", "event_detected", 900),
+        )
+    conn.commit()
+    conn.close()
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-agents"
+            await pilot.pause()
+            table = app.screen.query_one("#agents-table", DataTable)
+            row = [str(c) for c in table.get_row(list(table.rows)[0])]
+            assert row[0] == "build", row
+            assert row[5] == "3", f"Spawned must count all three, and Total must not: {row}"
+            assert int(row[4]) == int(row[1]) + int(row[2]) + int(row[3]), row
+            note = Text.from_markup(
+                str(app.screen.query_one("#agents-label", Static).content)
+            ).plain
+            assert "general 3" not in note, note
+            assert "general ×2" in note, note
+            # A spawn whose name was not label-shaped is counted, not named.
+            assert "(unnamed) ×1" in note, note
+            assert "no measured calls" in note, note
 
     _run(_run_it())
 
