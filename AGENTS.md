@@ -223,6 +223,11 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   and a tab activation re-read only the active page, `r` and the first paint
   re-read every page, and each page prints its own `data as of HH:MM:SS`.
   `test_tui_creates_no_app_timers` pins it.
+- **Animations are off.** `SkillTUI.animation_level = "none"`. Textual slides the
+  tab-bar underline for 0.3 s on every switch (`Tabs._highlight_active`, at level
+  `"basic"` — so the global `"basic"` level does not remove it, only `"none"`
+  does); that is ~305 ms of a ~500 ms Dashboard→Skills switch on a 44-skill DB,
+  against ~190 ms with it off. `test_tui_disables_textual_animations` pins it.
 - **Never parse a row's identity out of its `key`.** Names contain the
   separators: `@scope/pkg@1.0/tool`, `conductor:newTrack`, server names with
   `_`. Each table registers `(kind, …parts)` in `app.row_targets` at render

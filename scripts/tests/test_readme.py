@@ -130,7 +130,7 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
     # a commit message. The claude-mem ones are the three things a future editor
     # is most likely to "simplify" back into a wrong answer: read the tail, count
     # categories instead of levels, and put the HTTP probe on a repaint path.
-    for needle in ("set_interval", "active_app", "row_targets", "schema_version",
+    for needle in ("set_interval", "active_app", "animation_level", "row_targets", "schema_version",
                    "CLAUDE_MEM_LOG_BYTES_CAP", "truncated", "unparsed",
                    "_LOG_LINE_RE", "claude_mem_worker",
                    # The subagent round: three names a future editor would have to

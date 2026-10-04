@@ -239,6 +239,15 @@ state.
   `LookupError: <ContextVar name='active_app'>` — reproduced with an empty
   callback, on both App and Screen, and after `timer.stop()`. That takes the whole
   TUI file down with it — 62 tests today, 47 when it was first measured. `test_tui_creates_no_app_timers` pins this.
+- **The TUI disables Textual's animations.** `SkillTUI.animation_level` is
+  `"none"`, so the tab-bar underline snaps instead of sliding. Textual's `Tabs`
+  animates it for 0.3 s at level `"basic"` (`_tabs.py`'s `_highlight_active`), so
+  the global `"basic"` level does **not** remove it — only `"none"` does. Measured
+  on a 44-skill database: a Dashboard→Skills switch is ~500 ms with the animation
+  and ~190 ms without; the animation is ~305 ms of that, against ~70 ms for the
+  page's own re-read and ~125 ms for Textual's layout/render floor.
+  `test_tui_disables_textual_animations` pins the setting. Do not re-enable it as
+  "cosmetic" — it is the largest single cost of switching tabs.
 - **A visual assertion must not ask the widget's own helper what it returned.**
   When the Dashboard ranking bars were being built, every rendered bar was
   compared to `rank_bar_width(...)` itself; flattening that ladder to a constant

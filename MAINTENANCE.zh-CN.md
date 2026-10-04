@@ -174,6 +174,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 ## 6. 刻意为之的偏离（别"顺手修回去"）
 
 - **TUI 里没有后台定时器。** 刷新是按页、事件驱动的：按键（5 秒节流）和切页只重读当前页，`r` 与首次绘制重读所有页；每页各自显示自己的 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会把整个 TUI 文件一次带走——今天 62 个用例，最初实测时是 47 个。`test_tui_creates_no_app_timers` 把这条钉住。
+- **TUI 关闭了 Textual 的动画。** `SkillTUI.animation_level` 是 `"none"`，tab 栏下划线是瞬间到位而不是滑动。Textual 的 `Tabs` 会对它做 0.3 秒动画，级别是 `"basic"`（`_tabs.py` 的 `_highlight_active`），所以全局设成 `"basic"` **挡不住**它——只有 `"none"` 能。实测（44 个 skill 的数据库）：Dashboard→Skills 一次切换带动画约 500 ms、关掉约 190 ms，其中动画占 ~305 ms，而页面自身重读只有 ~70 ms、Textual 布局/渲染地板 ~125 ms。`test_tui_disables_textual_animations` 把这条钉住。不要以「只是外观」为由把它打开——它是切页最大的单项开销。
 - **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** Dashboard 排名柱那版把每根渲染出来的柱都和 `rank_bar_width(...)` 的返回值比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫不是守卫。那一列后来按他的要求撤掉了，但这条教训留下：`test_tui_trend_rows_are_a_fixed_width` 在同一句里把绝对行宽（20）也写死了，不只是断言各行彼此相等。
 - **TUI 的任何一页都不许打开顾问那个库。** Advisor 页在 2026-10-03 按 owner 的要求移除了；`skill_db.agentos_*` 和 `skillt agentos` 留着，所以那个库仍然能无头读，只是不能从页面上读。`test_tui_never_reads_the_advisor_store` 给唯一的入口装了探针，把 mount、`refresh_all` 和每一个页签都走一遍，调用数必须是 0。
 - **顾问的三个召回计数绝不合并。** `retrieved` 是引擎自报，`recalled` 是

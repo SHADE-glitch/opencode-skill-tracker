@@ -119,6 +119,8 @@ skillt
 
 **MCP 页**每个 `(server, tool)` 组合一行，显示调用次数、30 天调用、session 数、成功率、平均耗时、最近使用时间。Skills / MCP / Plugins 三张表**排序和过滤框各自独立**——`s` 只切换当前页的排序，`Enter` 打开该行的详情页。**Recent 页**把三类调用合成一条统一时间线，`Enter` 会按行类型跳到对应的 skill/MCP/插件详情页。切换到某一页时只重读**当前页**（`r` 才重读所有页），因此每页各自显示自己的 `data as of HH:MM:SS`，而不是一个全局时间戳。
 
+切页是瞬时的，没有动画。Textual 会在每次切页时让 tab 栏下划线滑动 0.3 秒，实测（44 个 skill 的数据库）这占了 Dashboard→Skills 一次切换约 500 ms 里的 ~305 ms——比「页面自身重读（~70 ms）」加「Textual 布局/渲染地板（~125 ms）」还多——所以 app 关闭了动画（`animation_level = "none"`），下划线改为瞬间到位，同一次切换降到约 190 ms。
+
 **Plugins 页**会把「注册过但一次都没被调用」的界面也列出来：`total` 取的是「OpenCode 启动时扫到的注册项」与「有用量的项」的**并集**，所以那里的 `0` 意思是没人用过这个工具，**不是** tracker 漏采。页脚会说明当前有几行处于这种状态。在这种行上按 `Enter` 只会提示「没有历史」，不会推开一个空白详情页；`skillt plugins --json` 则把两件事分成 `registered` 与 `ever_called` 两个字段给出，消费方也没法把它们揉成一个 0。
 
 **Agents 页**回答「这些活是哪个 agent 干的」：一行一个 agent，把调用按种类拆成

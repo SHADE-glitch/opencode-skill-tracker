@@ -191,6 +191,13 @@ detail page. The **Recent** page merges all three kinds into one timeline;
 page re-reads **only that page** (and `r` re-reads every page), so each page
 prints its own `data as of HH:MM:SS` instead of one global timestamp.
 
+Switching pages is instant rather than animated. Textual slides the tab-bar
+underline for 0.3 s on every switch, which measured ~305 ms of a ~500 ms
+Dashboard→Skills switch on a 44-skill database — more than the page's own
+re-read (~70 ms) and Textual's layout/render floor (~125 ms) combined — so the
+app disables animations (`animation_level = "none"`) and the underline snaps
+into place, bringing the same switch to ~190 ms.
+
 The **Plugins** page lists a registered surface even when it has never been
 called: `total` comes from the union of what the scan saw at OpenCode's start and
 what has usage, so a `0` means nobody used that tool — not that the tracker
