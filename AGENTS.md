@@ -80,6 +80,26 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
   the user's task) right next to `injection_chars`, so `_project_injection()`
   names each field and `_count_only()` accepts integers and sized collections
   only — a text-valued count yields `None`, never a character count.
+- **A foreign *file* is read under the same contract as a foreign store.** A log
+  line is prose: `inject-trace.log`'s `q=` carries text derived from the user's
+  prompt and a worker-log line carries paths and messages, so the reader counts
+  **shapes** and returns integers — nothing returns a line, and a line matching no
+  known shape lands in `unrecognized` / `unparsed` instead of vanishing. Scan from
+  the **start** under a byte cap (`CLAUDE_MEM_LOG_BYTES_CAP`); a tail is blind to
+  the early part, and when the cap bites the result says `truncated` so its counts
+  read as floors, not totals. An HTTP answer from that neighbour is projected by
+  field name **and** by type (`_numbers_only()`), because a field renamed later can
+  start carrying a path or a sentence. `worker.pid`'s `startToken` is what
+  authenticates to that worker: parsed, never emitted.
+- **No HTTP and no subprocess on the repaint path.** A keystroke (throttled by
+  `REFRESH_STALE_AFTER_S`), a tab activation and `r` all re-render, so one network
+  wait there freezes the interface for the same reason app timers are banned —
+  different mechanism, identical failure. `claude_mem_http()` is reached only from
+  headless commands, and
+  `test_no_http_is_reachable_from_the_tui_refresh_path` pins that the TUI never
+  calls it. `os.kill(pid, 0)` and reading files are allowed: measured 8.2–15.8 ms
+  for all three claude-mem files together, which that page pays per repaint,
+  against 0.7–2.0 ms for the tables.
 - **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
 - **Never commit secrets.** The plugin sanitizes secrets before storing them;

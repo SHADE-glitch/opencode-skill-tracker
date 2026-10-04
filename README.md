@@ -153,7 +153,7 @@ skillt
 
 Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs, and `TERM` neither
 empty nor `dumb`). Pages: **Dashboard / Skills / MCP / Plugins / Recent /
-Categories / Data** (Data is always last).
+Categories / Agents / Data** (Data is always last).
 
 The six Dashboard cards, each labelled below its number:
 
@@ -190,6 +190,15 @@ detail page. The **Recent** page merges all three kinds into one timeline;
 `Enter` routes each row to its skill/MCP/plugin detail page. Switching to a
 page re-reads **only that page** (and `r` re-reads every page), so each page
 prints its own `data as of HH:MM:SS` instead of one global timestamp.
+
+The **Agents** page answers "which agent did this work" with one row per agent
+and its calls split by kind — `Skill`, `MCP`, `Plugin`, `Total`, `Success rate`,
+`Last used`, most calls first. Read its footer before believing it: the agent
+shown is the one the row's **session first reported**, not the one that ran that
+call, and a call recorded before its session named an agent stays in `(unknown)`
+forever. That bucket is printed with its own count instead of being hidden
+(see M23). `s` deliberately does nothing here — the page has no sort of its own
+to cycle.
 
 There is **no Advisor page**: the tab was removed on 2026-10-03 at the owner's
 request. The read-only aggregation it showed still exists headless as
@@ -275,6 +284,18 @@ skillt agentos   [--json] [--limit N]
   keys), are never read. See M22. Found at its default path when installed;
   otherwise set `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` or `CLAUDE_MEM_DIR`.
   `skillt doctor` says nothing about it when the store is absent.
+
+  It reads three more of claude-mem's own files, in this order: `inject-trace.log`
+  (what its hook injected — the query text after `q=` is **counted, never read**),
+  `logs/claude-mem-<date>.log` (line counts per level, which is where the day's
+  ERROR total comes from) and `worker.pid` (liveness and port, so nothing here
+  hardcodes `37700`). Only after the files does this one command ask the running
+  worker three HTTP questions (`/api/stats`, `/api/processing-status`,
+  `/api/chroma/status`) under **one shared deadline, not one timeout each**, and it
+  keeps only integers and booleans from the answers — `database.path`,
+  `worker.version` and the free-text `details` are dropped. None of it is written
+  into the tracker's tables, and none of it happens inside the TUI: the Plugins
+  page prints the same log-file numbers as one dim line and never opens a socket.
 - `agentos` — the **AgentOS advisor**, aggregated read-only from its own store.
   The advisor registers no tool and no command, so it can never appear in the
   usage tables above: it produces **zero usage rows** there, and
@@ -456,7 +477,7 @@ The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 
 ## 🚧 Known limitations
 
-The full audit — M1 through M19, with reproduction notes — lives in
+The full audit — M1 through M23, with reproduction notes — lives in
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制). Highlights:
 
 - **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
@@ -585,7 +606,24 @@ The full audit — M1 through M19, with reproduction notes — lives in
   (the M21 shape again), and a store whose tables are all missing is reported as
   unreadable rather than as installed-and-empty. What claude-mem *does* — its own
   hooks, its own summariser — is not observable from here at all: this reads what
-  it wrote, not what it did.
+  it wrote, not what it did. Its two log files are read under the same contract,
+  parsed by line **shape** (a line whose format has changed is counted as
+  `unrecognized` rather than dropped, and no log line is ever echoed) and scanned
+  from the **start** of the file under a byte cap — a tail is blind to the early
+  part, and on the real log every one of its 57 ERROR lines is early. When the cap
+  bites the result says `truncated` and the number is a floor, not a total. The
+  HTTP projection is by field name *and* by type, so a field that is renamed to
+  carry prose yields nothing instead of leaking it.
+- **M23** The Agents page counts the agent a row's session **first** reported, not
+  the agent that ran that call. All three usage upserts write
+  `metadata = COALESCE(existing, excluded)`, so whichever JSON lands first is
+  frozen in that row for good; `agent` only ever arrives later, on
+  `chat.message`. A call recorded before its session named an agent is therefore
+  `(unknown)` forever, and `(unknown)` measures *capture order*, not anonymous
+  work. It is shown with its own count so the table cannot be read as "these
+  agents did this". Measured on the two 2026-10-03 backups — 619 and 664 rows, 0
+  of them without an agent — so on a healthy machine the bucket is empty; it is
+  written down because it is not derivable from the page.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 

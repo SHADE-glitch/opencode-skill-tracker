@@ -163,16 +163,29 @@ def tracker_db(tmp_path):
     conn.close()
 
 
-def test_the_suite_never_sees_the_developers_own_store():
+def test_the_suite_never_sees_the_developers_own_store(monkeypatch):
     """The guard for the guard: conftest pins the neighbour's location.
 
     Without it this file would pass on a machine that has claude-mem installed
     and mean nothing on one that does not — the same class of hole the skills
     directory used to have.
     """
+    def no_network(*a, **k):
+        raise AssertionError("the isolated suite reached the network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", no_network)
     store = db.claude_mem_store()
     assert store["db"] is None, store
-    assert store["requested"].endswith("no-claude-mem.db"), store["requested"]
+    assert store["requested"].endswith("no-claude-mem.db"), store
+    # The three files the neighbour leaves beside its database resolve from that
+    # same pinned directory, so the activity reader and the pid-file liveness
+    # check are covered by this fixture too — and with no `worker.pid` there is no
+    # port to ask, which is what keeps the HTTP probe out of the whole suite.
+    assert store["trace"] is None and store["logs_dir"] is None, store
+    assert store["pid_file"] is None, store
+    assert db.claude_mem_activity(store=store)["available"] is False
+    assert db.claude_mem_worker(store=store)["alive"] is False
+    assert db.claude_mem_http()["available"] is False
 
 
 # --- resolution ------------------------------------------------------------

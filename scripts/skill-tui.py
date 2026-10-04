@@ -2099,10 +2099,11 @@ def _tui_classes() -> dict:
             not the same plugin also registers tools, which is a surface this page
             already counts separately.
 
-            Files only, never HTTP: this repaints on every keypress and every tab
-            change, and one network wait there freezes the interface — the same
-            freeze the no-timers rule guards against, arrived at by a different
-            mechanism. Liveness is `os.kill(pid, 0)`, a syscall, not a request.
+            Files only, never HTTP: this page repaints on every tab change and on
+            any keypress once it is `REFRESH_STALE_AFTER_S` stale, and one network
+            wait there freezes the interface — the same freeze the no-timers rule
+            guards against, arrived at by a different mechanism. Liveness is
+            `os.kill(pid, 0)`, a syscall, not a request.
             """
             store = db.claude_mem_store()
             activity = db.claude_mem_activity(store=store)

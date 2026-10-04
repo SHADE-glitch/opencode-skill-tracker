@@ -18,11 +18,12 @@ Measured 2026-10-01. Re-measure before trusting any number here.
 | Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
 | TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
 | Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL, 592 KiB |
-| Rows (recounted 2026-10-03, **after the owner cleared usage**) | 39 skills · 1 skill_usage · 1 mcp_usage · 6 plugin_usage · 76 skill_versions · 5 plugin_inventory — the inventory has been pruned once for real (8 → 5 at the 14:32Z start: agent-os.js, opencode-mem and both conductor spellings gone), and `claude-mem.js` now lists `claude_mem_search` |
+| Rows (recounted 2026-10-03, **after the owner cleared usage**) | 39 skills · 1 skill_usage · 1 mcp_usage · 6 plugin_usage · 76 skill_versions · 5 plugin_inventory — the inventory has been pruned once for real (8 → 5 at the 14:32Z start: agent-os.js, opencode-mem and both conductor spellings gone), and `claude-mem.js` now lists `claude_mem_search`. Rewritten at 23:32 on 2026-10-03, `claude-mem-inject.js` registers **9 tools** (`claude_mem_timeline` and friends, proxying to the worker) — with **0 recorded calls** so far, so the inventory line and the activity line on that page are still describing two different surfaces |
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2` |
 | Export document | `schema_version = 5` (4 = metadata is allowlisted, 5 = `plugin_inventory.scope`) |
-| Test suite | 365 passed, 0 failed — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
+| Test suite | 396 passed, 0 failed (re-counted 2026-10-04, after the Agents page and the claude-mem file/HTTP readers) — on `python3 -m pytest scripts/tests -q` **and** `.venv/bin/python -m pytest scripts/tests -q`, and again with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` to prove the suite is hermetic |
 | AgentOS advisor store (measured 2026-10-03; it is another process's state and moves) | `/home/shade/Public/AgentOS/store/aos.db` — 22 telemetry events, 51 retrieval rows over 8 memories, 14 memories, **83 loop files**. Stages are no longer small: the newest loops run `validate` at 31–37 s, i.e. ~30× the 1200 ms budget. **The TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request); `skillt agentos` is now the only surface that opens that store, and `test_tui_never_reads_the_advisor_store` pins that no tab reads it. `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in; **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it, while anything non-interactive (cron, systemd, `env -i`) must set it itself. Whether a loop is a live-test sample or real usage is not this project's call to make; the store is read-only here and the newest loops are labelled with their own `model`. |
+| claude-mem neighbour (re-measured 2026-10-04; another process's state, and it moves) | `~/.claude-mem/` — its ledger: 210 observations, 16 sdk_sessions, newest 0.1 d. Its own files: `inject-trace.log` 112 lines → **68 injected** (59 bare + 9 with `source=`), 35 loaded, 9 worker ensures, 160,498 chars, `unrecognized` 0; `logs/claude-mem-2026-10-03.log` 609,860 bytes / 3,919 lines → INFO 3,391 · WARN 461 · **ERROR 57**, 10 lines not in `[time] [level] [category]` shape; `worker.pid` → pid alive, port 37700, `startToken` never read. Reading all three costs **8.2–15.8 ms** (five runs) — that is what the Plugins page's dim line pays on a repaint, and why `claude_mem_http` is never called from it. The 9 tools `claude-mem-inject.js` now registers have **0** recorded calls, so the inventory line and the activity line still describe different things. |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`, 1033 lines over 10.2 d (first line 2026-09-23), 0 `[err]` |
 | Backup timer | **enabled** — `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`, next run daily 00:09 CST, `Linger=yes`; verified by running the service once (exit 0, backup created, 0 deleted) |
 | Loose backups (M19) | 5 files in `~/.local/share/opencode/` **outside** `BACKUP_DIR`, never pruned; the 4 pre-2026-10-01 ones still contain the M14 prompt text |
@@ -103,7 +104,13 @@ skillt sync --dry-run            # scanned == skills row count, changed == 0
 skillt claude-mem                # the memory plugin's own ledger: how fresh its
                                  # background capture is, its token totals, and the
                                  # observer's consecutive-failure count (silent in
-                                 # `doctor` when that store is absent)
+                                 # `doctor` when that store is absent). Below the
+                                 # ledger it prints the plugin's own two log files
+                                 # (injected count, ERROR lines) and `worker.pid`
+                                 # liveness, then the worker's three HTTP answers.
+                                 # `worker log ERROR …` is the line that tells you
+                                 # the background syncer is failing while its
+                                 # ledger still looks fresh.
 skillt agentos                   # advisor loops: over-budget stages, errors, whether
                                  # the recalled memory reached the prompt, and the
                                  # join with measured usage (needs AGENT_OS_ROOT)
@@ -339,11 +346,13 @@ state.
   header's width (`frozen-gnome-fork-maintenance` → `froze`) and later frames lag by
   one. `fit_columns()` measures the cells it already has and sets `auto_width = False`;
   `_PAGE_TABLES` says which tables each page owns so only the page just written is
-  re-measured 2026-10-03 on a read-only snapshot of the live database, after the
-  Advisor tab left: **≈3 ms for all eight tables** (four runs, 2.7–3.1 ms), the
-  100-row Recent table taking ~1.5 ms of that, and the whole `refresh_all()`
-  around it 21–24 ms. `plain_len`'s no-bracket fast path is what took that pass
-  from ~21 ms to ~3 ms when it was introduced.
+  re-measured 2026-10-04 on a read-only snapshot of the live database, with the
+  Agents tab in: **≈1 ms for all nine tables** (four runs, 0.7–2.0 ms) and the whole
+  `refresh_all()` around it 8.9–14.8 ms. The 2026-10-03 figures — 2.7–3.1 ms over
+  eight tables, 21–24 ms for the sweep — were taken while the Recent table still
+  held 100 rows; the owner had cleared usage before the re-run, so both passes got
+  cheaper on data, not on code. `plain_len`'s no-bracket fast path is what took that
+  pass from ~21 ms to ~3 ms when it was introduced.
   The tests read widths **without** a `pilot.pause()` first — pausing lets the idle
   pass repair the frame and the assertion would pass on broken code.
 - **A drawn chart row must not depend on its data for width.** The trend rows
@@ -369,10 +378,41 @@ state.
   `test_export.py` / `test_plugin_db.py`.
 - **`scrub-metadata` edits rows in place rather than deleting them**, and only
   after a backup when `--yes`.
+- **A neighbour's log is scanned from the start, not from the tail.** Its worker
+  log held **57 ERROR lines**, every one of them in the early part of the file; a
+  64 KB tail reported 0 of them. So `CLAUDE_MEM_LOG_BYTES_CAP` cuts the *end*, and
+  when it bites the result carries `truncated` and the counts are labelled floors
+  rather than totals. An estimate of "1–2 ms to read the whole file" was written
+  into the plan before it was measured; it is really **8.2–15.8 ms** for the three
+  files, which is why the HTTP probe stays off the repaint path.
+- **The level is the second bracket, the category the third.** `[time] [LEVEL]
+  [category] message`: reading ERROR as a category counts nothing at all, and
+  counting categories instead of levels would have called a clean day healthy.
+  `_LOG_LINE_RE` is positioned on that, and a line that does not match is counted
+  in `unparsed` instead of being dropped.
+- **Files before HTTP, and HTTP never inside the TUI.** `claude_mem_worker()` reads
+  `worker.pid` and calls `os.kill(pid, 0)` — a syscall, so liveness and port cost
+  microseconds and still answer when nothing is running. The three endpoints are
+  only reached from `skillt claude-mem`, share **one** deadline (`clock` is
+  injected so that arithmetic is tested without sleeping), and are projected by
+  field name **and** by type: `database.path`, `worker.version` and chroma's free
+  text `details` are dropped because they are not integers or booleans, not because
+  a rule named them. Guards: `test_the_http_probe_shares_one_deadline`,
+  `test_no_path_or_free_text_crosses_the_http_whitelist`,
+  `test_no_http_is_reachable_from_the_tui_refresh_path`.
+- **doctor is offline, and a stopped worker is not a warning.** The worker is an
+  on-demand process; its absence is a state, not a fault, so `claude_mem.capture`
+  prints `worker down` and stays PASS. What does warn is the log's ERROR count —
+  the one signal the ledger cannot give, because a syncer can fail every attempt
+  while its newest row still looks fresh.
+- **The Agents page has no sort, on purpose.** `action_cycle_sort` returns for
+  `tab-agents`; falling through to the `else` would cycle the *Skills* sort while
+  the user stands on Agents and sees nothing change. Its `(unknown)` row is real
+  and explained on the page (M23).
 
 ## 7. Known limitations
 
-M1–M22, with reproduction notes:
+M1–M23, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
 [README.md](README.md#-known-limitations).
 The ones most likely to bite during maintenance: **M14** (historical prompt text
@@ -381,7 +421,9 @@ in rows — scrubbed 2026-10-01, and the backups predating it were deleted),
 re-check that no `skill-usage-backup-*.db` sits beside the database again),
 **M15** (calls that never completed leave no row), **M16** (one failed git
 lookup silences `branch` for a directory), **M17** (no log rotation), **M18** (a
-late error text can be dropped by the `COALESCE` on metadata).
+late error text can be dropped by the `COALESCE` on metadata) and **M23** (that
+same `COALESCE` freezes `agent`, so the Agents page counts the agent a session
+*first* reported and `(unknown)` measures capture order, not anonymous work).
 
 ## 8. Deferred (P2) — ranked, with why they are not fixed
 
@@ -393,6 +435,7 @@ late error text can be dropped by the `COALESCE` on metadata).
 | No log rotation (M17) | small | needs a policy decision (rotate vs. cap vs. rely on journald) |
 | `skillt agentos` re-reads every loop file in `store/loops/` on each call (`--limit N` caps how many are projected, not how many are listed) | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns. It was the Advisor tab that made this a per-keystroke cost; the tab is gone, so the cost is now paid only when the command is run |
 | The advisor digest reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one empties those numbers instead of breaking anything, and `_count_only` refuses to count text. A printed count that used to be a number turning into `-` is the signal |
+| The Plugins page re-reads claude-mem's whole worker log on every repaint — measured 8.2–15.8 ms for all three files | small | Bounded by `CLAUDE_MEM_LOG_BYTES_CAP` (4 MiB), and the page repaints on a tab change or a keypress at most once per `REFRESH_STALE_AFTER_S`. An mtime/size cache would make the line stale in exactly the case it exists for — noticing the syncer *started* failing — and milliseconds are not the freeze that banned HTTP from this path |
 | `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
 | `skill_versions` grows without bound | small | needs a retention decision; no pruning exists today |
 

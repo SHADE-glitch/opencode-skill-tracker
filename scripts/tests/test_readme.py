@@ -10,10 +10,9 @@ README = ROOT / "README.zh-CN.md"
 SYSTEMD = ROOT / "skill-tracker" / "systemd"
 
 # Every documented limitation, in both languages. M14-M18 came out of the
-# full capture/UI audit; M19 out of the privacy cleanup that followed it. The
-# English README used to stop at M11, so the landing page quietly disagreed with
-# the reference doc.
-LIMITATIONS = tuple(f"M{i}" for i in range(1, 23))
+# full capture/UI audit; M19 out of the privacy cleanup that followed it; M22-M23
+# out of the claude-mem neighbour and the Agents page.
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 24))
 
 
 def _text():
@@ -48,6 +47,10 @@ def test_readme_documents_every_known_limitation():
         "重启 OpenCode",                 # M11/M12
         "静态扫描",                      # M12
         "allowlist",                      # M13
+        # M22: two promises that are easy to lose while summarising the command.
+        "只数、不读",                    # `q=` is the user's own prompt text
+        "共用一个总截止时间",            # three endpoints, one budget
+        "采集顺序",                        # M23: `(unknown)` is not anonymous work
     ):
         assert keyword in text, f"known-limitation detail missing: {keyword}"
 
@@ -73,6 +76,9 @@ def test_english_readme_documents_every_known_limitation():
         "no row at all",       # M15
         "COALESCE",            # M18
         "The default now writes into",   # M19, fixed — must say where it goes
+        "counted, never read",   # M22: `q=` holds the user's prompt text
+        "one shared deadline",   # M22: three endpoints, not three timeouts
+        "capture order",         # M23: `(unknown)` is not anonymous work
     ):
         assert keyword in text, f"English limitation detail missing: {keyword}"
 
@@ -92,7 +98,8 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
     # Everything a reader needs to notice capture has decayed.
     for needle in (
         "skillt doctor", "skillt cleanup-selftest", "skillt sync --dry-run",
-        "skillt scrub-metadata", "capture.freshness", "log.errors",
+        "skillt scrub-metadata", "skillt claude-mem",
+        "capture.freshness", "log.errors",
         "env.opencode_version", "backups.latest", "integrity_check",
         "skillt-auto-backup.timer", "pytest scripts/tests", "bash -n bin/skillt",
         # MAINTENANCE §11 — how a green is produced. Named here so a translation
@@ -109,8 +116,12 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
         assert needle in zh, f"MAINTENANCE.zh-CN.md dropped an invariant: {needle}"
 
     # Deviations must be written down where the next reader will look, not in
-    # a commit message.
-    for needle in ("set_interval", "active_app", "row_targets", "schema_version"):
+    # a commit message. The claude-mem ones are the three things a future editor
+    # is most likely to "simplify" back into a wrong answer: read the tail, count
+    # categories instead of levels, and put the HTTP probe on a repaint path.
+    for needle in ("set_interval", "active_app", "row_targets", "schema_version",
+                   "CLAUDE_MEM_LOG_BYTES_CAP", "truncated", "unparsed",
+                   "_LOG_LINE_RE", "claude_mem_worker"):
         assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
 
     assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"
@@ -130,13 +141,14 @@ def test_readme_documents_commands_and_backup_ops():
     for cmd in (
         "skillt health", "skillt auto-backup", "skillt doctor", "skillt sync",
         "skillt insight", "skillt export", "skillt cleanup-selftest",
-        "skillt scrub-metadata", "skillt agentos",
+        "skillt scrub-metadata", "skillt agentos", "skillt claude-mem",
     ):
         assert cmd in text, f"command not documented: {cmd}"
     # the new headless surface must be documented where readers look for it
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     for cmd in ("skillt scrub-metadata", "skillt doctor", "--freshness-days",
-                "skillt agentos", "OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS"):
+                "skillt agentos", "OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS",
+                "skillt claude-mem", "inject-trace.log", "worker.pid"):
         assert cmd in en, f"README.md does not document: {cmd}"
     assert "enable-linger" in text
     assert "120 秒" in text or "120" in text
@@ -164,21 +176,33 @@ def test_readmes_list_every_tab_page():
     it; that is the drift this catches from the documentation side. The widget-tree
     half of the pair is `test_tui_tab_order_is_pinned`, which compares the real
     `TabPane` ids.
+
+    The list is compared *item by item, in order*, against what the app composes —
+    so a page that exists but is undocumented fails, and so does a page the docs
+    invented. Reading the ids out of the source instead of launching Textual keeps
+    this runnable on an interpreter with no textual installed.
     """
+    src = (ROOT / "scripts" / "skill-tui.py").read_text(encoding="utf-8")
+    panes = re.findall(r'with TabPane\("([^"]+)", id="(tab-[^"]+)"\)', src)
+    assert panes, "no TabPane found — the compose() shape changed, fix this test"
+    labels = [label for label, _ in panes]
+    assert [tid for _, tid in panes][-1] == "tab-data", panes
+
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
 
     def listed(text, marker):
-        start = text.index(marker) + len(marker)
-        segment = text[start:start + 400]
-        return segment[: segment.index("(") if "(" in segment[:400] else 400]
+        segment = text[text.index(marker) + len(marker):]
+        for bracket in ("(", "（"):                 # the sentence ends at its own note
+            at = segment.find(bracket)
+            if at != -1:
+                segment = segment[:at]
+        return [item.strip().strip("*").strip() for item in segment.split("/")]
 
-    for label, segment in (("README.md", listed(en, "Pages: ")),
-                           ("README.zh-CN.md", listed(zh, "页面："))):
-        for page in ("Dashboard", "Skills", "MCP", "Plugins", "Recent",
-                     "Categories", "Data"):
-            assert page in segment, f"{label} page list omits {page}: {segment[:120]!r}"
-        assert "Advisor" not in segment, f"{label} advertises a tab that is gone"
+    for label, items in (("README.md", listed(en, "Pages: ")),
+                         ("README.zh-CN.md", listed(zh, "页面："))):
+        assert items == labels, f"{label} page list {items} != the app's {labels}"
+        assert "Advisor" not in items, f"{label} advertises a tab that is gone"
 
 
 def test_readmes_say_the_tracker_cannot_record_the_advisor():

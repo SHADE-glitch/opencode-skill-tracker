@@ -858,7 +858,8 @@ def test_tui_plugins_page_shows_claude_mem_activity(seeded_plugin_db, tmp_path, 
 
 
 def test_no_http_is_reachable_from_the_tui_refresh_path(seeded_plugin_db, tmp_path, monkeypatch):
-    """The Plugins page repaints on every keypress; a network wait there freezes the UI.
+    """The Plugins page repaints on every tab change and on any keypress once it is
+    `REFRESH_STALE_AFTER_S` stale; a network wait there freezes the UI.
 
     `_refresh_pages` catches an exception from one section and marks that page
     stale, so raising here would be *swallowed* — the guard therefore records the
