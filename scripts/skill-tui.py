@@ -351,6 +351,23 @@ def _print_claude_mem_activity(activity, worker, http) -> None:
             extra.append("read capped at the byte limit, so this is a floor")
         if extra:
             print("               " + " · ".join(extra))
+        groups = trace.get("by_project") or {}
+        if groups:
+            bits = [f"{name} {v['injected']}/{v['loaded']}" for name, v in groups.items()]
+            if trace.get("projectless", {}).get("injected") or \
+                    trace.get("projectless", {}).get("loaded"):
+                pl = trace["projectless"]
+                bits.append(f"(no usable project name) {pl['injected']}/{pl['loaded']}")
+            print("  by project   " + " · ".join(bits) + "   [injected/loaded]")
+        days = trace.get("by_day") or {}
+        if days:
+            bits = [f"{day[5:]} {v['injected']}" for day, v in days.items()]
+            older = trace.get("older_days") or {}
+            if older.get("days"):
+                bits.append(f"… {older['days']} older day(s): {older['injected']}")
+            if (trace.get("undated") or {}).get("injected"):
+                bits.append(f"undated {trace['undated']['injected']}")
+            print("  by day       " + " · ".join(bits) + "   [injected, local days]")
     log = activity.get("worker_log")
     if log:
         levels = " · ".join(f"{k} {v:,}" for k, v in sorted((log.get("levels") or {}).items()))

@@ -2622,6 +2622,15 @@ CLAUDE_MEM_LOG_BYTES_CAP = 4 * 1024 * 1024
 # Reading ERROR as a category counts nothing at all.
 _LOG_LINE_RE = re.compile(r"^\[[^\]]+\]\s+\[\s*([A-Za-z]+)\s*]\s+\[([^\]]+)]")
 _LEN_RE = re.compile(r"\blen=(\d+)")
+# `project=` belongs to another tool's log. A space makes it a sentence and a
+# slash makes it a path, so neither is admitted: a value that is not slug-shaped
+# is counted, never echoed (the read side gates foreign enums the same way, via
+# `_short_label`).
+_PROJECT_LABEL_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
+_PROJECT_RE = re.compile(r"\bproject=([^ \"]+)")
+# The day table keeps the most recent N days; the rest is added up and reported,
+# never silently dropped. 14 is the same window the dashboard trend covers.
+CLAUDE_MEM_DAY_CAP = 14
 
 
 def _read_bounded_text(path: str, cap: int):
@@ -2647,7 +2656,12 @@ def _read_inject_trace(path: str, cap: int) -> dict | None:
     out = {"path": path, "lines": 0, "loaded": 0, "injected": 0,
            "injected_with_source": 0, "injected_bare": 0, "injected_with_query": 0,
            "worker_ensure": 0, "unrecognized": 0, "chars_total": 0,
-           "last_ts": None, "size_bytes": size, "truncated": truncated}
+           "last_ts": None, "size_bytes": size, "truncated": truncated,
+           "by_project": {}, "projectless": {"injected": 0, "loaded": 0},
+           "by_day": {}, "older_days": {"days": 0, "injected": 0, "loaded": 0},
+           "undated": {"injected": 0, "loaded": 0}}
+    projects: dict = {}
+    days: dict = {}
     newest = ""
     for line in text.splitlines():
         body = line.strip()
@@ -2655,13 +2669,16 @@ def _read_inject_trace(path: str, cap: int) -> dict | None:
             continue
         out["lines"] += 1
         stamp, _, rest = body.partition(" ")
+        kind = None
         if rest.startswith("loaded"):
             out["loaded"] += 1
+            kind = "loaded"
         elif rest.startswith("injected"):
             # Both shapes count: the plugin was edited in place, so the older bare
             # `injected project=… len=…` lines and the newer `source=` ones share
             # the file. Keying on `source=` alone dropped 91% of the injections.
             out["injected"] += 1
+            kind = "injected"
             if " source=" in rest:
                 out["injected_with_source"] += 1
             else:
@@ -2676,12 +2693,42 @@ def _read_inject_trace(path: str, cap: int) -> dict | None:
             out["worker_ensure"] += 1
         else:
             out["unrecognized"] += 1
+
+        if kind:
+            m = _PROJECT_RE.search(rest)
+            name = m.group(1) if m else None
+            if name and _PROJECT_LABEL_RE.match(name):
+                slot = projects.setdefault(name, {"injected": 0, "loaded": 0})
+                slot[kind] += 1
+            else:
+                out["projectless"][kind] += 1
+            # Local calendar day, because that is how every chart on the screen
+            # buckets (M1). `fmt_time`'s own output is the single source for it.
+            local = _epoch_iso_from_iso_text(stamp)
+            if local:
+                slot = days.setdefault(local[:10], {"injected": 0, "loaded": 0})
+                slot[kind] += 1
+            else:
+                out["undated"][kind] += 1
+
         if stamp > newest:
             # Only a stamp that parses may become the newest: a line that does not
             # start with a timestamp must not freeze out the real ones after it.
             converted = _epoch_iso_from_iso_text(stamp)
             if converted:
                 newest, out["last_ts"] = stamp, converted
+
+    out["by_project"] = dict(sorted(
+        projects.items(),
+        key=lambda kv: (-kv[1]["injected"], -kv[1]["loaded"], kv[0])))
+    ordered = sorted(days)                       # ISO date strings sort as text
+    keep = ordered[-CLAUDE_MEM_DAY_CAP:]
+    for day in keep:
+        out["by_day"][day] = days[day]
+    for day in ordered[:len(ordered) - len(keep)]:
+        out["older_days"]["days"] += 1
+        for key in ("injected", "loaded"):
+            out["older_days"][key] += days[day][key]
     return out
 
 

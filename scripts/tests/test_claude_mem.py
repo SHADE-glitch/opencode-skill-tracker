@@ -701,6 +701,117 @@ def test_doctor_never_reaches_the_worker_over_http(tmp_path, tracker_db, monkeyp
     assert "claude_mem.capture" in names, sorted(names)
 
 
+def test_trace_groups_injections_by_project_and_local_day(tmp_path, tracker_db):
+    """The log carries `project=` and a timestamp, so grouping needs no new file."""
+    lines = [
+        "2026-10-03T13:20:40.381Z loaded project=opencode",
+        "2026-10-03T13:20:41.000Z injected project=opencode len=120",
+        "2026-10-03T14:34:21.000Z injected project=selftest len=1440",
+        "2026-10-04T01:00:00.000Z injected project=opencode len=88",
+    ]
+    root = add_activity_files(tmp_path, trace=lines)
+    t = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))["trace"]
+    assert t["by_project"]["opencode"]["injected"] == 2, t["by_project"]
+    assert t["by_project"]["opencode"]["loaded"] == 1, t["by_project"]
+    assert t["by_project"]["selftest"]["injected"] == 1, t["by_project"]
+    assert t["injected"] == 3, t
+
+
+def test_the_day_buckets_follow_the_local_calendar_not_utc(tmp_path, tracker_db):
+    """Same rule as the dashboard trend (M1): a day is a local day.
+
+    UTC `20:00` is the next calendar day here (UTC+8), so a bucket keyed off the
+    raw `…Z` prefix would disagree with every other chart on the screen.
+    """
+    lines = ["2026-10-03T20:00:00.000Z injected project=opencode len=1"]
+    root = add_activity_files(tmp_path, trace=lines)
+    t = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))["trace"]
+    local_day = db.fmt_time("2026-10-03T20:00:00.000Z")[:10]
+    assert list(t["by_day"]) == [local_day], t["by_day"]
+    if local_day != "2026-10-03":       # true on this box (UTC+8); UTC hosts agree anyway
+        assert "2026-10-03" not in t["by_day"], t["by_day"]
+
+
+def test_a_project_name_that_is_not_a_slug_is_counted_never_named(tmp_path, tracker_db):
+    """`project=` is a foreign field; a sentence there must not become a label.
+
+    Spaces and slashes are rejected on purpose: one is prose, the other a path.
+    """
+    lines = [
+        f'2026-10-03T13:20:41.000Z injected project="{SENTINEL} because it drifted" len=5',
+        "2026-10-03T13:20:42.000Z injected project=/home/" + SENTINEL + "/p len=5",
+        "2026-10-03T13:20:43.000Z injected len=5",          # no project at all
+        "2026-10-03T13:20:44.000Z injected project=opencode len=5",
+    ]
+    root = add_activity_files(tmp_path, trace=lines)
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    t = a["trace"]
+    assert set(t["by_project"]) == {"opencode"}, t["by_project"]
+    assert t["by_project"]["opencode"]["injected"] == 1, t
+    assert t["projectless"]["injected"] == 3, t["projectless"]
+    blob = json.dumps(a, ensure_ascii=False)
+    assert SENTINEL not in blob, blob[:400]
+
+
+def test_grouping_never_loses_a_count(tmp_path, tracker_db):
+    """Buckets must account for every injected and loaded line, cap or no cap."""
+    lines = []
+    for day in range(1, 21):            # 20 distinct days, above the 14-day cap
+        lines.append(f"2026-09-{day:02d}T10:00:00.000Z loaded project=opencode")
+        lines.append(f"2026-09-{day:02d}T10:00:01.000Z injected project=opencode len=9")
+    lines.append("2026-09-05T10:00:02.000Z injected len=9")     # unprojected
+    lines.append("notatimestamp injected project=opencode len=1")  # undated
+    root = add_activity_files(tmp_path, trace=lines)
+    t = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))["trace"]
+    assert t["injected"] == 22 and t["loaded"] == 20, t
+    assert len(t["by_day"]) == 14, sorted(t["by_day"])
+    assert t["older_days"]["days"] == 6, t["older_days"]
+    assert sum(v["injected"] for v in t["by_day"].values()) \
+        + t["older_days"]["injected"] + t["undated"]["injected"] == t["injected"], t["by_day"]
+    assert sum(v["loaded"] for v in t["by_day"].values()) \
+        + t["older_days"]["loaded"] + t["undated"]["loaded"] == t["loaded"], t["by_day"]
+    assert sum(v["injected"] for v in t["by_project"].values()) \
+        + t["projectless"]["injected"] == t["injected"], t["by_project"]
+    assert sum(v["loaded"] for v in t["by_project"].values()) \
+        + t["projectless"]["loaded"] == t["loaded"], t["by_project"]
+    # The kept window is the most recent days, not the first 14 read.
+    assert max(t["by_day"]) == "2026-09-20", sorted(t["by_day"])
+
+
+def test_the_grouping_still_never_reads_the_query_text(tmp_path, tracker_db):
+    """Grouping added two new loops over the same lines; `q=` is still off limits."""
+    root = add_activity_files(tmp_path)     # TRACE_LINES carries SENTINEL in q=
+    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    blob = json.dumps(a, ensure_ascii=False)
+    assert SENTINEL not in blob, blob[:400]
+    assert a["trace"]["injected_with_query"] >= 1, a["trace"]
+
+
+def test_cli_prints_the_project_and_day_groups(tmp_path, tracker_db, monkeypatch, capsys):
+    """The grouping has to reach the human, not just the dict."""
+    root = add_activity_files(tmp_path)
+    store = str(root / "claude-mem.db")
+    monkeypatch.setenv(db.CLAUDE_MEM_DB_ENV, store)
+    args = st.Args()
+    args.db, args.json, args.days = store, False, 7
+    assert st._cli_claude_mem(tracker_db, args) == 0
+    out = capsys.readouterr().out
+    assert "by project" in out, out
+    assert "opencode 3/1" in out, out          # the fixture's TRACE_LINES split
+    assert "by day" in out, out
+    assert "[injected, local days]" in out, out
+
+    # Two-sided: with no trace file the lines must be gone, so the assertions above
+    # are not satisfied by an unconditional print.
+    gone = str(tmp_path / "empty-cm" / "claude-mem.db")
+    (tmp_path / "empty-cm").mkdir()
+    monkeypatch.setenv(db.CLAUDE_MEM_DB_ENV, gone)
+    args.db = gone
+    assert st._cli_claude_mem(tracker_db, args) == 0
+    quiet = capsys.readouterr().out
+    assert "by project" not in quiet and "by day" not in quiet, quiet
+
+
 # --- the whitelist is the contract ----------------------------------------
 def test_the_health_whitelist_names_no_prose_field():
     """Pinned as a set, so widening it is a decision and not an accident.
