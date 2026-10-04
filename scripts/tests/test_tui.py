@@ -22,7 +22,7 @@ from conftest import load_module  # noqa: E402
 
 st = load_module("skill-tui.py", "skill_tui")
 
-from textual.widgets import DataTable, Static  # noqa: E402
+from textual.widgets import DataTable, Static, TabbedContent  # noqa: E402
 
 
 def static_text(widget) -> str:
@@ -1944,6 +1944,161 @@ def test_tui_row_dispatch_ignores_unknown_kinds(seeded_db):
             screen.on_data_table_row_selected(event)      # must not raise
             await pilot.pause()
             assert app.screen is screen, "an unknown kind should do nothing"
+
+    _run(_run_it())
+
+
+# ---------------------------------------------------------------------------
+# Data-page write actions and the buttons that trigger them. The smoke tests
+# exercised rendering and navigation, but never backup/vacuum/export/clear/
+# delete or the button->action dispatch, so a broken `_do_delete` would have
+# shipped silently.
+# ---------------------------------------------------------------------------
+def test_tui_do_vacuum_runs_and_leaves_the_db_sound(seeded_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen._do_vacuum()
+            await pilot.pause()
+            assert app.conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    _run(_run_it())
+
+
+def test_tui_do_clear_removes_usage_but_keeps_skills(seeded_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen._do_clear()
+            await pilot.pause()
+            assert app.conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0] == 0
+            assert app.conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0] > 0
+
+    _run(_run_it())
+
+
+def test_tui_do_delete_removes_the_skill(seeded_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen._do_delete("grow")
+            await pilot.pause()
+            assert app.conn.execute(
+                "SELECT COUNT(*) FROM skills WHERE name='grow'"
+            ).fetchone()[0] == 0
+
+    _run(_run_it())
+
+
+def test_tui_action_backup_writes_into_backup_dir(seeded_db):
+    import skill_db as db
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.action_backup()
+            await pilot.pause()
+            files = [n for n in os.listdir(db.BACKUP_DIR) if db.BACKUP_RE.match(n)]
+            assert files, "the backup action must leave a backup file"
+
+    _run(_run_it())
+
+
+def test_tui_action_export_writes_beside_the_db(seeded_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.action_export()
+            await pilot.pause()
+            d = os.path.dirname(seeded_db)
+            exports = [n for n in os.listdir(d) if n.startswith("skill-usage-export-")]
+            assert exports, "the export action must leave a JSON file beside the db"
+
+    _run(_run_it())
+
+
+def test_tui_action_health_pushes_the_readonly_screen(seeded_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.action_health()
+            await pilot.pause()
+            assert type(app.screen).__name__ == "HealthScreen"
+
+    _run(_run_it())
+
+
+def test_tui_action_vacuum_asks_for_confirmation(seeded_db):
+    """Vacuum is destructive enough to go through the confirm modal first."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.action_vacuum()
+            await pilot.pause()
+            assert type(app.screen).__name__ == "ConfirmScreen"
+
+    _run(_run_it())
+
+
+def test_tui_button_dispatch_routes_each_id(seeded_db, monkeypatch):
+    """Every Data-page button id must map to its action; unknown ids are no-ops."""
+    from types import SimpleNamespace
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            called = []
+            monkeypatch.setattr(screen, "action_backup", lambda: called.append("backup"))
+            monkeypatch.setattr(screen, "action_vacuum", lambda: called.append("vacuum"))
+            monkeypatch.setattr(screen, "action_export", lambda: called.append("export"))
+            monkeypatch.setattr(screen, "action_health", lambda: called.append("health"))
+            monkeypatch.setattr(screen, "_confirm", lambda msg, cb: called.append("clear"))
+
+            for bid in ("btn-backup", "btn-vacuum", "btn-export", "btn-health", "btn-clear"):
+                screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id=bid)))
+            assert called == ["backup", "vacuum", "export", "health", "clear"]
+
+            screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="btn-unknown")))
+            await pilot.pause()
+
+    _run(_run_it())
+
+
+def test_tui_cycle_sort_on_the_plugins_tab(seeded_plugin_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.query_one(TabbedContent).active = "tab-plugins"
+            await pilot.pause()
+            before = app.plugin_sort_mode
+            app.screen.action_cycle_sort()
+            await pilot.pause()
+            assert app.plugin_sort_mode != before
+
+    _run(_run_it())
+
+
+def test_tui_cursor_up_does_not_raise(seeded_db):
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.query_one(TabbedContent).active = "tab-skills"
+            await pilot.pause()
+            app.screen.action_cursor_down()
+            await pilot.pause()
+            app.screen.action_cursor_up()
+            await pilot.pause()
 
     _run(_run_it())
 

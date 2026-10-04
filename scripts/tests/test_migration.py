@@ -55,6 +55,27 @@ def test_ensure_schema_is_idempotent(empty_db):
     conn.close()
 
 
+def test_ensure_schema_survives_a_duplicate_column_race(empty_db, monkeypatch):
+    """Two migrators racing: the loser's ALTER hits 'duplicate column name'.
+
+    The `_column_exists` check and the `ALTER TABLE` cannot be atomic, so the
+    TUI and the CLI starting together can both decide the column is missing.
+    The loser must swallow the duplicate-column error, not abort the migration.
+    """
+    conn = db.open_db(empty_db, readonly=False)
+    db.ensure_schema(conn)  # both columns now exist
+
+    # Force the "I think it's missing" side of the race for every column.
+    monkeypatch.setattr(db, "_column_exists", lambda *_a, **_k: False)
+    db.ensure_schema(conn)  # must not raise
+
+    skills_cols = [r[1] for r in conn.execute("PRAGMA table_info(skills)")]
+    inv_cols = [r[1] for r in conn.execute("PRAGMA table_info(plugin_inventory)")]
+    assert skills_cols.count("content_hash") == 1
+    assert inv_cols.count("scope") == 1
+    conn.close()
+
+
 def test_migration_preserves_rows_and_schema(empty_db):
     conn = db.open_db(empty_db, readonly=False)
     conn.execute("INSERT INTO skills (name, category, path, description) VALUES ('a','personal-skills','/a','A')")

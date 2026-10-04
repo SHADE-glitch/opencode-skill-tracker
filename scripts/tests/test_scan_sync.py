@@ -45,6 +45,26 @@ def test_frontmatter_handles_quotes_colons_and_folded():
     assert db.parse_frontmatter("\ufeff---\nname: bom\n---\n")["name"] == "bom"
 
 
+def test_walk_skill_files_missing_dir_is_empty(tmp_path):
+    """An unreadable/missing root is skipped, not raised (os.scandir guard)."""
+    assert db.walk_skill_files(str(tmp_path / "does-not-exist")) == []
+
+
+def test_sync_counts_unparsed_names(tmp_path):
+    """A SKILL.md with no frontmatter `name` is counted, not dropped."""
+    skills = tmp_path / "skills"
+    d = skills / "personal-skills" / "noname"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\ndescription: no name field\n---\nbody\n", encoding="utf-8")
+
+    conn = db.open_db(str(tmp_path / "t.db"), readonly=False)
+    db.ensure_schema(conn)
+    stats = db.sync_versions(conn, skills_dir=str(skills))
+    assert stats["scanned"] == 1
+    assert stats["unparsed_name"] == 1
+    conn.close()
+
+
 def test_sync_baseline_then_noop(empty_db, temp_skills):
     conn = db.open_db(empty_db, readonly=False)
     first = db.sync_versions(conn, skills_dir=temp_skills)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -84,6 +84,14 @@ def test_plan_never_deletes_unparseable_names():
         "/b/skill-usage.db",
     }
     assert plan["keep"] == ["/b/" + _name(2026, 6, 1)]
+
+
+def test_plan_treats_a_shaped_but_impossible_date_as_unparsed():
+    """Matches BACKUP_RE yet month 13 — strptime fails, so it is never deleted."""
+    bad = "/b/skill-usage-backup-20261340-000000.db"
+    plan = db.plan_retention([bad])
+    assert plan["unparsed"] == [bad]
+    assert plan["delete"] == []
 
 
 def test_plan_empty_is_empty():
@@ -215,6 +223,20 @@ def test_backup_db_avoids_same_second_collision(seeded_db):
     # explicit targets still refuse to overwrite (loud failure preserved)
     with pytest.raises(FileExistsError):
         db.backup_db(conn, first)
+    conn.close()
+
+
+def test_backup_db_fails_loudly_when_no_name_is_free(seeded_db, tmp_path, monkeypatch):
+    """Five occupied candidate names in a row must raise, not overwrite."""
+    bdir = _backup_dir(tmp_path, monkeypatch)
+    bdir.mkdir()
+    now = datetime.now(timezone.utc)
+    for bump in range(-1, 7):  # cover the call-time window regardless of a tick
+        ts = (now + timedelta(seconds=bump)).strftime("%Y%m%d-%H%M%S")
+        (bdir / f"skill-usage-backup-{ts}.db").write_bytes(b"x")
+    conn = db.open_db(seeded_db, readonly=False)
+    with pytest.raises(FileExistsError):
+        db.backup_db(conn)
     conn.close()
 
 

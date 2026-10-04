@@ -61,6 +61,17 @@ def test_buckets_active_stale_unused_and_never(tmp_path):
     conn.close()
 
 
+def test_health_report_stamps_a_naive_now_as_utc(tmp_path):
+    """A naive `now` must be read as UTC, not silently as local time."""
+    conn = _db(tmp_path)
+    _skill(conn, "a")
+    conn.commit()
+    rep = db.health_report(conn, now=datetime(2026, 6, 15, 12, 0, 0))
+    assert rep["counts"]["total"] == 1
+    assert rep["generated_at"].startswith("2026-06-15T12:00:00")
+    conn.close()
+
+
 def test_thirty_day_boundary_is_inclusive(tmp_path):
     conn = _db(tmp_path)
     _skill(conn, "edge")
@@ -147,6 +158,47 @@ def test_frequently_edited_threshold(tmp_path):
     flags = {s["skill_name"]: s["flags"] for s in db.health_report(conn, now=REF)["skills"]}
     assert "frequently_edited" in flags["churny"]
     assert "frequently_edited" not in flags["calm"]
+    conn.close()
+
+
+def test_health_suggests_reviewing_a_stale_skill(tmp_path):
+    """A 30-90 day skill produces the 'worth a look' suggestion (not a prune)."""
+    conn = _db(tmp_path)
+    _skill(conn, "good")
+    _skill(conn, "stale")
+    for i in range(20):  # enough sessions/days for advice
+        _use(conn, "good", at=REF - timedelta(days=i % 14), i=i)
+    _use(conn, "stale", at=REF - timedelta(days=45), i=99)
+    conn.commit()
+    rep = db.health_report(conn, now=REF)
+    assert rep["sample"]["enough_for_advice"] is True
+    assert "worth a look" in " ".join(rep["suggestions"])
+    conn.close()
+
+
+def test_health_suggests_reviewing_long_unused_skills(tmp_path):
+    """A skill unused for >90 days is flagged for review, never deletion."""
+    conn = _db(tmp_path)
+    _skill(conn, "good")
+    _skill(conn, "dormant")
+    for i in range(20):
+        _use(conn, "good", at=REF - timedelta(days=i % 14), i=i)
+    _use(conn, "dormant", at=REF - timedelta(days=200), i=99)
+    conn.commit()
+    rep = db.health_report(conn, now=REF)
+    assert "unused for over" in " ".join(rep["suggestions"])
+    conn.close()
+
+
+def test_health_reports_all_healthy_when_nothing_flags(tmp_path):
+    conn = _db(tmp_path)
+    _skill(conn, "good")
+    for i in range(20):
+        _use(conn, "good", at=REF - timedelta(days=i % 14), i=i)
+    conn.commit()
+    rep = db.health_report(conn, now=REF)
+    assert rep["sample"]["enough_for_advice"] is True
+    assert rep["suggestions"] == ["All skills look healthy"]
     conn.close()
 
 

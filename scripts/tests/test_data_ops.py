@@ -13,6 +13,23 @@ import skill_db as db
 LEAKED = '{"model":"p/m","agent":"build","summary":"the user prompt","title":"bash: ls"}'
 
 
+def test_skill_detail_unknown_skill_is_none(seeded_db):
+    conn = db.open_db(seeded_db)
+    assert db.skill_detail(conn, "no-such-skill") is None
+    conn.close()
+
+
+def test_skill_detail_versions_degrade_without_the_table(seeded_db):
+    """A legacy DB without `skill_versions` reports [] rather than crashing."""
+    conn = db.open_db(seeded_db, readonly=False)
+    conn.execute("DROP TABLE skill_versions")
+    conn.commit()
+    detail = db.skill_detail(conn, "grow")
+    assert detail is not None
+    assert detail["versions"] == []
+    conn.close()
+
+
 def test_scrub_metadata_dry_run_leaves_the_database_untouched(seeded_db):
     conn = db.open_db(seeded_db, readonly=False)
     leaked = "SELECT COUNT(*) FROM skill_usage WHERE json_extract(metadata,'$.summary') IS NOT NULL"
