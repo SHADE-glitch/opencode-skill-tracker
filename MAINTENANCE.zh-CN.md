@@ -14,10 +14,10 @@
 | 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
 | TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
 | 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL；2026-10-04 实测 606,208 字节（2026-10-01 是 592 KiB） |
-| 行数（2026-10-04 15:56 重数，活的） | 44 skills · 1 skill_usage · 2 mcp_usage · 14 plugin_usage · 81 skill_versions · 5 plugin_inventory · **0 subagent_usage**——新表已经在生产库里了，但是空的，因为正在运行的 OpenCode 还没加载新的写入端（M24）。`claude_mem_search` 现在被调过了（1 行）；而 `claude-mem-inject.js` 在 2026-10-03 23:32 注册的那 9 个工具仍然是 0，所以 `skillt plugins` 报出 12 个界面、其中 10 个从没被调用 |
+| 行数（2026-10-04 19:36 重数，活的） | 44 skills · 2 skill_usage · 2 mcp_usage · 26 plugin_usage · 81 skill_versions · 5 plugin_inventory · **1 subagent_usage**（`auditor` ×1，18:00）——owner 在 16:31 重启了 OpenCode，所以那之后的启动会记，之前的全都没有（M24）。
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2`。2026-10-04 加 `subagent_usage` 时**没有** bump：这个计数器是为视图存在的（`CREATE VIEW IF NOT EXISTS` 改不了已有视图），而这次加的是表，`ensure_schema()` 每次都会幂等建表 |
 | 导出文档 | `schema_version = 6`（4 = metadata 走白名单，5 = 多了 `plugin_inventory.scope`，6 = 新增 `subagent_usage` 这个键）。`PRAGMA user_version` / `SCHEMA_VERSION` 仍是 **2**：这个计数器存在，是因为 `CREATE VIEW IF NOT EXISTS` 改不了已有的视图，而这一轮加的是**表**、不是视图——`ensure_schema()` 每次都会跑建表 DDL，所以不该 bump |
-| 测试 | 417 passed / 0 failed（2026-10-04 重数，加上 Plugins 页并集、子 agent 那条流与自测日志隔离之后）； shipped `__selftest()` 是 62/62 条断言，`test_selftest_is_green_end_to_end` 低于 62 就判失败—— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
+| 测试 | 429 passed / 0 failed（2026-10-04 重数，加上注入分组、Agents 页签前移与 `Ran as` 列之后）； shipped `__selftest()` 是 62/62 条断言，`test_selftest_is_green_end_to_end` 低于 62 就判失败—— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
 | AgentOS 顾问存储（2026-10-03 实测；那是另一个进程的状态，会变） | `/home/shade/Public/AgentOS/store/aos.db`——22 条 telemetry、51 条召回（覆盖 8 条记忆）、14 条记忆、**83 个 loop 文件**。阶段耗时已经不是小数：最新的 loop 里 `validate` 跑到 31–37 秒，是 1200ms 预算的约 30 倍。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。某个 loop 是 live 测试样本还是真实用量，不由本项目代答；这里对那个库只读，最新的 loop 自己带着 `model` 标签。 |
 | claude-mem 邻居（2026-10-04 15:56 重测；那是另一个进程的状态，会变） | `~/.claude-mem/`——它的账本：403 条 observation，最新一行距今 0.0 天。它自己的文件：`inject-trace.log` 157 行 → **103 次注入**（59 行裸的 + 44 行带 `source=`）、40 loaded、`unrecognized` 0；worker 日志**已经翻到 `logs/claude-mem-2026-10-04.log`**（374,014 字节 / 2,463 行）→ INFO 2,290 · WARN 168 · **ERROR 5**，`unparsed` 0——读取端按 mtime 挑了最新那个带日期的文件，把 2026-10-03 那份 609,860 字节的日志（连同它的 57 条 ERROR）留在了原地，这就是 `test_only_the_dated_worker_log_is_read` 在真机上的样子；`worker.pid` → 进程活着、端口 37700、`startToken` 从不读。读这三样实测 **8.2–15.8 ms**（跑五次）——那就是 Plugins 页那一行 dim 文本每次重画要付的钱，也是为什么 `claude_mem_http` 绝不在这条路上被调用 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，11.3 天 1138 行（首行 2026-09-23）。里面有 **4 行 `[err]`，全是 `selftest FAIL: …`，是本项目的自测在 2026-10-04 07:32Z 写进去的**——那时子 agent 的断言还是红的。`doctor` 的 `log.errors` 会因此 WARN，而它们是测试残留、不是采集故障。**它们暴露的缺口已经修掉**（2026-10-04）：`__selftest()` 现在会把自己的日志改写到临时库旁边的 `skill-tracker-selftest.log`，除非用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定别的路径——所以文档里那条手工配方再也碰不到这个文件。验证方式是照原配方跑一次并对比这份日志的 sha256（前后一致），再**故意跑一次失败的自测**，它的 `[err]` 行落在隔离文件里。那 4 行历史残留仍在，它们早于本次修复，不是采集故障；别手工去删活日志里的行。 |
@@ -257,6 +257,8 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
   `test_tui_trend_css_height_matches_the_line_count` 和
   `test_tui_trend_rows_are_a_fixed_width`；最后这条量的是**剥掉标记后**的文本，
   因为 `Static.content` 返回的原串带着标记。
+- **子 agent 的两个角色分两列。** `Spawned` 是这个 agent 启动了几次，`Ran as` 是这个名字被别人当子 agent 跑了几次；两者绝不合成一个数，也都不进 `Total`——`Total` 在每一行上都仍等于 skill + MCP + plugin，由 `test_spawns_and_runs_are_two_columns_and_never_inside_total` **逐行**钉住，而不是只对着今天恰好存在的总数核。纯子 agent 行的 `Success rate` 按它自己的运行次数算（那是它唯一有的结果），并带 `⟨sub⟩` 标记，免得被读成「一个很闲的主 agent」。
+- **注入分组不许丢数，日子按本地算。** `by_project` 与 `by_day` 只用日志行本来就带的信息；归不进组的行落进 `projectless`、`older_days` 或 `undated`，绝不静默消失，`test_grouping_never_loses_a_count` 断言各组之和加得回总量。分日跟 `fmt_time` 的本地日历一致，因为趋势图也这么分（M1）；`project=` 的值只有**长得像 slug** 才准入（不含空格、不含路径），所以那个外来字段里出现一句话时，它变成一个计数，不会变成一个标签。
 - **行身份绝不从 row key 里 parse 回来。** 名字本身含分隔符（`@scope/pkg`、`conductor:newTrack`、带 `_` 的 server 名），所以每张表在渲染时把 `(kind, ...parts)` 注册进 `app.row_targets`。不要恢复 `split()`。
 - **`unified_recent_rows` 额外返回详情页需要的列**（`skill_name`、`server_name`+`tool_name`、`plugin_name`+`item_kind`+`item_name`），显示用的 `name` 不是主键。
 - **导出对 metadata 走白名单**（`EXPORT_METADATA_KEYS`）而不是整列倒出，文档形状因此升到 `schema_version = 4`；后来给 `plugin_inventory` 加 `scope` 又把它推到 5，新增 `subagent_usage` 这个键把它推到 6。再改形状要升版本并同步 `test_export.py` / `test_plugin_db.py`——形状用例现在把**整个键集合**钉死了，新键没法悄悄混进来。
@@ -289,6 +291,7 @@ M1–M23 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英�
 | Plugins 页每次重画都整份重读 claude-mem 的 worker 日志——实测 8.2–15.8 ms | 小 | 上限由 `CLAUDE_MEM_LOG_BYTES_CAP` 兜住，而这一页只在切页、或按键且已过 `REFRESH_STALE_AFTER_S` 时才重画。按 mtime/size 缓存会让这行文本正好在它存在的那个场景上变陈——「发现后台同步开始失败」；这点开销也没到冻住界面的程度 |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
 | `skill_versions` 无上限增长 | 小 | 需要保留策略；目前没有任何清理 |
+| 从 OpenCode 自己的 `part` 表回填 `subagent_usage`（重启前那 84 次：`explore` 61、`general` 13、`auditor` 5、`researcher` 3、`reviewer` 2、`verifier` 1） | 小——一次只读扫描、8 条白名单 json 路径、按 `(parent_session_id, call_id)` 幂等 | **owner 在 2026-10-04 明确不做**：为一个不是天天问的历史问题，要把一个正在被写的库（OpenCode 自己的，WAL，会话跑着的时候也在写）加进本项目的读集合。于是 `Ran as` 说的是「自上次启动以来」，M24 也在页面上这么讲。等真有需要那些旧数字的问题时再提。 |
 
 ### 已用 live 验证结清（2026-10-01）
 

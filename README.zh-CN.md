@@ -128,11 +128,17 @@ agent——`metadata` 只写一次、永不更新，所以在它的 session 报�
 `(unknown)`。这个桶连同它的计数一起显示出来，不藏（见 M23）。这一页上 `s` 是**故意**什么都不做的：
 它只有一种排序，往下落到 `else` 会在你站在 Agents 页时悄悄改掉 Skills 的排序。
 
-`Spawned` 排在 `Total` 后面，而且**故意不算进 `Total`**：它数的是宿主通过内置 `task` 工具
-**启动子 agent** 的次数——那不是上面三种被测量的调用之一。页脚接着按名字列出这些子 agent 和各自的次数。
-这是一个子 agent 在「什么都没被测到」时唯一还能出现的地方：如果它整轮只在跑 shell 和改文件，
-它一行用量都不会留下，因为内置不是本 tracker 测的东西（M13）。那条记录里只有「它跑了、叫什么、
-在哪个子会话、跑了多久」，**绝不包含派它出去的任务原文**（M24）。
+`Spawned` 与 `Ran as` 排在 `Total` 后面，而且**故意不算进 `Total`**。它们是两件事、不是一个数：
+`Spawned` 是这个 agent **启动**了几个子 agent，`Ran as` 是这个名字**被别人当子 agent 跑过**几次
+（这类行带 `⟨sub⟩` 标记）。一个子 agent 如果整轮只在跑 shell 和改文件，它哪里都不会有用量行——
+内置不是本 tracker 测的东西（M13）——所以启动记录是它唯一能出现的地方，这也是它值得一行、
+而不是只进脚注的原因。这种行的 `Success rate` 按**运行次数**算（那是它唯一有的结果），
+但 `Total` 在每一行上都仍然只等于 skill + MCP + plugin，包括 Total 为 0 的那些。
+
+某个名字不在 `Ran as` 里，说的是它**自 OpenCode 上次启动以来**没跑过，不是「从没跑过」：
+`subagent_usage` 从写入端存在的那一刻才开始记（M24）。要找回更早的历史得去读 OpenCode 自己的
+`opencode.db`（那里 `task` 的 `subagent_type` 与两个会话 id 都齐），本轮**明确不做**——理由与
+后果写进 `MAINTENANCE.zh-CN.md` §8 的暂缓表，好让「没实现」和「没决定」以后还分得开。
 
 **没有 Advisor 页**：这一页在 2026-10-03 按 owner 的要求移除了。它当时展示的只读聚合仍然存在，只是退回无头命令 `skillt agentos`（见下文命令一览）；那条命令现在是唯一打开那个库的入口，TUI 的任何一页都不再读它——这一点由 `test_tui_never_reads_the_advisor_store` 钉住。
 
@@ -181,7 +187,7 @@ skillt claude-mem [--json] [--days N]
 - `mcp`：MCP 工具使用情况——按 server 汇总，再列出调用最多的工具（次数、成功率、最近使用）。**只读。**
 - `plugins`：插件清单（来源、版本、工具/命令面、排除状态、`scope` 与最后被看到的时刻）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
 - `claude-mem`：**只读** claude-mem 插件自己的账本——它记了多少 observation / 提示 / 会话、最新一行距今多久、discovery token 合计，以及它后台观察器的连续失败计数；同一时间窗里本 tracker 测到了多少也一并列在旁边。只有计数与时间：那个库里的文本列、以及存着它 API key 的 `settings.json`，一律不读（见 M22）。装在默认位置时不需要配置，否则设 `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` 或 `CLAUDE_MEM_DIR`；库不存在时 `skillt doctor` 对此一句不提。
-  它还会按这个顺序读 claude-mem 为自己写的另外三个文件：`inject-trace.log`（它的 hook 注入了什么——`q=` 后面是用户提示词原文，**只数、不读**）、`logs/claude-mem-<日期>.log`（按级别计行，一天里有多少 ERROR 就是从这儿来的）、`worker.pid`（存活与端口，所以这里不硬编码 `37700`）。文件之后，只有这一条命令会向正在运行的 worker 问三个 HTTP 问题（`/api/stats`、`/api/processing-status`、`/api/chroma/status`），而且**三个端点共用一个总截止时间**（不是各超时一次），答案里只留整数与布尔——`database.path`、`worker.version` 和自由文本 `details` 一律丢掉。这些数字一个都不写进 tracker 的表；TUI 里也不做这些：Plugins 页只把同样的日志文件数字印成一行 dim 文本，从不打开 socket。
+  它还会按这个顺序读 claude-mem 为自己写的另外三个文件：`inject-trace.log`（它的 hook 注入了什么——`q=` 后面是用户提示词原文，**只数、不读**；计数还会按 `project=` 与按**本地日**分组，归不进组的只计数、绝不少掉）、`logs/claude-mem-<日期>.log`（按级别计行，一天里有多少 ERROR 就是从这儿来的）、`worker.pid`（存活与端口，所以这里不硬编码 `37700`）。文件之后，只有这一条命令会向正在运行的 worker 问三个 HTTP 问题（`/api/stats`、`/api/processing-status`、`/api/chroma/status`），而且**三个端点共用一个总截止时间**（不是各超时一次），答案里只留整数与布尔——`database.path`、`worker.version` 和自由文本 `details` 一律丢掉。这些数字一个都不写进 tracker 的表；TUI 里也不做这些：Plugins 页只把同样的日志文件数字印成一行 dim 文本，从不打开 socket。
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（**三张表分别**报最新一条距今多少天，例如 `skill_usage 0.0d · mcp_usage 2.2d · plugin_usage 0.0d`，阈值 `--freshness-days`，默认 7；从没记过行的流报 `no rows`，不算停滞；`OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` 可以把某条流排除在判定之外，但它仍会被打印并标注 `(excluded)`）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）。这三项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
@@ -412,7 +418,7 @@ rm -rf ~/.local/share/opencode/backups
 - **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。
 - **M22 claude-mem 的数字来自别人的 schema，而且只是数字。** `skillt claude-mem` 以只读方式打开另一个插件的 SQLite 库：只取计数、时间戳和很短的分类标签，绝不取它们旁边的文本列（`prompt_text`、`text`、`narrative`、`tool_input` 等），也绝不打开它的 `settings.json`。上游改字段名只会让某个数字变空，不牵连别处（又是 M21 那个形状）；一张表都读不到的库会被报成「读不懂」，而不是「装了但是空的」。claude-mem **做了什么**（它自己的 hook、它自己的总结进程）从这里根本观测不到——这里读的是它写下了什么，不是它干了什么。它的两个日志文件守同一条约定：按行的**形状**解析（格式变了的行计入 `unrecognized`，不会被悄悄丢掉；任何一行原文都不回显），并且从文件**开头**整份扫描、带字节上限——尾部读取看不见文件前半段，而真机上那 57 条 ERROR **全在开头**。上限生效时结果里写着 `truncated`，此时数字是下界不是总量。HTTP 的投影同时按字段名**和**类型过滤，所以某个字段被改名去装文本时，结果是啥也没有，而不是漏出去。
 - **M23 Agents 页统计的是某一行的 session **首次**上报的 agent，不是跑掉这次调用的那个 agent。** 三张用量表的 upsert 都写成 `metadata = COALESCE(existing, excluded)`，谁先写进这一行的 JSON 就永远冻在这儿；而 `agent` 只在更晚的 `chat.message` 里才到。于是在它的 session 报出 agent 之前落库的调用会**永远**是 `(unknown)`——`(unknown)` 量的是**采集顺序**，不是「无主的调用」。它连同自己的计数一起显示，为的就是这张表不能被读成「这些 agent 干了这些」。2026-10-03 的两份备份实测：619 行与 664 行里，没有 agent 的是 0 行，所以正常机器上这个桶是空的；写下来是因为它**从页面上推导不出来**。
-- **M24 子 agent 里没用到「被测工具」时，它的工作是看不见的。** `task` 是内置工具，而内置是刻意不测的（M13），所以一条启动记录就是「它跑过」的唯一证据：宿主被要求用哪个名字、它拿到哪个子会话、有没有跑完、跑了多久。由此有两件事要钉住。其一，Agents 页的 `Spawned` 数的是**启动次数**，绝不并入 `Total`——否则同一列今天叫「调用」、明天叫「调用加事件」。其二，名字来自宿主的 `subagent_type` 参数，只有**长得像一个标签**才准入（`SUBAGENT_LABEL_RE`：不含空格、不含路径、至多 40 字符）；这是**形状**判定，不是「散文探测器」，不合格的值会被计成 `(unnamed)` 而不是打印出来。同一段载荷里的任务原文、一句话描述、title、子 agent 的回报与报错字符串，一行都不进表——写入端除了这几个标识符字段外不点任何字段名。这条流在旧库上起点是空的：表要等下一个会迁移的入口（`skillt`、`sync`、`doctor`）跑过才出现，而正在运行的 OpenCode 要**重启**才会加载新的写入端，所以在这些之前开始的会话里 `Spawned` 会显示 0。想关掉就设 `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1`；至于宿主对内置工具究竟会触发 hook 还是事件——这里**不赌**，两条路都写，由 `(parent_session_id, call_id)` 决定只留一行。
+- **M24 子 agent 里没用到「被测工具」时，它的工作是看不见的。** `task` 是内置工具，而内置是刻意不测的（M13），所以一条启动记录就是「它跑过」的唯一证据：宿主被要求用哪个名字、它拿到哪个子会话、有没有跑完、跑了多久。由此有两件事要钉住。其一，Agents 页的 `Spawned` 数的是**启动次数**，绝不并入 `Total`——否则同一列今天叫「调用」、明天叫「调用加事件」。其二，名字来自宿主的 `subagent_type` 参数，只有**长得像一个标签**才准入（`SUBAGENT_LABEL_RE`：不含空格、不含路径、至多 40 字符）；这是**形状**判定，不是「散文探测器」，不合格的值会被计成 `(unnamed)` 而不是打印出来。同一段载荷里的任务原文、一句话描述、title、子 agent 的回报与报错字符串，一行都不进表——写入端除了这几个标识符字段外不点任何字段名。这条流在旧库上起点是空的：表要等下一个会迁移的入口（`skillt`、`sync`、`doctor`）跑过才出现，而正在运行的 OpenCode 要**重启**才会加载新的写入端，所以在这些之前开始的会话里 `Spawned` 会显示 0。想关掉就设 `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1`；至于宿主对内置工具究竟会触发 hook 还是事件——这里**不赌**，两条路都写，由 `(parent_session_id, call_id)` 决定只留一行。同一条边界也让一行可以是「缺席」而不是「错」：`Ran as` 说不含写入端存在之前跑过的子 agent。要恢复那段历史技术上很干净——OpenCode 自己的 `opencode.db`里每条 `task` 都带着 `subagent_type` 和两个会话 id——但这里**刻意不做**，因为它会给本项目加一个正在被写的外来库；这个取舍记在 §8 暂缓表里，让「没实现」和「没决定」以后还看得出来。
 - **M21 顾问的单次预算是抄来的默认值。** tracker 没法跨那道缝读 `AOS_TIMEOUT_MS`，所以"是否超预算"用的是 AgentOS 文档里的默认值 1200ms，除非用 `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` 覆盖。AgentOS 若改了默认而这边没跟着改，这个标记就会**安静地失效**——和 M13 同一形状，所以写在这里而不是藏在常量里。
 - **M18 后到的错误文本可能被丢弃。** 三条 UPSERT 都用 `metadata = COALESCE(已存在, 新来的)`：若 `after` 钩子先写了一行、随后事件路径带着真正的报错文本到达，`status` 会被纠正为 `error`（单调规则），但 `metadata.error` **不会**被补进去。承载去重不变量，本轮不动。
 

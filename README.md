@@ -208,14 +208,20 @@ in `(unknown)` forever. That bucket is printed with its own count instead of
 being hidden (see M23). `s` deliberately does nothing here — the page has no sort
 of its own to cycle.
 
-`Spawned` sits after `Total` and is deliberately outside it: it counts times the
-host started a **subagent** through the builtin `task` tool, which is not one of
-the three kinds of call measured above. The footer lists those subagents by name
-with their run counts. This is the only place a subagent can appear when it did
-nothing measurable: a subagent that spent its whole run shelling and editing
-leaves no usage row anywhere, because builtins are not what this tracker measures
-(M13). The row holds that it ran, under what name, in which child session, and
-how long — never the task text that spawned it (M24).
+`Spawned` and `Ran as` sit after `Total` and are deliberately outside it. They are
+two facts, not one count: `Spawned` is how many subagents this agent started,
+`Ran as` is how many times this name ran as somebody else's subagent (such a row
+carries `⟨sub⟩`). A subagent that spent its whole run shelling and editing leaves no
+usage row anywhere — builtins are not what this tracker measures (M13) — so the
+spawn record is the only place it can appear, which is why it gets a row rather
+than a footnote. Its `Success rate` is over its runs, because that is the only
+outcome it has; `Total` still means skill + MCP + plugin on every row, including
+one whose Total is 0.
+
+A name missing from `Ran as` did not run **since OpenCode last started**, not never:
+`subagent_usage` begins where the writer begins (M24). Recovering the earlier
+history would mean reading OpenCode's own database; that is deliberately not done
+here and is recorded as deferred in `MAINTENANCE.md` §8.
 
 There is **no Advisor page**: the tab was removed on 2026-10-03 at the owner's
 request. The read-only aggregation it showed still exists headless as
@@ -303,7 +309,9 @@ skillt agentos   [--json] [--limit N]
   `skillt doctor` says nothing about it when the store is absent.
 
   It reads three more of claude-mem's own files, in this order: `inject-trace.log`
-  (what its hook injected — the query text after `q=` is **counted, never read**),
+  (what its hook injected — the query text after `q=` is **counted, never read**,
+  and the counts are grouped by `project=` and by **local** day, with anything
+  ungroupable counted rather than dropped),
   `logs/claude-mem-<date>.log` (line counts per level, which is where the day's
   ERROR total comes from) and `worker.pid` (liveness and port, so nothing here
   hardcodes `37700`). Only after the files does this one command ask the running
@@ -682,6 +690,13 @@ The full audit — M1 through M24, with reproduction notes — lives in
   began before either happened. `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1` turns
   it off; which of the two write paths the host actually fires for a builtin is
   not assumed, so both write and the `(parent_session_id, call_id)` key decides.
+  The same boundary makes a row *absent* rather than wrong: `Ran as` says nothing
+  about a subagent that ran before the writer existed. Recovering that history is
+  technically clean — OpenCode's own `opencode.db` keeps every past `task` with its
+  `subagent_type` and both session ids — and is deliberately **not** done here,
+  because it would put a live foreign database into this project's read set. That
+  choice is recorded as deferred in `MAINTENANCE.md` §8, so "not implemented" and
+  "not decided" do not look the same from here.
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 

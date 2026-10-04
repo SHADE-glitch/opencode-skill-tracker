@@ -33,6 +33,14 @@ below). Three layers, in dependency order:
    tool but does its real work in its own hooks, which the host never reports to
    us, so `skillt claude-mem` reads what it wrote (counts, timestamps, token
    totals) and nothing else.
+   Those counts may be **grouped** (`by_project`, `by_day`) because the trace line
+   already carries `project=` and a timestamp — grouping adds no new read, only
+   buckets, and any line that will not group is counted (`projectless`,
+   `older_days`, `undated`) rather than dropped. A `project=` value is admitted only
+   if it is slug-shaped, so prose in that foreign field becomes a number, never a
+   label. OpenCode's own `opencode.db` is **not** a data source for this project:
+   it holds the subagent history our writer predates, and reading a live foreign
+   database for it was considered and declined (MAINTENANCE §8).
    The Advisor tab that used to show this in the TUI was removed on 2026-10-03 at
    the owner's request; the data layer and the command stayed on purpose, so the
    page can come back without re-deriving the projection.

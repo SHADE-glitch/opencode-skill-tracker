@@ -139,7 +139,11 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
                    "plugin_surface_rows", "ever_called",
                    # The selftest log isolation, named the same in both languages.
                    "logPath()", "OPENCODE_SKILL_TRACKER_LOG",
-                   "skill-tracker-selftest.log"):
+                   "skill-tracker-selftest.log",
+                   # The two subagent columns and the injection grouping: an
+                   # English-only or Chinese-only edit fails here, not in review.
+                   "Ran as", "Spawned", "by_project", "by_day", "projectless",
+                   "older_days", "undated", "opencode.db"):
         assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
 
     assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"
