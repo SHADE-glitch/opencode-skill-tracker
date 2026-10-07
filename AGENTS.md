@@ -242,3 +242,29 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 - The test suite must be green before pushing. Tests locate files via
   `Path(__file__).resolve()`, so they pass both from the repo and through the
   symlinked install locations — do not replace those with hardcoded paths.
+
+## Recording conventions
+- Repairs, performance work, drift guards and withdrawals land in
+  [`CHANGELOG.md`](CHANGELOG.md) as `D-###` entries; ids are monotonic and never reused, so a gap
+  means an entry was deleted and the check fails rather than calling it cleanup.
+- **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
+  feature is the product, not a droppable deviation — features are documented in the READMEs. The
+  exclusion lives in `scripts/tests/test_record_coverage.py` as one regex over the commit subject;
+  it is not a per-commit skip flag and must not become one.
+- `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore`, cut by **who may demand a
+  revert**: bug → `fix`; measurable degradation only → `perf`; only my taste → `taste` (zero
+  obligation); no behaviour change, detects drift → `guard`; withdraws earlier work → `revert`;
+  cleanup owed nothing either way → `chore`.
+- A pair of entries that cancel out must both stay (`D-018` + `D-019`, `D-021`): the withdrawal is
+  the current state, and a record showing only the reverted-to version would misdirect an upgrade.
+- An entry is an assertion **as of its commit**, not current state. Never re-verify an old entry;
+  never hand-copy an aggregate count here — the check and the test suite print them.
+- **Verification tiers** (named by what the claim needs, not by the tool): **L0** =
+  `python3 -m pytest scripts/tests` (no host, no live store), **L1** = a controlled fixture or the
+  `/tmp` probe recipe in `MAINTENANCE.md` §5 (a throwaway OpenCode/Textual surface), **L2** = a real
+  user session on an installed plugin.
+- `Symptom` names the mechanism, never the session: no prompt text, no command lines, no MCP
+  argument values, no paths from a real config. This repo's whole privacy stance is "counts, never
+  content" — the record is held to the same standard as the code.
+- Run the coverage check before committing docs: `python3 -m pytest scripts/tests/test_record_coverage.py`.
+  It is part of the suite, so `python3 -m pytest scripts/tests` already runs it.
