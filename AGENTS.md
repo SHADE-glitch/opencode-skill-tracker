@@ -75,6 +75,24 @@ That is the same no-venv command as above, so CI runs the same subset (the TUI
 tests are skipped). The suite must stay green: a red build is a stop, not a
 warning, and it is the same check you run locally.
 
+**CI maintenance:**
+
+- **Keep CI in step with the code.** Update `.github/workflows/ci.yml` in the *same change* that
+  makes it stale — never as a later cleanup.
+- **New or renamed tests need no CI edit** as long as CI runs the suite command
+  (`python3 -m pytest scripts/tests`); it does, so it picks them up automatically. Only touch CI if
+  the *command itself* changes.
+- **Environment changes** — a new dependency, a Python version bump, or a new system tool — mean
+  updating the workflow's setup/install steps.
+- **Renamed or moved code**: the record-coverage test watches a declared list of code paths. If a
+  watched path moves, update that list; the test goes red until you do.
+- **After a refactor**, confirm CI still exercises the real code and the declared paths still cover
+  it. A green CI that no longer touches the changed code is worse than a red one.
+- **A new verification tier** (e.g. a live/TUI layer) — decide explicitly whether CI runs it; do not
+  add it silently.
+- If what CI runs changes, update this section too. CI is a signal, not a gate, until branch protection
+  is enabled — read the result after every push.
+
 ## Release / version
 
 The package version lives in `pyproject.toml` (`version = "0.1.0"` today) and is
