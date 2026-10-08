@@ -93,8 +93,14 @@ def test_record_is_not_empty():
     text = changelog()
     covered = covered_commits(resolve(anchor_of(text)))
     entries = re.findall(r"^### (D-\d+) · ", text, re.M)
-    assert covered, "the declared window contains no covered commit — widen it or state why not"
-    assert entries, "the record has no entries: a check over an empty set proves nothing"
+    if covered and not entries:
+        raise AssertionError(
+            f"the window has {len(covered)} covered commit(s) but the record has none — a check "
+            "over an empty set proves nothing. Add entries.")
+    if not covered and not entries:
+        assert "No covered commits:" in text, (
+            "an empty covered window is legal only when CHANGELOG.md declares it with a line "
+            "starting 'No covered commits:'")
 
 
 def test_ids_are_monotonic_and_gapless():
