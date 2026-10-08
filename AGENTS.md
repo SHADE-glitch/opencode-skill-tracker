@@ -75,6 +75,10 @@ That is the same no-venv command as above, so CI runs the same subset (the TUI
 tests are skipped). The suite must stay green: a red build is a stop, not a
 warning, and it is the same check you run locally.
 
+The checkout must fetch full history (`fetch-depth: 0`): the record-coverage
+test walks `git log <anchor>..HEAD` back to the coverage anchor, which a
+shallow clone cannot resolve.
+
 **CI maintenance:**
 
 - **Keep CI in step with the code.** Update `.github/workflows/ci.yml` in the *same change* that
