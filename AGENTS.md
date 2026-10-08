@@ -2,6 +2,8 @@
 
 Guidance for AI coding agents working in this repository.
 
+This repository is public.
+
 ## What this is
 
 An OpenCode plugin plus a CLI/TUI that records **skill, MCP tool and plugin
@@ -58,6 +60,31 @@ bash -n bin/skillt                             # syntax-check the dispatcher
 ```
 
 Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every `push` and `pull_request`, on
+`ubuntu-latest` with Python 3.12. It installs `requirements.txt` and
+`requirements-dev.txt`, then runs the gate:
+
+```bash
+python3 -m pytest scripts/tests -q
+```
+
+That is the same no-venv command as above, so CI runs the same subset (the TUI
+tests are skipped). The suite must stay green: a red build is a stop, not a
+warning, and it is the same check you run locally.
+
+## Release / version
+
+The package version lives in `pyproject.toml` (`version = "0.1.0"` today) and is
+the only version source. Bump it when what is published changes — for a release,
+not for an ordinary commit.
+
+It is **separate from `SCHEMA_VERSION`** in `skill_db.py` and from the export
+document's `schema_version`: those are *data* versions, bumped when the database
+schema or the export shape changes. The package version tracks the release of
+the code; the schema versions track the data. Never conflate them.
 
 ## Hard rules
 
