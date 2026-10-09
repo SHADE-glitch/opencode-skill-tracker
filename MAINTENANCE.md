@@ -63,7 +63,7 @@ not the test, is what changed.
 | One row per call: `UNIQUE(session_id, call_id)` + `ON CONFLICT` upsert. | `test_plugin_db.py`, `test_mcp_db.py` |
 | Status is monotonic: an observed `error` may override an optimistic `success`, never the reverse. | `UPSERT_*_SQL` CASE branches |
 | MCP records argument **names** only. `mcpArgNames()` calls `Object.keys()` and must never read a value. | `test_plugin.py` |
-| Message bodies are never read, so never stored. | `test_readme.py`, `__selftest` assertion |
+| Message bodies are never read, so never stored — and neither is a session `title`, which the host derives from the user's first message. The writer keeps only the fields anything reads. | `test_readme.py`, `test_the_session_handler_keeps_only_the_fields_it_uses`, `__selftest` assertion |
 | A permission `title` is never read by the writer either — no scrubbing run is what keeps it out. `skillt scrub-metadata` still lists `title` for rows older builds wrote. | `test_the_writer_never_names_a_permission_title`, `test_a_denied_call_stores_no_title_but_still_stores_the_denial`, `__selftest` |
 | The schema lives in two copies: `TABLES_SQL`/`VIEWS_SQL` (plugin) and `SCHEMA_SQL` (Python). Change both in the same commit. | `test_plugin_and_python_schema_do_not_drift` |
 | A view change requires a `SCHEMA_VERSION` bump, or existing databases keep the old view (`CREATE VIEW IF NOT EXISTS` never updates). | `test_migration.py`, `test_schema_sync.py` |

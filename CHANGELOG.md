@@ -299,3 +299,16 @@ Evidence L0 2026-10-09: `scripts/tests` 541 passed; both new `test_doctor.py` ch
 Cost     Errors past 4 MiB of an unrotated log are no longer counted — bounded, stated, and still
          reachable by reading the file directly. The growth side stays open until rotation is decided
 Commit   e9086f3
+
+### D-036 · 2026-10-09 · fix
+Symptom  `session.created` passed `info.title` into the in-memory session context and nothing read it
+         back. A session title is text the host derives from the user's first message, so the writer
+         held prose for the lifetime of the process — one `...ctx` splat away from the database
+Change   The patch keeps `directory` only (it resolves the git branch). The guard compares the keys of
+         the patch literal, not the text around it, because the explanation of *why* the field is
+         dropped necessarily names it
+Evidence L0 2026-10-09: `scripts/tests` 542 passed; the guard was red first with `{directory, title}`;
+         `scripts/tests/test_plugin.py` 57 passed, which includes running `__selftest` under Bun
+Cost     Nothing was lost: no view, query or export ever named a session title. It is a second
+         instance of the D-034 shape — a read that no consumer wanted
+Commit   550635f

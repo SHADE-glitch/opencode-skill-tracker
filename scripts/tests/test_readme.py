@@ -122,7 +122,11 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
 
     # The load-bearing invariants, by the name a future editor will grep for.
     for needle in ("UNIQUE(session_id, call_id)", "SCHEMA_VERSION", "export default",
-                   "Object.keys()", "TABLES_SQL"):
+                   "Object.keys()", "TABLES_SQL",
+                   # The two free-text keys, named by the guard that holds each:
+                   # a one-language edit of the invariant table fails here.
+                   "test_the_session_handler_keeps_only_the_fields_it_uses",
+                   "test_a_denied_call_stores_no_title_but_still_stores_the_denial"):
         assert needle in en, f"MAINTENANCE.md dropped an invariant: {needle}"
         assert needle in zh, f"MAINTENANCE.zh-CN.md dropped an invariant: {needle}"
 
