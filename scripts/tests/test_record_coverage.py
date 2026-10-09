@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 CODE_PATHS = [
     "plugin/skill-tracker.js",
+    "scripts/opencode_compat.py",
     "scripts/skill_db.py",
     "scripts/skill-tui.py",
     "scripts/skill-stats.py",

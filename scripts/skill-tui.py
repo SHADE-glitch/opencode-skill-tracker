@@ -32,6 +32,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 import skill_db as db  # noqa: E402
+import opencode_compat as compat  # noqa: E402
 
 SORT_MODES = ["count", "last_used", "success_rate", "name"]
 SORT_LABELS = {
@@ -711,23 +712,30 @@ def _cli_auto_backup(conn, args) -> int:
     return 0
 
 
-PLUGIN_PATH = os.path.join(db.HOME, ".config", "opencode", "plugin", "skill-tracker.js")
-PLUGIN_MARKERS = ("tool.execute.before", "tool.execute.after", "permission.ask", "event:")
+# Everything above the next line that says what OpenCode calls things comes from
+# `opencode_compat`, including the hook names these markers look for. The
+# filenames (`skill-tracker.js`, `skill-tracker.log`) are ours, so they stay here.
+PLUGIN_PATH = os.path.join(
+    db.CONFIG_DIR, compat.PLUGIN_SUBDIR, "skill-tracker.js"
+)
+PLUGIN_MARKERS = compat.PLUGIN_SKILL_MARKERS + compat.PLUGIN_BASE_MARKERS
 # Markers of MCP capture. An older plugin records skills only, so a missing
 # marker is a WARN (MCP data stays empty), never a FAIL.
-PLUGIN_MCP_MARKERS = ("mcp_usage", "function classify(", "recordMcpUsage")
+PLUGIN_MCP_MARKERS = compat.PLUGIN_MCP_MARKERS
 # Same for plugin tool/command capture.
-PLUGIN_PLUGIN_MARKERS = ("plugin_usage", "recordPluginUsage", "command.execute.before")
+PLUGIN_PLUGIN_MARKERS = compat.PLUGIN_PLUGIN_MARKERS
 
 # The plugin's builtin-tool allowlist is verified against one OpenCode release
 # (limitation M13). Read the pin out of the plugin source rather than keeping a
 # second copy here, which is exactly the drift this check exists to catch.
-VERSION_PIN_RE = re.compile(r"verified against OpenCode (\d+\.\d+\.\d+)")
+VERSION_PIN_RE = compat.VERSION_PIN_RE
 OPENCODE_VERSION_TIMEOUT_S = 2
 
 # The tracker's own log. `log()` never throws, so a hook that starts failing is
 # invisible in the database — it only ever shows up here.
-TRACKER_LOG_PATH = os.path.join(db.HOME, ".config", "opencode", "logs", "skill-tracker.log")
+TRACKER_LOG_PATH = os.path.join(
+    db.CONFIG_DIR, compat.LOGS_SUBDIR, "skill-tracker.log"
+)
 
 # How stale the newest recorded call may get before doctor says so. A tracker
 # that stopped writing looks exactly like an idle machine from the inside.

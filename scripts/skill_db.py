@@ -30,14 +30,21 @@ import time
 import urllib.request as urlreq   # aliased: the prose-field tripwire bans the bare word
 from datetime import datetime, timedelta, timezone
 
+import opencode_compat as compat
+
 HOME = os.path.expanduser("~")
+# The directories belong to OpenCode; the filenames inside them are ours. The
+# directory names come from `opencode_compat` so a host layout change has one
+# place to edit.
+DATA_DIR = os.path.join(HOME, *compat.DATA_HOME)
+CONFIG_DIR = os.path.join(HOME, *compat.CONFIG_HOME)
 DB_PATH = os.environ.get(
     "OPENCODE_SKILL_TRACKER_DB",
-    os.path.join(HOME, ".local", "share", "opencode", "skill-usage.db"),
+    os.path.join(DATA_DIR, "skill-usage.db"),
 )
 SKILLS_DIR = os.environ.get(
     "OPENCODE_SKILL_TRACKER_SKILLS_DIR",
-    os.path.join(HOME, ".config", "opencode", "skills"),
+    os.path.join(CONFIG_DIR, compat.SKILLS_SUBDIR),
 )
 BUSY_TIMEOUT_MS = 5000
 
@@ -45,7 +52,7 @@ BUSY_TIMEOUT_MS = 5000
 # directory so the retention sweep can never touch an unrelated .db file.
 BACKUP_DIR = os.environ.get(
     "OPENCODE_SKILL_TRACKER_BACKUP_DIR",
-    os.path.join(HOME, ".local", "share", "opencode", "backups"),
+    os.path.join(DATA_DIR, "backups"),
 )
 
 # Only files matching this exact name shape are ever considered for deletion.
@@ -57,13 +64,9 @@ MONTHLY_KEEP = 12
 MIN_BACKUP_AGE_S = 120  # never delete a file younger than this
 
 # Source is derived, never stored (the user explicitly asked for no duplicated
-# storage). Keep this CASE expression in sync with source_of() below.
-SOURCE_CASE_SQL = (
-    "CASE s.category "
-    "WHEN 'personal-skills' THEN 'personal' "
-    "WHEN 'open-source-skills' THEN 'open-source' "
-    "ELSE COALESCE(s.category, 'unknown') END"
-)
+# storage). Both renderings come from `compat.SOURCE_BY_CATEGORY`: this SQL for
+# the queries, `source_of` below for Python callers.
+SOURCE_CASE_SQL = compat.source_case_sql()
 
 # Base DDL — verbatim copy of the plugin's schema, for fresh DBs and tests.
 # Tables and views are kept as separate blobs so the views can be rebuilt on a
@@ -351,11 +354,8 @@ def rows_to_dicts(rows):
 
 
 def source_of(category) -> str:
-    if category == "personal-skills":
-        return "personal"
-    if category == "open-source-skills":
-        return "open-source"
-    return category or "unknown"
+    """The Python half of `SOURCE_BY_CATEGORY` — the SQL half is `SOURCE_CASE_SQL`."""
+    return compat.source_of(category)
 
 
 def success_rate(total, success) -> float | None:
@@ -538,7 +538,7 @@ def walk_skill_files(root: str) -> list[str]:
             for e in entries:
                 if e.is_dir(follow_symlinks=False):
                     stack.append(e.path)
-                elif e.is_file() and e.name == "SKILL.md":
+                elif e.is_file() and e.name == compat.SKILL_FILE_NAME:
                     out.append(e.path)
     return sorted(out)
 
@@ -558,16 +558,16 @@ def scan_skills(skills_dir: str | None = None) -> list[dict]:
             fm = parse_frontmatter(raw)
             d = os.path.dirname(file)
             rel = os.path.relpath(d, skills_dir)
-            category = rel.split(os.sep)[0] if rel not in (".", "") else None
+            category = compat.category_of(rel)
             found.append(
                 {
-                    "name": fm.get("name") or os.path.basename(d),
+                    "name": fm.get(compat.FRONTMATTER_NAME_KEY) or os.path.basename(d),
                     "category": category,
                     "path": d,
-                    "description": fm.get("description") or None,
+                    "description": fm.get(compat.FRONTMATTER_DESCRIPTION_KEY) or None,
                     "content_hash": hash_file(file),
                     "size_bytes": os.path.getsize(file),
-                    "parsed_name": bool(fm.get("name")),
+                    "parsed_name": bool(fm.get(compat.FRONTMATTER_NAME_KEY)),
                 }
             )
         except OSError:
