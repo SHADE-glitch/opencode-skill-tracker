@@ -366,8 +366,9 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 - `rotate-log` — keeps the plugin's own log from outrunning the reader (M17). It
   **renames** the file rather than emptying it: every line that leaves the live path is
   still on disk in `skill-tracker.log.<UTC stamp>`, because those lines are the evidence
-  `doctor log.errors` reads. The cap is `log.max_bytes`, which is the same 4 MiB the
-  reader reads, so the two cannot drift apart; `log.keep_files` rotations are kept and
+  `doctor log.errors` reads. The cap is `log.max_bytes`, and `doctor` reads the log at
+  that **same resolved** number, so raising one raises the other instead of letting the
+  file outrun the reader; `log.keep_files` rotations are kept and
   anything older is pruned (only names matching this rotation shape, never a neighbour's
   log — the command takes no path argument). The live file is re-created empty rather
   than left missing, because a missing log makes `doctor` WARN about a plugin that is
@@ -457,7 +458,7 @@ skillt config list --json
 | `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | how many events the Recent timeline lists. Older events stay in the database; only what the screen holds changes |
 | `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | how few calls make a skill "worth advising about" in `skillt insight` |
 | `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | how old the newest recorded call may get before `doctor` warns that capture looks stalled — and the same clock the claude-mem line is judged by |
-| `log.max_bytes` | `4194304` | `--max-bytes` | `OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES` | when the plugin's own log passes this size `skillt rotate-log` moves it aside. It is the same number the reader uses (`TRACKER_LOG_BYTES_CAP`) on purpose: a line in the active log that `doctor` cannot see would be a silent loss. Floor 1024 — a smaller cap would rotate on the first line |
+| `log.max_bytes` | `4194304` | `--max-bytes` | `OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES` | when the plugin's own log passes this size `skillt rotate-log` moves it aside — **and `doctor log.errors` reads the log at this same resolved value**, so the two cannot drift when an owner sets it (`TRACKER_LOG_BYTES_CAP` is only its shipped default). Floor 1024 — a smaller cap would rotate on the first line |
 | `log.keep_files` | `5` | `--keep-files` | `OPENCODE_SKILL_TRACKER_LOG_KEEP_FILES` | how many rotated logs stay beside the live one. Rotation is a rename, so the lines move rather than disappear; this is how far back that history goes |
 | `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0` = off: nothing is ever deleted.** Usage rows older than this many days become the delete set of `skillt prune-usage`, which lists them first and only removes them with `--yes`, after a backup |
 | `retention.max_skill_versions` | `0` | `--keep-versions` | `OPENCODE_SKILL_TRACKER_RETENTION_MAX_SKILL_VERSIONS` | **`0` = off.** Keep at most this many `skill_versions` rows per skill — the newest N, so retention cannot eat the current content. The table gains a row per content change and never loses one |
@@ -794,10 +795,10 @@ The full audit — M1 through M24, with reproduction notes — lives in
   line per init and one per dispose (measured ~69 lines/day), and it is the only place
   capture errors appear, which is what `doctor log.errors` reads — so clearing it erases
   that history. **Both sides are now bounded.** The reader counts only the first
-  `TRACKER_LOG_BYTES_CAP` (4 MiB, the same bound the claude-mem reader uses) from the
+  `log.max_bytes` (default 4 MiB, the same bound the claude-mem reader uses) from the
   **start** of the file and says so in the line it prints ("a floor, not a total");
-  `skillt rotate-log` renames the file at that same size — `log.max_bytes` *is*
-  `TRACKER_LOG_BYTES_CAP`, one number, so a line cannot sit in the active log and be
+  `skillt rotate-log` renames the file at that same size — one setting, read by both
+  sides after resolution, so a line cannot sit in the active log and be
   invisible to the reader at the same time — and keeps `log.keep_files` rotated copies.
   What is left open is the shape of the history: rotation is opt-in unless the backup
   timer is installed (`./install.sh --with-timer`), and a log that nobody rotates stops

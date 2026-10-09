@@ -88,7 +88,7 @@ skillt claude-mem                # claude-mem 自己的账本：它后台采集�
 skillt agentos                   # 顾问 loop：超预算阶段、错误、召回是否真的进了提示、
                                  # 与可度量用量的连接（需要环境里有 AGENT_OS_ROOT）
 wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
-stat -c %s ~/.config/opencode/logs/skill-tracker.log   # 字节数：doctor 只读前 TRACKER_LOG_BYTES_CAP
+stat -c %s ~/.config/opencode/logs/skill-tracker.log   # 字节数：doctor 只读前 log.max_bytes（解析后的值）
                                  # （4 MiB），超出就会自称"下限"。这个数字说明的是文件多大，
                                  # 不再是 doctor 要跑多久
 skillt rotate-log                # 同一个上界落到写的一侧：长到 4 MiB 就把日志**改名**挪走，
@@ -316,7 +316,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 ## 7. 已知限制
 
 M1–M24 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英文摘要在 [README.md](README.md#-known-limitations)）。
-维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志会长；现在读写两侧都上了界——读取端是 `TRACKER_LOG_BYTES_CAP`，文件本身由 `skillt rotate-log` 改名）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）以及 **M23**（同一个 `COALESCE` 会把 `agent` 冻住，所以 Agents 页统计的是一行的 session **首次**报出的 agent，而 `(unknown)` 量的是采集顺序，不是「无主的调用」）。
+维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志会长；现在读写两侧都上了界——两端都用解析后的 `log.max_bytes`，文件本身由 `skillt rotate-log` 改名）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）以及 **M23**（同一个 `COALESCE` 会把 `agent` 冻住，所以 Agents 页统计的是一行的 session **首次**报出的 agent，而 `(unknown)` 量的是采集顺序，不是「无主的调用」）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修
 

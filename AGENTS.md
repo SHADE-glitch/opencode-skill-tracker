@@ -57,19 +57,32 @@ where OpenCode's own names are written down (hook ids, event types, payload fiel
 paths, the host's directory layout, the version pins, the derived `source` and
 `status` vocabularies). Everything else in the project refers to it.
 
+`scripts/settings.py` is **not** a configuration system either: it is one registry
+of numbers this project already used, each with a default, a floor, a flag and a
+two-language explanation. `skillt config` reads and writes it, `bin/skillt` passes
+the resolved values down, and no module consults the environment for one of these
+again. It is separate from `opencode_compat.py` because the two answer different
+questions — *what does the host call this?* versus *what number does the owner
+want?* — and an OpenCode upgrade must never be able to change an owner's setting.
+
 ## Commands
 
 ```bash
-python3 -m pytest scripts/tests -q             # L0: no venv needed
-.venv/bin/python -m pytest scripts/tests -q    # the same suite on the venv interpreter
-bash -n bin/skillt                             # syntax-check the dispatcher
-./install.sh                                   # create .venv + link install locations
+python3 -m pytest scripts/tests -q                                   # L0
+.venv/bin/python -m pytest scripts/tests -q                          # the same suite, venv interpreter
+OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist python3 -m pytest scripts/tests -q   # L0, hermetic
+bash -n bin/skillt                                                   # syntax-check the dispatcher
+./install.sh                                                         # create .venv + link install locations
 ```
 
-Both interpreters on this machine carry textual 8.2.8, so **both commands run the whole
-suite including the TUI tests** — the venv run is not a stronger tier, and neither one
-is a proof that the other passed. Never write a case count into this file: the suite
-prints it.
+Three commands, one tier: the third proves the suite never reaches this machine's
+real skills directory. `requirements.txt` is `textual`, so **an interpreter without
+textual installed skips the TUI files** — on this host both interpreters carry
+8.2.8 and all of it runs, so the venv command is not a stronger tier and neither
+one proves the other passed. Run both anyway: the shipped `pyproject.toml` pins
+`textual>=8.2,<9`, and an interpreter that silently skips half the suite is how a
+green local run stops meaning anything. Never write a case count into this file:
+the suite prints it.
 
 Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 
@@ -83,9 +96,16 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 python3 -m pytest scripts/tests -q
 ```
 
-That is the same no-venv command as above, so CI runs the same subset (the TUI
-tests are skipped). The suite must stay green: a red build is a stop, not a
-warning, and it is the same check you run locally.
+That command installs `requirements.txt` first, which is textual, so **CI runs the
+TUI files too** — they are not a local-only tier. What CI does not run is everything
+gated on a binary or an install it does not have: the `requires_bun` tests (the
+runner has no bun) and `test_dispatcher.py` (it skips unless `~/.local/bin/skillt`
+exists). That is the whole difference between a CI count and a local one — the last
+run recorded 489 passed / 48 skipped while this machine recorded the same suite with
+nothing skipped — so compare the two logs rather than assuming a tier is missing.
+The suite must stay green: a red build is a stop, not a warning, and it is
+the same check you run locally. Read the result after every push:
+`gh run view <id> --log`.
 
 The checkout must fetch full history (`fetch-depth: 0`): the record-coverage
 test walks `git log <anchor>..HEAD` back to the coverage anchor, which a
@@ -171,8 +191,77 @@ the code; the schema versions track the data. Never conflate them.
   calls it. `os.kill(pid, 0)` and reading files are allowed: measured 8.2–15.8 ms
   for all three claude-mem files together, which that page pays per repaint,
   against 0.7–2.0 ms for the tables.
+- **A setting is a registry entry or it does not exist.** `scripts/settings.py` is
+  the only place a knob is declared: default, floor, flag, and an explanation in
+  both languages, or `test_every_key_carries_an_explanation_in_both_languages` and
+  `test_every_setting_is_documented_in_both_readmes` fail. Precedence is one rule and
+  it is not negotiable: **flag > config file > environment > default**
+  (`test_precedence_is_flag_then_file_then_env_then_default`). The file is
+  `~/.local/share/opencode/skillt-config.json` — never anything under
+  `~/.config/opencode/**`, which is the host's: TOML there is read-only for us and a
+  writer would eat its comments. Env names are *derived* from the key
+  (`OPENCODE_SKILL_TRACKER_` + key with `.` → `_`), so a new key brings its own
+  override and cannot be forgotten. A rejected value is reported as rejected rather
+  than disguised as a default, and a file that does not parse is never rewritten —
+  `skillt config set` refuses to overwrite the one artifact a user hand-edited.
+  Zero-config must keep working: with no file, nothing is created and every number
+  is the default (`test_no_config_file_is_the_normal_case_and_changes_nothing`).
+- **Anything that deletes is off by default, dry-run first, and cannot be reached by
+  an accident.** `retention.usage_days` and `retention.max_skill_versions` ship at 0,
+  and at 0 `skillt prune-usage` performs **no write at all** — proven by comparing the
+  database bytes, not by trusting the flag (`test_the_knobs_ship_off`,
+  `test_off_means_the_plan_says_nothing_and_no_write_happens`). The plan is computed by
+  SELECT and the delete removes exactly what that plan counted
+  (`test_dry_run_counts_exactly_what_the_delete_removes`); `--yes` takes a backup
+  before it touches a row; a row that cannot be dated is never deleted, because
+  "older than N days" is a claim that row cannot support; `subagent_usage` is not a
+  usage stream and is excluded **by name**. Log rotation is the same shape:
+  dry-run unless `--yes`, a **rename** rather than a truncation (the lines that leave
+  the live path are the evidence `doctor` reads), pruning restricted to filenames this
+  command itself produced, the live file re-created without `O_TRUNC` because the
+  writer appends and a line can land between the two, and the rotation cap being *the
+  same number the reader reads* — both take the **resolved** `log.max_bytes`, so an
+  owner who raises it moves the rotator and the reader together
+  (`test_the_reader_bound_moves_with_the_writer_bound`; the first version compared each
+  side to the shipped default instead, which is why an override could separate them).
+  The systemd timer stays
+  opt-in: `install.sh --with-timer`, and every systemd write sits inside that guard
+  (`test_installing_the_timer_is_still_opt_in`, checked by the mutating *actions*, not
+  by words).
+- **The privacy promise is enforced at the writer, not at the reader.** No message
+  body, no prompt text, and no session `title` — the host derives a title from the
+  user's first message, so storing it would store the message. `metadata.title` is
+  not written by any path any more (`test_the_writer_never_names_a_permission_title`),
+  which is what makes M14's "should report 0 rows" hold going forward instead of
+  only for the rows scrubbed. `error` stays: it is the one free-text field with a
+  reader. Nothing may add a metadata key without naming it in the compat allowlist
+  and in the README, and nothing may add a network or telemetry dependency, or a
+  dependency that puts message content on disk.
+- **What the interface prints about itself is derived from the code that does it.**
+  The Data page's key list comes from `MainScreen.BINDINGS`
+  (`test_a_new_binding_documents_itself_in_the_help`), the six card labels come from
+  `MainScreen.CARD_LABELS` (the grid arithmetic needs the longest one), an empty table's
+  explanation comes from `_empty_note()` on the page's own status line, and a colour
+  comes from a CSS class against a theme token, never from an imperative assignment.
+  Layout claims are **measured at a size** (`run_test(size=(48, 20))`), never read off
+  the CSS — the CSS said the card grid was 2 columns narrower than the terminal and the
+  layout said 4, which put the breakpoints two columns early. Two traps this exists to
+  avoid: a widget that has not been laid out reports `region.width == 0` (assert it
+  non-zero before concluding anything from a geometry comparison, and paint the
+  width-dependent status through `call_after_refresh`), and a `DataTable` *does* scroll
+  its trailing columns, so a narrow table is a discoverability problem, not a data
+  problem — measure `virtual_size.width` against `region.width` before "fixing" it.
 - **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
+- **Never commit the working reports.** `/STATE.md`, `/PROFILE.md`, `/AUDIT.md`,
+  `/PLAN.md`, `/VERIFY.md` are ignored **root-anchored** (leading slash) because this
+  repository is public and those files carry real paths, measured row counts and byte
+  sizes of a personal machine. A pattern without the slash would also ignore a
+  same-named file inside a subdirectory, which is how a report ends up in a docs
+  folder and then in a commit. Proof, both directions:
+  `git check-ignore -v STATE.md` (must name the `.gitignore` line) and
+  `git ls-files STATE.md PROFILE.md AUDIT.md PLAN.md VERIFY.md` (must print nothing).
+  `git add -f` on one of them is the only way to break this, so do not use `-f` here.
 - **Never commit secrets.** The plugin sanitizes secrets before storing them;
   its self-test fixtures use synthetic values only. Keep it that way.
 - **MCP capture records argument *names* only, never values.** `mcpArgNames()`
@@ -260,6 +349,37 @@ the code; the schema versions track the data. Never conflate them.
   `test_an_explicit_selftest_log_is_honoured_not_overridden`, and the selftest's
   own `selftest never logs to the shared plugin log` assertion.
 
+## Invariants and how to check them
+
+There is no `INVARIANTS.md` on purpose: a second file listing the same promises is
+a second thing to keep in sync, and the drift between the two is the failure this
+project keeps finding. Each promise below names the check that holds it and the
+command that runs it, so "we have an invariant" is a claim you can execute rather
+than read. Run the row that covers what you touched; `python3 -m pytest scripts/tests`
+runs all of them, and the hermetic run below proves the suite never touched this
+machine's real files.
+
+| The promise | What would break it | The check | Run it |
+|---|---|---|---|
+| Pure local, no network, nothing that stores message content | a new field read, an HTTP call on a repaint, a dependency that phones home | `test_no_http_is_reachable_from_the_tui_refresh_path`, `test_the_writer_never_names_a_permission_title`, `test_the_subagent_writer_never_names_a_text_field`, `test_no_path_or_free_text_crosses_the_http_whitelist` | `python3 -m pytest scripts/tests -q -k "title or text_field or http or whitelist or forbidden"` |
+| The writer is the only writer, and it still loads | a named `export function`, a bare-function default, a schema edit in one copy only | `test_loader_does_not_enumerate_exports`, `test_default_export_is_server_module`, `test_plugin_and_python_schema_do_not_drift` | `python3 -m pytest scripts/tests -q -k "export or loader or drift or schema"` |
+| Every OpenCode name lives in one place per language | a handler that spells a host string again, a pin that no longer matches the writer | `test_compat.py` in full — value-compared against the `CONTRACT` block | `python3 -m pytest scripts/tests/test_compat.py -q` |
+| Views and schema roll forward instead of silently keeping the old definition | a `CREATE VIEW` edit without a `SCHEMA_VERSION` bump | `test_migration.py` | `python3 -m pytest scripts/tests/test_migration.py -q` |
+| Deleting rows or moving logs is opt-in, counted first, and backed up before it happens | a default that becomes "helpful", a dry-run that is a different query from the delete, a rotation that truncates | `test_row_retention.py` + `test_rotate_log.py` | `python3 -m pytest scripts/tests/test_row_retention.py scripts/tests/test_rotate_log.py -q` |
+| The plugin log's reader and its rotator stop at the **same number** | a setting resolved by one side and defaulted by the other, which is how `doctor` starts reporting a floor as a total | `test_the_rotation_cap_is_the_number_the_reader_reads` (both commands, at the default *and* under an override), `test_the_reader_bound_moves_with_the_writer_bound` (spies on the actual read), `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill` | `python3 -m pytest scripts/tests -q -k "bound or rotation_cap or truncated or bounded"` |
+| A knob exists in one registry, documented in both languages, and zero-config still works | a setting that only reads the environment, a key added without an explanation, a writer under `~/.config/opencode` | `test_settings.py` + `test_settings_documented.py` | `python3 -m pytest scripts/tests/test_settings.py scripts/tests/test_settings_documented.py -q` |
+| A foreign store is read-only, field-whitelisted, and never reached from a repaint | a neighbour importing the TUI, a `open_db()` on someone else's file, a prose column named | `test_module_boundaries.py`, `test_claude_mem.py`, `test_agentos.py` | `python3 -m pytest scripts/tests/test_claude_mem.py scripts/tests/test_agentos.py scripts/tests/test_module_boundaries.py -q` |
+| The interface says what it actually does — keys, empty states, colours, widths | a hand-copied key list or label set, an imperative colour, a layout claim read off the CSS | the S8 guards: `test_a_new_binding_documents_itself_in_the_help`, `test_every_table_page_status_line_is_dimmed_throughout`, `test_the_card_grid_switches_where_the_layout_actually_fits`, `test_the_result_colour_is_a_theme_token_and_not_a_literal`, `test_tui_creates_no_app_timers`, `test_tui_disables_textual_animations` | `python3 -m pytest scripts/tests/test_tui.py -q -k "timer or animation or http or dimmed or key_help or card_grid or right_edge or theme_token"` |
+| The two languages say the same thing, including how many limitations there are | a one-language edit, a document that froze its `M1–M<n>` at the number of the day | `test_readme.py` (bilingual parity + `test_the_documented_limitation_range_is_the_range_the_gate_pins` + `test_readmes_document_every_key_the_screen_binds`) | `python3 -m pytest scripts/tests/test_readme.py -q` |
+| Every non-feature commit is recorded, and the record is not a diary | a repair that exists only in a commit message, an entry that quotes no commit | `test_record_coverage.py` | `python3 -m pytest scripts/tests/test_record_coverage.py -q` |
+| The suite is hermetic | a test that reads `~/.config/opencode/skills` and passes because this machine happens to have rows | the same suite, pointed at a directory that does not exist | `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist python3 -m pytest scripts/tests -q` |
+
+Two of these are about documents, not code, and they are the ones an agent is most
+likely to break while "just" writing: **never copy an aggregate count into a doc**
+(the suite prints it, and a stale number reads as a claim about current state), and
+**never state a limitation range by hand** — `LIMITATIONS` in `test_readme.py` is the
+list, and the gate now refuses any document whose `M1–M<n>` disagrees with it.
+
 ## Conventions
 
 - **Code and user-facing output are English** (identifiers, comments,
@@ -268,9 +388,12 @@ the code; the schema versions track the data. Never conflate them.
   `README.zh-CN.md` (Chinese, the exhaustive reference), plus
   `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
   `scripts/tests/test_readme.py` asserts that **both** READMEs document every
-  limitations M1–M24 (the range `test_readme.py` pins), that `README.zh-CN.md`
-  documents every section, and that
-  both maintenance checklists name the same checks, commands and invariants —
+  limitation id in `LIMITATIONS` (that tuple is the list — do not state a range by
+  hand, `test_the_documented_limitation_range_is_the_range_the_gate_pins` refuses a
+  document whose `M1–M<n>` has frozen), that `README.zh-CN.md`
+  documents every section, that both maintenance checklists name the same checks,
+  commands and invariants, and that both key tables cover every key the screen
+  binds (`test_readmes_document_every_key_the_screen_binds`) —
   update all four when behaviour changes, or the suite fails.
 - **The advisor store is reached only through `skill_db_agentos.agentos_*`, and
   only from the CLI.** No TUI page may open it:
@@ -304,8 +427,9 @@ the code; the schema versions track the data. Never conflate them.
 - **No `set_interval`/`set_timer` in the TUI.** On textual 8.2.8, any app timer
   created after the screens mount makes `run_test`'s teardown raise
   `LookupError: <ContextVar name='active_app'>` (empty callback, App or Screen,
-  even after `timer.stop()`), which fails the whole TUI file at once (62 tests
-  today, 47 when it was first measured). Refresh is
+  even after `timer.stop()`), and because that teardown belongs to the *app*, it
+  fails every test in the TUI file at once rather than the one that added the timer.
+  Refresh is
   event-driven and per page: a keystroke (throttled by `REFRESH_STALE_AFTER_S`)
   and a tab activation re-read only the active page, `r` and the first paint
   re-read every page, and each page prints its own `data as of HH:MM:SS`.

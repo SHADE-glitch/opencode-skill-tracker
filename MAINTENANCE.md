@@ -117,7 +117,7 @@ skillt agentos                   # advisor loops: over-budget stages, errors, wh
                                  # join with measured usage (needs AGENT_OS_ROOT)
 wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
 stat -c %s ~/.config/opencode/logs/skill-tracker.log   # bytes: doctor reads only the
-                                 # first TRACKER_LOG_BYTES_CAP (4 MiB) and then calls
+                                 # first `log.max_bytes` (4 MiB by default) and then calls
                                  # its own counts a floor, so this number is about the
                                  # file, never about how long doctor takes
 skillt rotate-log                # the same cap, applied: renames the log aside at
@@ -528,7 +528,7 @@ in rows — scrubbed 2026-10-01, and the backups predating it were deleted),
 re-check that no `skill-usage-backup-*.db` sits beside the database again),
 **M15** (calls that never completed leave no row), **M16** (one failed git
 lookup silences `branch` for a directory), **M17** (the log grows; both sides are
-capped now — the reader at `TRACKER_LOG_BYTES_CAP`, the file by `skillt rotate-log`),
+capped now — the reader and the rotator both at the resolved `log.max_bytes`),
 **M18** (a
 late error text can be dropped by the `COALESCE` on metadata) and **M23** (that
 same `COALESCE` freezes `agent`, so the Agents page counts the agent a session

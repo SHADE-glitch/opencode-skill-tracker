@@ -562,3 +562,26 @@ Cost     The arithmetic assumes Textual's own remainder split. An upgrade that d
          grid evenly moves the two thresholds, and only the laid-out test will notice — the CSS
          will still read 2
 Commit   44372b7
+
+### D-047 · 2026-10-09 · fix
+Symptom  `skillt doctor` read the plugin log at `TRACKER_LOG_BYTES_CAP` — `settings`'
+         **default** for `log.max_bytes` — while `skillt rotate-log` moved the same file at
+         the **resolved** value. The two agreed only at the shipped configuration, and the
+         comment on the constant claimed a line invisible to `doctor` was structurally
+         impossible. It is not: `log.max_bytes = 8388608` rotates at 8 MiB and counts the
+         first 4, measured as the reader passing `4194304` against a resolved `8388608`
+Change   `doctor` takes `args.log_max_bytes`, and prints the bound it actually used. The
+         two log bounds became class defaults on `Args`, read from the registry, so a
+         hand-built `Args` (tests, future entry points) carries the same number instead of
+         a second copy of it; the two test stand-ins now subclass `st.Args` rather than
+         re-declaring the fields
+Evidence L0 2026-10-09: the new guard went red first with those two numbers in the
+         assertion, then 649 passed on `python3`, on `.venv/bin/python`, and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`;
+         `test_the_rotation_cap_is_the_number_the_reader_reads` was widened from
+         default-vs-default to comparing the two commands' resolved values
+Cost     A raised cap now costs `doctor` proportionally more reading — that is the owner's
+         own number, which is the point; the 1024 floor and the 4 MiB default are what keep
+         it from being a trap. Any doc that said "`log.max_bytes` *is* `TRACKER_LOG_BYTES_CAP`"
+         was describing the accident and had to be corrected (six passages, both languages)
+Commit   26f5473
