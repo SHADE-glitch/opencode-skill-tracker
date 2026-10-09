@@ -270,7 +270,7 @@ state.
   stays: `test_tui_trend_rows_are_a_fixed_width` names the absolute row width
   (20) in its own breath, not just the equality between the lines.
 - **No page of the TUI opens the advisor store.** The Advisor tab was removed on
-  2026-10-03 at the owner's request; `skill_db.agentos_*` and `skillt agentos`
+  2026-10-03 at the owner's request; `skill_db_agentos.agentos_*` (its own module)
   stayed, so that store is still readable headless — just not from a screen.
   `test_tui_never_reads_the_advisor_store` spies on the one door into it and
   visits every tab, mount and `refresh_all` included, and must see zero calls.
@@ -292,8 +292,8 @@ state.
   is the tuple stored in `app.row_targets`, because parsing a name back out of a
   key — or out of a rendered cell — is how a value containing the separator turns
   into the wrong row.
-- **The advisor store is reached only through `skill_db.agentos_*`, and only as a
-  projection.** The digest lists `store/loops/*.json`, `json.load`s one file at a
+- **The advisor store is reached only through `skill_db_agentos.agentos_*`, and only
+  as a projection.** The digest lists `store/loops/*.json`, `json.load`s one file at a
   time and hands out what `_project_loop` names — a caller never receives
   `task_text`, a recall `query` or a stage payload. The id comes from the file's
   content, not its name, so no path is ever assembled from store-supplied text.

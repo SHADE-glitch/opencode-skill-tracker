@@ -354,3 +354,24 @@ Cost     Comparing two languages means parsing one, so `_js_contract` is a regex
          `chat.params` had never been declared in Python — a module that is a second copy is worth
          what it costs
 Commit   67e3563
+
+### D-039 · 2026-10-09 · guard
+Symptom  One file held six layers: 915 of `skill_db.py`'s 3116 lines described **other projects'**
+         schemas (the advisor store, claude-mem's ledger) while every consumer imported them, and
+         the privacy scan had to slice a section out of the file to know what it was covering
+Change   `skill_db_agentos.py` and `skill_db_claude_mem.py`, importing the core and never the
+         reverse; core state is reached as `db.HOME` / `db.fmt_time` instead of by-value imports;
+         `_read_bounded_text` moved the other way into the core, because doctor reads the tracker's
+         own log with it now. `test_module_boundaries.py` pins the absence of the names from the
+         core, the one-way import, and the attribute-access rule
+Evidence L0 2026-10-09: `scripts/tests` 555 passed; live `skillt claude-mem` printed the same
+         ledger/log/worker lines as before (684 injected · ERROR 4 · worker up), `skillt agentos`
+         and `skillt doctor` unchanged at 16 PASS / 3 WARN
+Cost     Three bug classes surfaced only because the tests moved with the code: a TUI local named
+         `cm` shadowed the new module alias (a silent `UnboundLocalError` swallowed by doctor's own
+         try/except); two spies patched `st.db.<name>` for functions the TUI no longer calls there,
+         which would have left the "no HTTP on the repaint path" guard spying on nothing; and the
+         prose tripwire fired on `import urllib.request as urlreq` — the line that exists *because*
+         of it, exempted by line rather than by word. When a section moves, any scan of it must move
+         too, or it passes vacuously
+Commit   6b465bd

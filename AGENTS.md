@@ -23,11 +23,13 @@ below). Three layers, in dependency order:
    level of the `tool: { … }` object); unresolved tools
    become `(unknown)`, while unresolved commands are dropped fail-closed.
 2. `scripts/skill_db.py` — the shared data layer (schema, migrations, queries,
-   export, backup). Imported by both the TUI and the tests.
+   export, backup). Imported by both the TUI and the tests. It holds **only** the
+   tracker's own data; the two neighbours are separate modules (item 4) that import
+   it, and it never imports them.
 3. `scripts/skill-tui.py` (Textual TUI + `--cli` headless subcommands) and
    `scripts/skill-stats.py` (legacy CLI). Read-only apart from explicit
    `delete` / `clear` / `backup` / `vacuum`.
-4. `scripts/skill_db.py::agentos_*` and `::claude_mem_*` — **read-only
+4. `scripts/skill_db_agentos.py` and `scripts/skill_db_claude_mem.py` — **read-only
    neighbours**, not a fourth layer. The AgentOS advisor registers no tool and no
    command, so it can never appear in the usage tables, and `skillt agentos` is
    the only surface that reads its own store
@@ -270,14 +272,23 @@ the code; the schema versions track the data. Never conflate them.
   documents every section, and that
   both maintenance checklists name the same checks, commands and invariants —
   update all four when behaviour changes, or the suite fails.
-- **The advisor store is reached only through `skill_db.agentos_*`, and only from
-  the CLI.** No TUI page may open it: `test_tui_never_reads_the_advisor_store`
-  spies on the single door and visits every tab. Whatever does read it receives
-  only the dict `_project_loop` produced — nobody may open the file, open the
-  database, or assemble a path from a store-supplied id.
+- **The advisor store is reached only through `skill_db_agentos.agentos_*`, and
+  only from the CLI.** No TUI page may open it:
+  `test_tui_never_reads_the_advisor_store` spies on the single door and visits
+  every tab. Whatever does read it receives only the dict `_project_loop` produced
+  — nobody may open the file, open the database, or assemble a path from a
+  store-supplied id.
   `test_task_text_and_payloads_are_never_read` and
   `test_a_text_valued_count_field_is_never_counted` are the guards; the
   source-scanning TUI test that used to cover the screen went with that screen.
+- **A neighbour module imports the core, never the reverse**
+  (`skill_db_agentos.py` / `skill_db_claude_mem.py` → `skill_db.py`), and it reaches
+  core state as `db.HOME` / `db.fmt_time`, not by `from skill_db import ...`: a
+  name copied in at import time ignores the suite's
+  `monkeypatch.setattr(db, "HOME", …)`, which is how a test would silently read
+  this machine instead of its fixture. `test_module_boundaries.py` pins both halves.
+  A scan that used to slice a section out of `skill_db.py` now reads the reader's
+  own file — when a section moves, the scan moves with it or it passes vacuously.
 - **A hand-drawn bar is scaled against a peak that includes every value it
   prints.** `bar()` multiplies `value / peak * width`, so a reference line (the
   advisor's per-call budget) that can exceed the data's own maximum overflows the

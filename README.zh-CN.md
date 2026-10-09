@@ -73,7 +73,9 @@ OpenCode 运行
 | 路径 | 作用 |
 |---|---|
 | `~/.config/opencode/plugin/skill-tracker.js` | OpenCode 插件，唯一的写入方（**不要改捕获逻辑**） |
-| `~/.config/opencode/scripts/skill_db.py` | 共享数据层（schema/迁移/查询/导出/备份） |
+| `~/.config/opencode/scripts/skill_db.py` | 共享数据层（schema/迁移/查询/导出/备份），**只装 tracker 自己的数据** |
+| `~/.config/opencode/scripts/skill_db_agentos.py` | 只读邻居：AgentOS 顾问自己的库（单向 import 核心，核心永不反向 import 它） |
+| `~/.config/opencode/scripts/skill_db_claude_mem.py` | 只读邻居：claude-mem 自己的账本与日志（同上） |
 | `~/.config/opencode/scripts/opencode_compat.py` | **上游契约（Python 侧唯一副本）**：OpenCode 自己选的名字（hook 名、事件类型、载荷字段路径、它的目录布局、版本 pin）。写入端在 `plugin/skill-tracker.js` 的 `CONTRACT` 块里有对应的另一份，`test_compat.py` 按值比对两者。本工具自己定的数字与策略不放这里 |
 | `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
 | `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |

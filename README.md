@@ -389,7 +389,10 @@ OpenCode runtime
 - **Readers**: every `skillt` command. `health` opens the database read-only and
   never modifies it.
 - **Shared data layer**: `scripts/skill_db.py` — schema, migrations, queries,
-  export and backup — used by both `skill-tui.py` and the test suite.
+  export and backup — used by both `skill-tui.py` and the test suite. It holds the
+  tracker's own data and nothing else: the two read-only neighbours are
+  `skill_db_agentos.py` and `skill_db_claude_mem.py`, which import it and are never
+  imported by it.
 - **Upstream contract**: every name OpenCode chose is written once per language —
   `scripts/opencode_compat.py` on the Python side, the `CONTRACT` block in
   `plugin/skill-tracker.js` on the writer's side (hooks are registered and events
@@ -788,7 +791,10 @@ opencode-skill-tracker/
 ├── requirements-dev.txt          # + pytest
 ├── bin/skillt                    # launcher (location-independent)
 ├── plugin/skill-tracker.js       # OpenCode plugin — the only writer
-├── scripts/skill_db.py           # shared data layer
+├── scripts/skill_db.py           # shared data layer (the tracker's own data only)
+├── scripts/opencode_compat.py    # every OpenCode name, in one place
+├── scripts/skill_db_agentos.py   # read-only neighbour: the advisor's own store
+├── scripts/skill_db_claude_mem.py # read-only neighbour: claude-mem's own ledger
 ├── scripts/skill-tui.py          # TUI + --cli headless subcommands
 ├── scripts/skill-stats.py        # legacy CLI (backwards compatible)
 ├── scripts/tests/                # pytest suite

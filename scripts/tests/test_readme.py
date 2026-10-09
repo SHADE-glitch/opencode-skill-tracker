@@ -150,7 +150,10 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
                    "older_days", "undated", "opencode.db",
                    # The upstream-contract module: both checklists must point at it,
                    # or the one place to edit on an upgrade is undocumented.
-                   "opencode_compat", "CONTRACT"):
+                   "opencode_compat", "CONTRACT",
+                   # The neighbour modules split out of skill_db: if a checklist
+                   # still says `skill_db.agentos_*`, the door it names is gone.
+                   "skill_db_agentos"):
         assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
 
     assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"
