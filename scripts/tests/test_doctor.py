@@ -83,6 +83,9 @@ def _healthy_setup(tmp_path, monkeypatch):
     log.write_text("2026-01-01T00:00:00.000Z [info] initialized\n", encoding="utf-8")
     monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(log))
     monkeypatch.setattr(st, "_opencode_version", lambda: "1.18.33\n")
+    # Same reason the two lines above are patched: the schedule question asks
+    # systemd, which is this machine's state, not the code under test's.
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: "enabled")
 
     bdir = tmp_path / "backups"
     bdir.mkdir()
@@ -344,6 +347,135 @@ def test_doctor_warns_when_opencode_is_not_on_path(tmp_path, monkeypatch):
     assert status == "WARN", detail
     assert "not on PATH" in detail
     conn.close()
+
+
+# --- is anything *scheduled* to make the backups? --------------------------
+def test_an_installed_timer_passes_the_scheduled_check(tmp_path, monkeypatch):
+    """The healthy setup reports the timer enabled; this names that fact."""
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    found = checks_by_name(conn, Args(db_path))
+    assert "backups.scheduled" in found, sorted(found)
+    status, detail = found["backups.scheduled"]
+    assert status == "PASS", detail
+    assert "skillt-auto-backup.timer" in detail
+    conn.close()
+
+
+def test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent(tmp_path, monkeypatch):
+    """The whole reason this check exists.
+
+    A fresh backup says nothing about whether the next one will happen: the unit
+    can be gone and `backups.latest` still PASSes for days. So the two checks must
+    be able to disagree, and the disagreement must name the command that re-arms
+    it. Proven on the real host on 2026-10-10: `backups.latest` PASS at 3.0 days
+    while `is-enabled` answered `not-found`.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: "not-found")
+    found = checks_by_name(conn, Args(db_path))
+    status, detail = found["backups.scheduled"]
+    assert status == "WARN", detail
+    assert "not-found" in detail
+    assert "--with-timer" in detail, "must say how to arm it, not just that it is off"
+    assert found["backups.latest"][0] == "PASS", (
+        "the backup itself is still fresh — the two checks are different facts")
+    conn.close()
+
+
+def test_a_disabled_timer_is_named_as_disabled_not_as_missing(tmp_path, monkeypatch):
+    """`disabled` and `not-found` are different problems.
+
+    The first means the files are there and someone turned the schedule off, the
+    second means the unit is not installed at all. A maintenance line that reads
+    both as "off" sends the reader to the wrong command.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: "disabled")
+    status, detail = checks_by_name(conn, Args(db_path))["backups.scheduled"]
+    assert status == "WARN", detail
+    assert "disabled" in detail
+    conn.close()
+
+
+def test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy(tmp_path, monkeypatch):
+    """No answer is not a good answer — that is how a floor became a clean bill."""
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: None)
+    status, detail = checks_by_name(conn, Args(db_path))["backups.scheduled"]
+    assert status == "WARN", detail
+    assert "cannot" in detail.lower()
+    conn.close()
+
+
+def test_the_timer_check_never_fails_and_never_shells_out_uninvited(tmp_path, monkeypatch):
+    """Two rules at once: advisory only, and one helper owns the subprocess.
+
+    `doctor` must not turn its exit code red over a schedule the owner chose not
+    to install, and nothing in the check path may start a process behind the
+    tests' backs — the same reason `_opencode_version()` is a separate function.
+    """
+    calls = []
+
+    def fake_run(cmd, *a, **kw):
+        calls.append(cmd)
+        raise AssertionError("doctor must not run systemctl directly")
+
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st.subprocess, "run", fake_run)
+    found = checks_by_name(conn, Args(db_path))
+    assert not calls, f"doctor shelled out: {calls}"
+    for name in ("backups.scheduled",):
+        assert found[name][0] != "FAIL", found[name]
+    conn.close()
+
+
+def test_the_timer_check_has_a_deadline(tmp_path, monkeypatch):
+    """`doctor` is the command a user runs while something is already wrong."""
+    seen = {}
+
+    def fake_run(cmd, *a, **kw):
+        seen["cmd"] = cmd
+        seen["timeout"] = kw.get("timeout")
+
+        class R:
+            stdout = "enabled\n"
+            stderr = ""
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(st.subprocess, "run", fake_run)
+    assert st._backup_timer_state() == "enabled"
+    assert seen["cmd"][:3] == ["systemctl", "--user", "is-enabled"], seen
+    assert "skillt-auto-backup.timer" in seen["cmd"]
+    assert isinstance(seen["timeout"], (int, float)) and 0 < seen["timeout"] <= 5, seen
+
+
+def test_the_doctor_never_fails_on_the_scheduled_check(tmp_path, monkeypatch):
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: "not-found")
+    monkeypatch.setattr(st, "_opencode_version", lambda: None)
+    monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(tmp_path / "gone.log"))
+    found = checks_by_name(conn, Args(db_path))
+    assert all(s != "FAIL" for s, _ in found.values()), [
+        (n, v) for n, v in found.items() if v[0] == "FAIL"]
+    conn.close()
+
+
+def test_the_timer_check_asks_about_the_unit_install_sh_installs():
+    """The name in the check, the file in the repo and the copy in `install.sh` are one unit.
+
+    A check pointed at a unit that nobody installs would answer `not-found` on every
+    healthy machine and become the boy who cried wolf; a check that spelled the name
+    differently from `install.sh` would WARN about a schedule that is running fine.
+    """
+    unit_dir = Path(__file__).resolve().parents[2] / "skill-tracker" / "systemd"
+    assert (unit_dir / st.BACKUP_TIMER_UNIT).is_file(), st.BACKUP_TIMER_UNIT
+    assert (unit_dir / st.BACKUP_TIMER_UNIT.replace(".timer", ".service")).is_file()
+    installer = (Path(__file__).resolve().parents[2] / "install.sh").read_text(
+        encoding="utf-8")
+    assert st.BACKUP_TIMER_UNIT in installer, (
+        "install.sh must copy the very unit doctor asks about")
+    assert st.BACKUP_TIMER_UNIT.endswith(".timer")
 
 
 def test_the_new_checks_can_never_fail_doctor(tmp_path, monkeypatch):

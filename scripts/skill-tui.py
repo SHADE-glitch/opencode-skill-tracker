@@ -792,6 +792,14 @@ PLUGIN_PLUGIN_MARKERS = compat.PLUGIN_PLUGIN_MARKERS
 VERSION_PIN_RE = compat.VERSION_PIN_RE
 OPENCODE_VERSION_TIMEOUT_S = 2
 
+# The user unit that runs `auto-backup` and `rotate-log` daily, and the deadline for
+# asking systemd about it. The name is pinned to the files in
+# `skill-tracker/systemd/` and to what `install.sh --with-timer` copies by
+# `test_the_timer_check_asks_about_the_unit_install_sh_installs` — a check pointed at
+# a unit nobody installs would report `not-found` forever and read as a false alarm.
+BACKUP_TIMER_UNIT = "skillt-auto-backup.timer"
+SYSTEMCTL_TIMEOUT_S = 2
+
 # The tracker's own log. `log()` never throws, so a hook that starts failing is
 # invisible in the database — it only ever shows up here. The filename is ours; the
 # directory comes from the host's layout through `compat`.
@@ -849,6 +857,28 @@ def _opencode_version():
     except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout or None
+
+
+def _backup_timer_state():
+    """What `systemctl --user is-enabled` says about the backup timer.
+
+    Returns the state string (`enabled`, `disabled`, `not-found`, …), or None when
+    systemd cannot be asked at all. Separate function for the same reason as
+    `_opencode_version`: the check below must never be the thing that shells out in
+    a test, and a host without user systemd must read as "unknown", never as healthy.
+
+    The answer comes from stdout even on a non-zero exit, because `is-enabled` exits
+    4 for `not-found` while still naming the state it found.
+    """
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "is-enabled", BACKUP_TIMER_UNIT],
+            capture_output=True, text=True, timeout=SYSTEMCTL_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    answer = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    return answer or None
 
 
 def _doctor_checks(conn, args) -> list:
@@ -978,6 +1008,27 @@ def _doctor_checks(conn, args) -> list:
             add("backups.latest", age_d <= 7, f"{stamp} ({age_d:.1f}d ago)", warn=True)
     except Exception as e:  # noqa: BLE001
         add("backups.latest", False, f"error: {e}", warn=True)
+
+    # A file on disk says a backup *happened*. It says nothing about whether one
+    # will happen again, and those two facts came apart on a real host: the unit
+    # files were gone, `backups.latest` still read PASS for days. So ask the
+    # scheduler directly, and treat "cannot ask" as its own answer rather than a
+    # pass — this is the same trap as a bounded log read reporting a clean bill.
+    try:
+        state = _backup_timer_state()
+        if state is None:
+            add("backups.scheduled", False,
+                f"cannot ask systemd about {BACKUP_TIMER_UNIT} "
+                "(no user `systemctl`?) — unknown is not healthy", warn=True)
+        elif state.startswith("enabled"):
+            add("backups.scheduled", True, f"{BACKUP_TIMER_UNIT} {state}")
+        else:
+            add("backups.scheduled", False,
+                f"{BACKUP_TIMER_UNIT}: {state} — nothing runs `auto-backup` or "
+                "`rotate-log` on a schedule; `./install.sh --with-timer` arms it "
+                "(installing a unit is deliberately opt-in)", warn=True)
+    except Exception as e:  # noqa: BLE001
+        add("backups.scheduled", False, f"error: {e}", warn=True)
 
     # --- Capture pipeline ----------------------------------------------
     # Everything above proves the parts exist. These three prove it is still
