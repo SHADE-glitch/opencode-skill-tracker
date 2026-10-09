@@ -375,3 +375,80 @@ Cost     Three bug classes surfaced only because the tests moved with the code: 
          of it, exempted by line rather than by word. When a section moves, any scan of it must move
          too, or it passes vacuously
 Commit   6b465bd
+
+### D-040 · 2026-10-09 · fix
+Symptom  `OPENCODE_SKILL_TRACKER_CONFIG_DIR` was read by the writer and ignored by the readers,
+         which built the config tree out of `HOME` alone. With the override in force the plugin
+         recorded the skills it could see and every screen scanned the default tree for them: an
+         empty Skills page standing over a database that says otherwise, and `doctor` pointing its
+         `plugin.exists` check at a directory nobody chose
+Change   `skill_db.py` reads the same variable, so `SKILLS_DIR_DEFAULT`, `PLUGIN_PATH` and
+         `TRACKER_LOG_PATH` follow one config tree instead of two
+Evidence L0 2026-10-09: `scripts/tests` 596 passed on all three documented commands; the new test
+         reloads the module under the override instead of patching the value, because these paths
+         are bound at import — a by-value patch would prove nothing about whether the environment
+         is read at all
+Cost     One machine's default behaviour is unchanged (the variable is unset, so both spellings
+         agree); what changes is that a second machine may now move the tree and stay coherent
+Commit   ee9f537
+
+### D-041 · 2026-10-09 · fix
+Symptom  There was no settings surface: no config file, four flags the interactive screens never
+         read (`--days`, `--limit`, `--min-uses`, `--freshness-days` — they were parsed into
+         `Args` and dropped, since `SkillTUI.__init__` took only the database path), each default
+         written as a fresh literal on its own parser line, and `parse_args` throwing away every
+         token after the command name. Meanwhile `pyproject.toml` stated no Python floor at all
+         while the READMEs badged 3.11+ and `doctor`'s `env.python` warned below 3.10 — three
+         prints, two numbers
+Change   `scripts/settings.py`: one registry (key, default, minimum, flag, explanation in both
+         documentation languages) resolved by **flag > config file > environment > default**, and
+         `skillt config list|get|set|unset|path|explain`, which dispatches before the
+         database-exists check because on a fresh machine it is the one command that must work
+         before the first skill has ever run. The file is
+         `~/.local/share/opencode/skillt-config.json` — the tracker's own data directory, never
+         `~/.config/opencode/`. Refused values keep a visible origin
+         (`config file (rejected)`) instead of becoming a default nobody chose, and a file that
+         reports problems is never rewritten. `view.recent_rows` is the knob the Recent timeline
+         actually reads (it replaces the literal 100); the three headless-only keys now say so in
+         both languages, as does the reason the trend charts cannot follow `view.days` (their
+         height is pinned to it). `CAPTURE_FRESHNESS_DAYS` is the registry's default, and
+         claude-mem's staleness line is judged by the resolved `--freshness-days` rather than a
+         second copy of 7. `requires-python = ">=3.11"` plus `MIN_PYTHON`, which one test compares
+         against the badge and the package. `a.positional` carries `config`'s words and is refused
+         anywhere else
+Evidence L0 2026-10-09: `scripts/tests` 596 passed on `python3`, on `.venv/bin/python` and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR` pointing at a nonexistent directory; `__selftest`
+         63/63 under Bun against the repo file; `bash -n bin/skillt`; live `skillt doctor` 17 PASS
+         / 3 WARN / 0 FAIL with the new `config.file` line and `env.python … (want >= 3.11)`; live
+         `skillt config set/get/list --json/unset` round-tripped against a sandbox path through the
+         environment override, refusing to rewrite a file holding a non-numeric value and an
+         unknown key (exit 2), and deleting the file once `unset` emptied it; `scrub-metadata`
+         still reports no rows carrying `summary`/`title`; no settings file exists on this machine,
+         which is the zero-config path still working
+Cost     The layer is only trustworthy if two properties hold, and both are now tested: a refused
+         value must be *named* rather than absorbed, and a broken file must never be repaired by
+         overwriting it. `parse_args` resolves the file on every call, so the suite isolates it
+         autouse — an unisolated run would pass or fail depending on what this machine last typed
+Commit   4e0c29d
+
+### D-042 · 2026-10-09 · guard
+Symptom  Six environment variables were read by the code and named in neither README; the
+         dispatcher carried a hand-synced list of value-taking flags whose own comment said "must
+         stay in sync" and nothing checked it; and the two READMEs each documented a different
+         subset of the same surface
+Change   `scripts/tests/test_settings_documented.py` enumerates the reads *out of the source* and
+         demands each one in both languages, plus every key's flag and default. Enumeration, not a
+         maintained list: a test that reads a hand-kept inventory proves nothing about the
+         inventory. The shapes are per-language because `${NAME}` is a string template in
+         JavaScript (this project interpolates its own constants that way, and demanding docs for
+         them would be demanding docs for nothing) and an environment read in bash — where a bare
+         `$NAME` is not evidence of one, since bash cannot tell an inherited variable from the
+         script's own assignment
+Evidence L0 2026-10-09: the gate was written red first and named 18 names across the two files;
+         after the tables it passes, and `test_the_documented_flag_list_matches_the_parsers`
+         caught `--recent-rows` missing from `bin/skillt` the moment it entered the registry
+Cost     A new environment read must be documented in the same change or the suite is red. That is
+         the point; the cost is that the gate can only ever see a *read it can pattern-match*, so a
+         new spelling of reading the environment has to be added to the patterns, so
+         the gate's own list is a third thing to keep in step
+Commit   4e0c29d
