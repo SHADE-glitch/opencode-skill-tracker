@@ -30,6 +30,8 @@ CODE_PATHS = [
     "plugin/skill-tracker.js",
     "scripts/opencode_compat.py",
     "scripts/skill_db.py",
+    "scripts/skill_db_agentos.py",
+    "scripts/skill_db_claude_mem.py",
     "scripts/skill-tui.py",
     "scripts/skill-stats.py",
     "bin/skillt",

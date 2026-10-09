@@ -9,6 +9,7 @@ import pytest
 from conftest import load_module
 
 import skill_db as db
+import skill_db_claude_mem as cm
 
 st = load_module("skill-tui.py", "skill_tui")
 
@@ -357,7 +358,7 @@ def test_the_log_read_is_bounded_like_every_other_log_we_open(tmp_path, monkeypa
     worse with age on the cheapest diagnostic the tool has. The cap must be named
     in the module, not inline, or the message cannot say what it covered.
     """
-    assert st.TRACKER_LOG_BYTES_CAP == db.CLAUDE_MEM_LOG_BYTES_CAP
+    assert st.TRACKER_LOG_BYTES_CAP == cm.CLAUDE_MEM_LOG_BYTES_CAP
 
 
 def test_a_bounded_log_read_reports_a_floor_never_a_clean_bill(tmp_path, monkeypatch):

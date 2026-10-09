@@ -21,6 +21,7 @@ import pytest
 from conftest import load_module, write_claude_mem_files
 
 import skill_db as db
+import skill_db_claude_mem as cm
 
 st = load_module("skill-tui.py", "skill_tui")
 
@@ -174,7 +175,7 @@ def test_the_suite_never_sees_the_developers_own_store(monkeypatch):
         raise AssertionError("the isolated suite reached the network")
 
     monkeypatch.setattr(urllib.request, "urlopen", no_network)
-    store = db.claude_mem_store()
+    store = cm.claude_mem_store()
     assert store["db"] is None, store
     assert store["requested"].endswith("no-claude-mem.db"), store
     # The three files the neighbour leaves beside its database resolve from that
@@ -183,49 +184,49 @@ def test_the_suite_never_sees_the_developers_own_store(monkeypatch):
     # port to ask, which is what keeps the HTTP probe out of the whole suite.
     assert store["trace"] is None and store["logs_dir"] is None, store
     assert store["pid_file"] is None, store
-    assert db.claude_mem_activity(store=store)["available"] is False
-    assert db.claude_mem_worker(store=store)["alive"] is False
-    assert db.claude_mem_http()["available"] is False
+    assert cm.claude_mem_activity(store=store)["available"] is False
+    assert cm.claude_mem_worker(store=store)["alive"] is False
+    assert cm.claude_mem_http()["available"] is False
 
 
 # --- resolution ------------------------------------------------------------
 def test_store_resolution_prefers_explicit_then_env(tmp_path, monkeypatch):
-    monkeypatch.delenv(db.CLAUDE_MEM_DB_ENV, raising=False)
-    monkeypatch.delenv(db.CLAUDE_MEM_DIR_ENV, raising=False)
+    monkeypatch.delenv(cm.CLAUDE_MEM_DB_ENV, raising=False)
+    monkeypatch.delenv(cm.CLAUDE_MEM_DIR_ENV, raising=False)
     real = make_store(tmp_path, subdir="cm")
     via_env = make_store(tmp_path, subdir="env-cm")
     via_dir = make_store(tmp_path, subdir="dir-cm")
 
-    assert db.claude_mem_store(real)["db"] == real
-    monkeypatch.setenv(db.CLAUDE_MEM_DB_ENV, via_env)
-    assert db.claude_mem_store(real)["db"] == real, "the explicit argument wins"
-    assert db.claude_mem_store()["db"] == via_env
-    monkeypatch.delenv(db.CLAUDE_MEM_DB_ENV)
-    monkeypatch.setenv(db.CLAUDE_MEM_DIR_ENV, str(tmp_path / "dir-cm"))
-    assert db.claude_mem_store()["db"] == via_dir
-    monkeypatch.delenv(db.CLAUDE_MEM_DIR_ENV)
+    assert cm.claude_mem_store(real)["db"] == real
+    monkeypatch.setenv(cm.CLAUDE_MEM_DB_ENV, via_env)
+    assert cm.claude_mem_store(real)["db"] == real, "the explicit argument wins"
+    assert cm.claude_mem_store()["db"] == via_env
+    monkeypatch.delenv(cm.CLAUDE_MEM_DB_ENV)
+    monkeypatch.setenv(cm.CLAUDE_MEM_DIR_ENV, str(tmp_path / "dir-cm"))
+    assert cm.claude_mem_store()["db"] == via_dir
+    monkeypatch.delenv(cm.CLAUDE_MEM_DIR_ENV)
     # With no env at all the well-known default is what makes it discoverable —
     # unlike the advisor, whose location is a project choice and must be told.
     monkeypatch.setattr(db, "HOME", str(tmp_path / "no-home"))
-    assert db.claude_mem_store()["requested"] == str(
+    assert cm.claude_mem_store()["requested"] == str(
         tmp_path / "no-home" / ".claude-mem" / "claude-mem.db")
 
 
 def test_a_missing_store_is_reported_and_never_created(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "HOME", str(tmp_path))
     gone = str(tmp_path / "nowhere" / "claude-mem.db")
-    res = db.claude_mem_store(gone)
+    res = cm.claude_mem_store(gone)
     assert res["db"] is None and "no claude-mem database" in res["reason"]
     assert not os.path.exists(gone), "a reader must not create a foreign store"
 
-    summary = db.claude_mem_summary(None, db_path=gone)
+    summary = cm.claude_mem_summary(None, db_path=gone)
     assert summary["available"] is False and summary["reason"]
 
 
 # --- the summary itself ----------------------------------------------------
 def test_summary_counts_labels_and_tokens_without_reading_a_word(tmp_path, tracker_db):
     path = make_store(tmp_path, extra_observations=2)
-    s = db.claude_mem_summary(tracker_db, db_path=path, days=7)
+    s = cm.claude_mem_summary(tracker_db, db_path=path, days=7)
     assert s["available"] is True, s["reason"]
     obs = s["tables"]["observations"]
     assert obs["n"] == 3 and obs["n_window"] == 3
@@ -241,25 +242,25 @@ def test_summary_counts_labels_and_tokens_without_reading_a_word(tmp_path, track
     assert s["health"]["lastErrorKind"] == "quota_exhausted"
     assert s["backfill"]["throughDay"] == "2026-09-30"
     assert s["telemetry"] == {"enabled": False, "decidedAt": "2026-10-03T10:02:26.243Z"}
-    assert s["newest"] and db.claude_mem_age_days(s) < 1
+    assert s["newest"] and cm.claude_mem_age_days(s) < 1
 
 
 def test_the_tracker_join_counts_the_same_window(tmp_path, tracker_db):
     path = make_store(tmp_path)
-    s = db.claude_mem_summary(tracker_db, db_path=path, days=7)
+    s = cm.claude_mem_summary(tracker_db, db_path=path, days=7)
     assert s["tracker_same_window"] == {
         "skill_usage": 1, "mcp_usage": 0, "plugin_usage": 0,
     }, s["tracker_same_window"]
     # A window that excludes everything must say so, not invent a number.
     old = make_store(tmp_path, subdir="old", stale_ms=40 * 86400 * 1000)
-    s2 = db.claude_mem_summary(tracker_db, db_path=old, days=7)
+    s2 = cm.claude_mem_summary(tracker_db, db_path=old, days=7)
     assert s2["tables"]["observations"]["n_window"] == 0
     assert s2["tables"]["observations"]["n"] == 1
 
 
 def test_no_tracker_connection_still_reads_the_neighbour(tmp_path):
     path = make_store(tmp_path)
-    s = db.claude_mem_summary(None, db_path=path)
+    s = cm.claude_mem_summary(None, db_path=path)
     assert s["available"] is True and s["tracker_same_window"] is None
 
 
@@ -273,14 +274,14 @@ def test_no_prose_or_secret_reaches_the_output(tmp_path, tracker_db, capsys, mon
     because no query names those columns.
     """
     path = make_store(tmp_path, weird_label=True)
-    s = db.claude_mem_summary(tracker_db, db_path=path, days=7)
+    s = cm.claude_mem_summary(tracker_db, db_path=path, days=7)
     assert SENTINEL not in json.dumps(s, ensure_ascii=False)
     assert SECRET not in json.dumps(s, ensure_ascii=False)
 
     # The CLI resolves the store the way a user does — from the environment — so
     # that is what the test drives. Passing a path in by hand would skip the only
     # code path the command actually has.
-    monkeypatch.setenv(db.CLAUDE_MEM_DB_ENV, path)
+    monkeypatch.setenv(cm.CLAUDE_MEM_DB_ENV, path)
     args = st.Args()
     args.db, args.json, args.days = path, False, 7
     assert st._cli_claude_mem(tracker_db, args) == 0
@@ -310,14 +311,14 @@ def test_settings_json_is_never_opened(tmp_path, tracker_db, monkeypatch):
 
     monkeypatch.setitem(__builtins__ if isinstance(__builtins__, dict) else __builtins__.__dict__,
                         "open", guarded)
-    s = db.claude_mem_summary(tracker_db, db_path=path)
+    s = cm.claude_mem_summary(tracker_db, db_path=path)
     assert s["available"] is True
-    assert "settings.json" in db.CLAUDE_MEM_FORBIDDEN_FILES
+    assert "settings.json" in cm.CLAUDE_MEM_FORBIDDEN_FILES
 
 
 def test_a_label_that_is_not_a_category_name_is_counted_not_echoed(tmp_path, tracker_db):
     path = make_store(tmp_path, weird_label=True)
-    s = db.claude_mem_summary(tracker_db, db_path=path)
+    s = cm.claude_mem_summary(tracker_db, db_path=path)
     by = s["tables"]["observations"]["by"]
     assert SENTINEL not in " ".join(by), by
     assert by.get("(not shown)") == 1, by
@@ -327,9 +328,9 @@ def test_a_label_that_is_not_a_category_name_is_counted_not_echoed(tmp_path, tra
 def test_epoch_units_are_validated_not_guessed(tmp_path, tracker_db):
     """A store that switches to seconds must show nothing, not 1970."""
     path = make_store(tmp_path, seconds_epoch=True)
-    s = db.claude_mem_summary(tracker_db, db_path=path)
+    s = cm.claude_mem_summary(tracker_db, db_path=path)
     assert s["tables"]["observations"]["last"] is None
-    assert s["newest"] is None and db.claude_mem_age_days(s) is None
+    assert s["newest"] is None and cm.claude_mem_age_days(s) is None
 
 
 # --- the activity files it writes ------------------------------------------
@@ -374,7 +375,7 @@ def test_activity_counts_injections_whatever_shape_they_have(tmp_path, tracker_d
     vanishing.
     """
     root = add_activity_files(tmp_path)
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     t = a["trace"]
     assert t["injected"] == 3, t
     assert t["injected_bare"] == 1 and t["injected_with_source"] == 2, t
@@ -398,13 +399,13 @@ def test_the_newest_trace_stamp_wins_not_the_last_line_read(tmp_path, tracker_db
         "not-a-timestamp loaded project=garbage",
     ]
     root = add_activity_files(tmp_path, trace=lines)
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     assert a["trace"]["last_ts"] == db.fmt_time("2026-10-03T14:37:00.000Z"), a["trace"]
 
 
 def test_activity_counts_worker_log_levels_and_categories(tmp_path, tracker_db):
     root = add_activity_files(tmp_path)
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     w = a["worker_log"]
     # `[时间] [级别] [类别]` — the second bracket is the LEVEL. Reading ERROR as
     # a category (the first attempt) counts nothing at all.
@@ -419,7 +420,7 @@ def test_no_verbatim_query_or_log_line_crosses_the_activity_reader(tmp_path, tra
     Neither may appear anywhere in what the reader returns — it counts shapes.
     """
     root = add_activity_files(tmp_path)
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     blob = json.dumps(a, ensure_ascii=False)
     assert SENTINEL not in blob, blob[:400]
     assert SECRET not in blob
@@ -437,7 +438,7 @@ def test_the_activity_reader_never_opens_settings_json(tmp_path, tracker_db, mon
 
     monkeypatch.setitem(__builtins__.__dict__ if hasattr(__builtins__, "__dict__")
                         else __builtins__, "open", guarded)
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     assert a["available"] is True
 
 
@@ -452,10 +453,10 @@ def test_errors_are_counted_from_the_start_of_the_file_not_a_tail(tmp_path, trac
     lines += [f"[2026-10-03 00:01:{i:02d}.0] [INFO ] [WORKER] filler" for i in range(60)]
     root = add_activity_files(tmp_path, worker=lines)
     path = str(root / "claude-mem.db")
-    full = db.claude_mem_activity(store=db.claude_mem_store(path))
+    full = cm.claude_mem_activity(store=cm.claude_mem_store(path))
     assert full["worker_log"]["levels"]["ERROR"] == 3, full["worker_log"]
     assert full["worker_log"]["truncated"] is False
-    capped = db.claude_mem_activity(store=db.claude_mem_store(path), log_bytes_cap=200)
+    capped = cm.claude_mem_activity(store=cm.claude_mem_store(path), log_bytes_cap=200)
     assert capped["worker_log"]["truncated"] is True
     assert capped["worker_log"]["levels"]["ERROR"] == 3, "the head is what survives a cap"
 
@@ -463,16 +464,16 @@ def test_errors_are_counted_from_the_start_of_the_file_not_a_tail(tmp_path, trac
 def test_only_the_dated_worker_log_is_read(tmp_path, tracker_db):
     """`manual-restart-*.log` files sit in the same directory and are all empty."""
     root = add_activity_files(tmp_path, dated=False)
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     assert a["worker_log"] is None, a
     add_activity_files(tmp_path)          # now the dated one exists too
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     assert a["worker_log"]["levels"]["ERROR"] == 2, a
 
 
 def test_activity_is_optional_and_silent_when_the_files_are_absent(tmp_path, tracker_db):
     path = make_store(tmp_path, health=False)
-    a = db.claude_mem_activity(store=db.claude_mem_store(path))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(path))
     assert a["available"] is False
     assert a["trace"] is None and a["worker_log"] is None
 
@@ -560,7 +561,7 @@ def test_worker_pid_gives_the_port_and_liveness_without_http(tmp_path, tracker_d
     monkeypatch.setattr(urllib.request, "urlopen", no_network)
     root = add_activity_files(tmp_path)
     add_pid_file(root)
-    w = db.claude_mem_worker(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    w = cm.claude_mem_worker(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     assert w["alive"] is True, w
     assert w["port"] == 37701, w               # from the file, never hardcoded
     assert w["pid"] == os.getpid(), w
@@ -574,7 +575,7 @@ def test_a_dead_worker_is_reported_and_not_treated_as_a_failure(tmp_path, tracke
     root = add_activity_files(tmp_path)
     dead = _free_pid()
     add_pid_file(root, pid=dead)
-    w = db.claude_mem_worker(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    w = cm.claude_mem_worker(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     assert w["alive"] is False, w
     assert w["port"] == 37701, w               # the port it *would* use
     assert w["reason"], w
@@ -582,7 +583,7 @@ def test_a_dead_worker_is_reported_and_not_treated_as_a_failure(tmp_path, tracke
 
 def test_no_pid_file_means_no_worker_and_no_crash(tmp_path, tracker_db):
     root = add_activity_files(tmp_path)
-    w = db.claude_mem_worker(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    w = cm.claude_mem_worker(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     assert w["alive"] is False and w["port"] is None, w
 
 
@@ -593,7 +594,7 @@ def test_the_http_probe_shares_one_deadline(tmp_path, monkeypatch):
     make the command wait three times over before it said anything.
     """
     calls, clock = fake_http(monkeypatch, step=0.3)
-    out = db.claude_mem_http(worker={"alive": True, "port": 37701},
+    out = cm.claude_mem_http(worker={"alive": True, "port": 37701},
                              budget_seconds=0.5, clock=clock)
     assert calls == [0.5, 0.2], calls          # each got what was left, not the full budget
     assert out["skipped"] == ["chroma"], out
@@ -601,7 +602,7 @@ def test_the_http_probe_shares_one_deadline(tmp_path, monkeypatch):
 
 def test_no_http_is_attempted_when_the_worker_is_not_running(tmp_path, monkeypatch):
     calls, clock = fake_http(monkeypatch)
-    out = db.claude_mem_http(worker={"alive": False, "port": 37701, "reason": "down"},
+    out = cm.claude_mem_http(worker={"alive": False, "port": 37701, "reason": "down"},
                              clock=clock)
     assert calls == [], calls
     assert out["available"] is False and out["reason"], out
@@ -610,20 +611,20 @@ def test_no_http_is_attempted_when_the_worker_is_not_running(tmp_path, monkeypat
 def test_the_http_probe_degrades_to_none(tmp_path, monkeypatch):
     """Refused, missing key, wrong type — none of it may raise into a command."""
     calls, clock = fake_http(monkeypatch, fail=True)
-    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    out = cm.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
     assert out["available"] is False, out
     assert out["stats"] is None and out["queue"] is None and out["chroma"] is None
     assert len(calls) == 3, calls              # it tried, and every try came back empty
 
     calls, clock = fake_http(monkeypatch, bodies={})
-    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    out = cm.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
     assert out["available"] is False, out
 
 
 def test_no_path_or_free_text_crosses_the_http_whitelist(tmp_path, monkeypatch):
     """Numbers and booleans, and nothing else, whatever the worker answers."""
     calls, clock = fake_http(monkeypatch)
-    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    out = cm.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
     blob = json.dumps(out, ensure_ascii=False)
     assert SENTINEL not in blob, blob
     assert "claude-mem.db" not in blob, blob
@@ -655,7 +656,7 @@ def test_a_whitelisted_key_holding_a_string_is_dropped(tmp_path, monkeypatch):
     calls, clock = fake_http(monkeypatch, bodies={"/api/stats": {
         "worker": {"uptime": 10},
         "database": {"observations": SENTINEL, "sessions": 16}}})
-    out = db.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
+    out = cm.claude_mem_http(worker={"alive": True, "port": 37701}, clock=clock)
     assert out["stats"] == {"worker": {"uptime": 10}, "database": {"sessions": 16}}, out
 
 
@@ -710,7 +711,7 @@ def test_trace_groups_injections_by_project_and_local_day(tmp_path, tracker_db):
         "2026-10-04T01:00:00.000Z injected project=opencode len=88",
     ]
     root = add_activity_files(tmp_path, trace=lines)
-    t = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))["trace"]
+    t = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))["trace"]
     assert t["by_project"]["opencode"]["injected"] == 2, t["by_project"]
     assert t["by_project"]["opencode"]["loaded"] == 1, t["by_project"]
     assert t["by_project"]["selftest"]["injected"] == 1, t["by_project"]
@@ -725,7 +726,7 @@ def test_the_day_buckets_follow_the_local_calendar_not_utc(tmp_path, tracker_db)
     """
     lines = ["2026-10-03T20:00:00.000Z injected project=opencode len=1"]
     root = add_activity_files(tmp_path, trace=lines)
-    t = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))["trace"]
+    t = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))["trace"]
     local_day = db.fmt_time("2026-10-03T20:00:00.000Z")[:10]
     assert list(t["by_day"]) == [local_day], t["by_day"]
     if local_day != "2026-10-03":       # true on this box (UTC+8); UTC hosts agree anyway
@@ -744,7 +745,7 @@ def test_a_project_name_that_is_not_a_slug_is_counted_never_named(tmp_path, trac
         "2026-10-03T13:20:44.000Z injected project=opencode len=5",
     ]
     root = add_activity_files(tmp_path, trace=lines)
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     t = a["trace"]
     assert set(t["by_project"]) == {"opencode"}, t["by_project"]
     assert t["by_project"]["opencode"]["injected"] == 1, t
@@ -762,7 +763,7 @@ def test_grouping_never_loses_a_count(tmp_path, tracker_db):
     lines.append("2026-09-05T10:00:02.000Z injected len=9")     # unprojected
     lines.append("notatimestamp injected project=opencode len=1")  # undated
     root = add_activity_files(tmp_path, trace=lines)
-    t = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))["trace"]
+    t = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))["trace"]
     assert t["injected"] == 22 and t["loaded"] == 20, t
     assert len(t["by_day"]) == 14, sorted(t["by_day"])
     assert t["older_days"]["days"] == 6, t["older_days"]
@@ -781,7 +782,7 @@ def test_grouping_never_loses_a_count(tmp_path, tracker_db):
 def test_the_grouping_still_never_reads_the_query_text(tmp_path, tracker_db):
     """Grouping added two new loops over the same lines; `q=` is still off limits."""
     root = add_activity_files(tmp_path)     # TRACE_LINES carries SENTINEL in q=
-    a = db.claude_mem_activity(store=db.claude_mem_store(str(root / "claude-mem.db")))
+    a = cm.claude_mem_activity(store=cm.claude_mem_store(str(root / "claude-mem.db")))
     blob = json.dumps(a, ensure_ascii=False)
     assert SENTINEL not in blob, blob[:400]
     assert a["trace"]["injected_with_query"] >= 1, a["trace"]
@@ -791,7 +792,7 @@ def test_cli_prints_the_project_and_day_groups(tmp_path, tracker_db, monkeypatch
     """The grouping has to reach the human, not just the dict."""
     root = add_activity_files(tmp_path)
     store = str(root / "claude-mem.db")
-    monkeypatch.setenv(db.CLAUDE_MEM_DB_ENV, store)
+    monkeypatch.setenv(cm.CLAUDE_MEM_DB_ENV, store)
     args = st.Args()
     args.db, args.json, args.days = store, False, 7
     assert st._cli_claude_mem(tracker_db, args) == 0
@@ -805,7 +806,7 @@ def test_cli_prints_the_project_and_day_groups(tmp_path, tracker_db, monkeypatch
     # are not satisfied by an unconditional print.
     gone = str(tmp_path / "empty-cm" / "claude-mem.db")
     (tmp_path / "empty-cm").mkdir()
-    monkeypatch.setenv(db.CLAUDE_MEM_DB_ENV, gone)
+    monkeypatch.setenv(cm.CLAUDE_MEM_DB_ENV, gone)
     args.db = gone
     assert st._cli_claude_mem(tracker_db, args) == 0
     quiet = capsys.readouterr().out
@@ -820,30 +821,36 @@ def test_the_health_whitelist_names_no_prose_field():
     `lastErrorRequestId`; a future "just show me the error" edit would put the
     user's text (and a third-party URL) straight onto the terminal.
     """
-    assert db.CLAUDE_MEM_HEALTH_KEYS == (
+    assert cm.CLAUDE_MEM_HEALTH_KEYS == (
         "consecutiveFailures", "failingSinceAt", "lastErrorAt",
         "lastErrorCode", "lastErrorKind", "lastSuccessAt", "quotaCooldown",
-    ), db.CLAUDE_MEM_HEALTH_KEYS
-    assert "installId" not in db.CLAUDE_MEM_BACKFILL_KEYS
-    assert "installId" not in db.CLAUDE_MEM_TELEMETRY_KEYS
-    assert db.CLAUDE_MEM_FORBIDDEN_FILES == ("settings.json",)
+    ), cm.CLAUDE_MEM_HEALTH_KEYS
+    assert "installId" not in cm.CLAUDE_MEM_BACKFILL_KEYS
+    assert "installId" not in cm.CLAUDE_MEM_TELEMETRY_KEYS
+    assert cm.CLAUDE_MEM_FORBIDDEN_FILES == ("settings.json",)
 
 
 def test_no_prose_column_is_named_anywhere_in_the_reader():
     """Privacy by construction, checked against the source.
 
     A sentinel test only catches text the fixture happens to contain. This one
-    reads the claude-mem section of `skill_db.py` and fails if any prose column is
-    named in code — comments are stripped first, because the block comment above
-    the whitelist is precisely a list of what is not read, and that is worth
-    keeping readable.
+    reads the reader's own module (`skill_db_claude_mem.py` — the section moved out
+    of `skill_db.py` so the file being scanned *is* the reader, no slicing needed)
+    and fails if any prose column is named in code. Comments are stripped first,
+    because the block comment above the whitelist is precisely a list of what is
+    not read, and that is worth keeping readable.
     """
-    src = pathlib.Path(db.__file__).read_text(encoding="utf-8")
-    section = src[src.index("# claude-mem — read-only neighbour"):]
+    src = pathlib.Path(cm.__file__).read_text(encoding="utf-8")
+    section = src
     lines = [line for line in section.splitlines()
              if not line.lstrip().startswith("#")
              # The guard itself names the file it exists to keep shut.
-             and "FORBIDDEN_FILES" not in line]
+             and "FORBIDDEN_FILES" not in line
+             # `import urllib.request as urlreq` — the alias exists *because* this
+             # scan bans the bare word, and the module needs the stdlib client. It
+             # names no field and reads no text; exempting the line, not the word,
+             # keeps the scan's teeth.
+             and not line.startswith("import urllib.request")]
     code = "\n".join(lines)
     banned = (
         "prompt_text", "lastErrorMessage", "lastErrorUrl", "lastErrorRequestId",
@@ -857,7 +864,7 @@ def test_no_prose_column_is_named_anywhere_in_the_reader():
     assert not hits, f"prose fields named in the reader's code: {hits}"
     # `title` and `text` are too short to scan safely; the sentinel tests cover
     # those, and the columns actually selected are pinned right here.
-    selected = {c for spec in db.CLAUDE_MEM_TABLES.values()
+    selected = {c for spec in cm.CLAUDE_MEM_TABLES.values()
                 for c in (spec.get("time"), spec.get("label"), spec.get("tokens")) if c}
     assert selected <= {
         "created_at_epoch", "started_at_epoch", "type", "status", "tool_name",
@@ -868,7 +875,7 @@ def test_no_prose_column_is_named_anywhere_in_the_reader():
 # --- a neighbour that changes under us ------------------------------------
 def test_a_missing_table_is_reported_and_not_fatal(tmp_path, tracker_db):
     path = make_store(tmp_path, drop_table="tool_uses")
-    s = db.claude_mem_summary(tracker_db, db_path=path)
+    s = cm.claude_mem_summary(tracker_db, db_path=path)
     assert s["available"] is True
     assert s["tables"]["tool_uses"].get("missing") is True
     assert s["tables"]["observations"]["n"] == 1, "one absent table must not stop the rest"
@@ -877,7 +884,7 @@ def test_a_missing_table_is_reported_and_not_fatal(tmp_path, tracker_db):
 def test_a_renamed_column_degrades_instead_of_crashing(tmp_path, tracker_db):
     """M21's shape: a field upstream stops existing, a number goes blank."""
     path = make_store(tmp_path, drop_column=("observations", "discovery_tokens"))
-    s = db.claude_mem_summary(tracker_db, db_path=path)
+    s = cm.claude_mem_summary(tracker_db, db_path=path)
     obs = s["tables"]["observations"]
     assert obs["n"] == 1 and obs["tokens"] is None
     assert obs["by"] == {"discovery": 1}, "the surviving columns still work"
@@ -887,7 +894,7 @@ def test_a_corrupt_store_is_reported_not_raised(tmp_path, tracker_db):
     path = make_store(tmp_path)
     with open(path, "wb") as f:
         f.write(b"not a database at all")
-    s = db.claude_mem_summary(tracker_db, db_path=path)
+    s = cm.claude_mem_summary(tracker_db, db_path=path)
     assert s["available"] is False and s["reason"]
 
 
@@ -904,11 +911,11 @@ def _doctor(tmp_path, tracker_db, monkeypatch, store=None):
     monkeypatch.setattr(db, "SKILLS_DIR", str(tmp_path / "skills"))
     monkeypatch.setattr(st, "_opencode_version", lambda: "1.18.34\n")
     if store is None:
-        monkeypatch.delenv(db.CLAUDE_MEM_DB_ENV, raising=False)
-        monkeypatch.delenv(db.CLAUDE_MEM_DIR_ENV, raising=False)
+        monkeypatch.delenv(cm.CLAUDE_MEM_DB_ENV, raising=False)
+        monkeypatch.delenv(cm.CLAUDE_MEM_DIR_ENV, raising=False)
         monkeypatch.setattr(db, "HOME", str(tmp_path / "no-home"))
     else:
-        monkeypatch.setenv(db.CLAUDE_MEM_DB_ENV, store)
+        monkeypatch.setenv(cm.CLAUDE_MEM_DB_ENV, store)
     names = {n: (s, d) for n, s, d in st._doctor_checks(tracker_db, Args(str(tmp_path / "t.db")))}
     return names
 

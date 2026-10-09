@@ -16,9 +16,13 @@ from pathlib import Path
 
 import pytest
 
+import skill_db_claude_mem as cm
+
 pytest.importorskip("textual")
 
-from conftest import load_module  # noqa: E402
+from conftest import load_module
+
+import skill_db_agentos as aos  # noqa: E402
 
 st = load_module("skill-tui.py", "skill_tui")
 
@@ -971,7 +975,7 @@ def test_no_http_is_reachable_from_the_tui_refresh_path(seeded_plugin_db, tmp_pa
     store = write_claude_mem_files(tmp_path / "cm", pid=os.getpid())
     monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB", store)
     hits = []
-    monkeypatch.setattr(st.db, "claude_mem_http",
+    monkeypatch.setattr(st.cm, "claude_mem_http",
                         lambda *a, **k: hits.append("http") or {"available": False})
 
     async def _run_it():
@@ -1780,16 +1784,16 @@ def test_tui_never_reads_the_advisor_store(seeded_db, tmp_path, monkeypatch):
     from test_agentos import _make_store
     from textual.widgets import TabPane
 
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, _make_store(tmp_path))
+    monkeypatch.setenv(aos.AGENTOS_DB_ENV, _make_store(tmp_path))
 
     calls = []
-    real = db.agentos_summary
+    real = aos.agentos_summary
 
     def spy(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(st.db, "agentos_summary", spy)
+    monkeypatch.setattr(st.aos, "agentos_summary", spy)
 
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)

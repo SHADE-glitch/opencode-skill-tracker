@@ -17,6 +17,7 @@ import pytest
 from conftest import load_module
 
 import skill_db as db
+import skill_db_agentos as aos
 
 
 TASK_PROSE = "TASK-TEXT-MUST-NEVER-LEAVE-THE-STORE"
@@ -165,15 +166,15 @@ def test_store_resolution_prefers_explicit_then_env(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENCODE_SKILL_TRACKER_AGENTOS_DB", raising=False)
     monkeypatch.delenv("AOS_DB", raising=False)
 
-    out = db.agentos_store()
+    out = aos.agentos_store()
     assert out["db"] is None and "no store configured" in out["reason"]
 
     monkeypatch.setenv("AGENT_OS_ROOT", str(tmp_path))
-    assert db.agentos_store()["db"] == real
+    assert aos.agentos_store()["db"] == real
 
     monkeypatch.setenv("OPENCODE_SKILL_TRACKER_AGENTOS_DB", real)
-    assert db.agentos_store()["db"] == real
-    assert db.agentos_store(db_path=real)["db"] == real
+    assert aos.agentos_store()["db"] == real
+    assert aos.agentos_store(db_path=real)["db"] == real
 
 
 def test_a_missing_store_is_reported_and_never_created(tmp_path, monkeypatch):
@@ -181,7 +182,7 @@ def test_a_missing_store_is_reported_and_never_created(tmp_path, monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE skill_usage (session_id TEXT)")
-    res = db.agentos_summary(conn)
+    res = aos.agentos_summary(conn)
     assert res["available"] is False
     assert "no database at" in res["reason"]
     assert not (tmp_path / "nope.db").exists(), "aggregating must never create the store"
@@ -189,7 +190,7 @@ def test_a_missing_store_is_reported_and_never_created(tmp_path, monkeypatch):
 
 # --- privacy: whitelist projection, not scrubbing -------------------------
 def test_task_text_and_payloads_are_never_read(tmp_path, tracker):
-    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
+    res = aos.agentos_summary(tracker, db_path=_make_store(tmp_path))
     assert res["available"] is True
     blob = json.dumps(res, ensure_ascii=False, default=str)
     for prose in (TASK_PROSE, STAGE_PROSE, ERROR_PROSE, QUERY_PROSE):
@@ -207,7 +208,7 @@ def test_task_text_and_payloads_are_never_read(tmp_path, tracker):
 
 def test_the_recall_counts_surface_and_the_query_dict_does_not(tmp_path, tracker):
     """"Did the memory actually reach the prompt" is two integers, not a text read."""
-    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
+    res = aos.agentos_summary(tracker, db_path=_make_store(tmp_path))
     inj = res["loops"][0]["injection"]
     assert inj == {"retrieved": 3, "recalled": 3, "injected": 4, "chars": 1234}, inj
     # recalled 3 but injected 4 is real: a hypothesis can be injected on its own,
@@ -223,7 +224,7 @@ def test_a_loop_without_recall_data_degrades_to_none(tmp_path, tracker):
     raw["stages"]["recall"]["data"].pop("retrieved")
     raw["stages"]["recall"]["data"].pop("injection_chars")
     json.dump(raw, open(path, "w"))
-    res = db.agentos_summary(tracker, db_path=store)
+    res = aos.agentos_summary(tracker, db_path=store)
     inj = res["loops"][0]["injection"]
     assert inj["retrieved"] is None and inj["chars"] is None
     assert inj["injected"] == 4, "the fields still present must keep working"
@@ -236,12 +237,12 @@ def test_a_text_valued_count_field_is_never_counted(tmp_path, tracker):
     raw = json.load(open(path))
     raw["stages"]["recall"]["data"]["retrieved"] = "three memories"
     json.dump(raw, open(path, "w"))
-    res = db.agentos_summary(tracker, db_path=store)
+    res = aos.agentos_summary(tracker, db_path=store)
     assert res["loops"][0]["injection"]["retrieved"] is None
 
 
 def test_stage_timings_and_the_budget_flag(tmp_path, tracker):
-    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
+    res = aos.agentos_summary(tracker, db_path=_make_store(tmp_path))
     loop = res["loops"][0]
     assert loop["stages"]["route"]["ms"] == 50
     assert loop["stages"]["recall"]["ms"] == 4000
@@ -253,7 +254,7 @@ def test_stage_timings_and_the_budget_flag(tmp_path, tracker):
 
 
 def test_the_join_with_tracker_usage(tmp_path, tracker):
-    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
+    res = aos.agentos_summary(tracker, db_path=_make_store(tmp_path))
     loop = res["loops"][0]
     assert loop["session_id"] == "ses_test_1"
     assert loop["usage"] == {"skill": 1, "mcp": 1, "plugin": 0}
@@ -262,14 +263,14 @@ def test_the_join_with_tracker_usage(tmp_path, tracker):
 
 
 def test_a_truncated_loop_file_does_not_break_the_digest(tmp_path, tracker):
-    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path))
+    res = aos.agentos_summary(tracker, db_path=_make_store(tmp_path))
     assert res["loops_total"] == 2, "both files exist"
     assert len(res["loops"]) == 1, "the unparsable one is skipped, not fatal"
 
 
 # --- degrade honestly, never raise ---------------------------------------
 def test_unknown_telemetry_types_and_missing_tables(tmp_path, tracker):
-    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path, drop_retrieval=True))
+    res = aos.agentos_summary(tracker, db_path=_make_store(tmp_path, drop_retrieval=True))
     types = {t["event_type"] for t in res["telemetry"]}
     assert types == {"learning.run", "memory.retired"}, types
     assert res["store_counts"]["retrieval_log"] is None, "a missing table is None, not 0"
@@ -278,7 +279,7 @@ def test_unknown_telemetry_types_and_missing_tables(tmp_path, tracker):
 
 
 def test_no_loops_directory_is_fine(tmp_path, tracker):
-    res = db.agentos_summary(tracker, db_path=_make_store(tmp_path, with_loops=False))
+    res = aos.agentos_summary(tracker, db_path=_make_store(tmp_path, with_loops=False))
     assert res["available"] is True
     assert res["loops"] == [] and res["loops_total"] == 0
     assert res["loops_dir"] is None
@@ -293,7 +294,7 @@ def test_cli_agentos_text_and_json(tmp_path, tracker, capsys, monkeypatch):
         limit = 10
 
     args = A()
-    for var in (db.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
+    for var in (aos.AGENTOS_DB_ENV, "AOS_DB", "AGENT_OS_ROOT"):
         monkeypatch.delenv(var, raising=False)
 
     # unconfigured: say so plainly, exit 0 — an absent advisor is not a fault
@@ -301,7 +302,7 @@ def test_cli_agentos_text_and_json(tmp_path, tracker, capsys, monkeypatch):
     assert "not aggregated" in capsys.readouterr().out
 
     store = _make_store(tmp_path)
-    monkeypatch.setenv(db.AGENTOS_DB_ENV, store)
+    monkeypatch.setenv(aos.AGENTOS_DB_ENV, store)
     assert st._cli_agentos(tracker, args) == 0
     out = capsys.readouterr().out
     assert "AgentOS advisor" in out and "LOOP-TEST-1" in out
@@ -322,9 +323,9 @@ def test_the_advisor_budget_is_configurable(tmp_path, tracker, monkeypatch):
     """M21: the budget is AgentOS's number, so the copy here must be overridable."""
     store = _make_store(tmp_path)
     monkeypatch.setenv("OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS", "5000")
-    res = db.agentos_summary(tracker, db_path=store)
+    res = aos.agentos_summary(tracker, db_path=store)
     assert res["timeout_ms"] == 5000
     assert res["loops"][0]["over_budget_ms"] is False, "recall took 4000ms, under 5000"
 
     monkeypatch.setenv("OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS", "not-a-number")
-    assert db.agentos_summary(tracker, db_path=store)["timeout_ms"] == 1200
+    assert aos.agentos_summary(tracker, db_path=store)["timeout_ms"] == 1200

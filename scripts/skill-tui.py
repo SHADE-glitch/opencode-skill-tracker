@@ -33,6 +33,8 @@ if SCRIPT_DIR not in sys.path:
 
 import skill_db as db  # noqa: E402
 import opencode_compat as compat  # noqa: E402
+import skill_db_claude_mem as cm  # noqa: E402
+import skill_db_agentos as aos  # noqa: E402
 
 SORT_MODES = ["count", "last_used", "success_rate", "name"]
 SORT_LABELS = {
@@ -400,13 +402,13 @@ def _print_claude_mem_activity(activity, worker, http) -> None:
 
 def _cli_claude_mem(conn, args) -> int:
     """claude-mem's own ledger, read-only. Nothing here writes to that store."""
-    res = db.claude_mem_summary(conn, days=args.days)
-    store = db.claude_mem_store()
-    activity = db.claude_mem_activity(store=store)
-    worker = db.claude_mem_worker(store=store)
+    res = cm.claude_mem_summary(conn, days=args.days)
+    store = cm.claude_mem_store()
+    activity = cm.claude_mem_activity(store=store)
+    worker = cm.claude_mem_worker(store=store)
     # Only a headless command reaches this: the same call from the TUI would put a
     # network wait on the path that repaints for every key.
-    http = db.claude_mem_http(worker=worker)
+    http = cm.claude_mem_http(worker=worker)
     res["activity"], res["worker"], res["http"] = activity, worker, http
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
@@ -419,14 +421,14 @@ def _cli_claude_mem(conn, args) -> int:
         return 0
 
     t = res["tables"]
-    age = db.claude_mem_age_days(res)
+    age = cm.claude_mem_age_days(res)
     print("claude-mem (read-only; that store is never written from here)")
     print("-" * 56)
     print(f"  store      {res['db_path']}")
     print(f"  newest row {res['newest'] or '-'}"
           + (f"  ({age:.1f} d ago)" if age is not None else ""))
     print("  " + "   ".join(
-        f"{name} {(t[name] or {}).get('n')}" for name in db.CLAUDE_MEM_TABLES))
+        f"{name} {(t[name] or {}).get('n')}" for name in cm.CLAUDE_MEM_TABLES))
     obs = t.get("observations") or {}
     if obs.get("by"):
         print("  by type    " + " · ".join(f"{k} {v}" for k, v in obs["by"].items()))
@@ -461,7 +463,7 @@ def _cli_claude_mem(conn, args) -> int:
 
 def _cli_agentos(conn, args) -> int:
     """The AgentOS advisor store, read-only. Nothing here writes to that store."""
-    res = db.agentos_summary(conn, limit=args.limit)
+    res = aos.agentos_summary(conn, limit=args.limit)
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
@@ -743,9 +745,11 @@ CAPTURE_FRESHNESS_DAYS = 7
 
 # The plugin log is read from the start and never in full: it grows one line per
 # error forever (M17, no rotation), and `doctor` is the cheapest diagnostic this
-# tool has — it must not get slower with age. Same bound the claude-mem reader
-# uses, because a bound we set is a bound we can state in the message.
-TRACKER_LOG_BYTES_CAP = db.CLAUDE_MEM_LOG_BYTES_CAP
+# tool has — it must not get slower with age. 4 MiB is this project's own choice;
+# it happens to match `CLAUDE_MEM_LOG_BYTES_CAP`, and `test_doctor.py` pins that
+# they have not drifted apart, but the tracker's bound is not derived from a
+# neighbour's.
+TRACKER_LOG_BYTES_CAP = 4 * 1024 * 1024
 
 # The three streams the plugin writes, in the order the report lists them.
 STREAM_TABLES = ("skill_usage", "mcp_usage", "plugin_usage")
@@ -950,14 +954,14 @@ def _doctor_checks(conn, args) -> list:
     # written by a background worker, so "stale" and "failing" are different
     # stories and both matter.
     try:
-        cm = db.claude_mem_summary(conn, days=CAPTURE_FRESHNESS_DAYS)
-        if cm["available"]:
-            age = db.claude_mem_age_days(cm)
-            obs = (cm["tables"].get("observations") or {}).get("n")
-            health = cm.get("health") or {}
+        summary = cm.claude_mem_summary(conn, days=CAPTURE_FRESHNESS_DAYS)
+        if summary["available"]:
+            age = cm.claude_mem_age_days(summary)
+            obs = (summary["tables"].get("observations") or {}).get("n")
+            health = summary.get("health") or {}
             fails = health.get("consecutiveFailures")
             parts = [f"observations {obs}",
-                     f"newest {cm['newest'] or '-'}"
+                     f"newest {summary['newest'] or '-'}"
                      + (f" ({age:.1f}d)" if age is not None else "")]
             if age is None:
                 parts.append("no rows in its own ledger")
@@ -969,13 +973,13 @@ def _doctor_checks(conn, args) -> list:
             # count is the one thing the ledger cannot show: a worker can be
             # healthy-looking and failing on every sync. HTTP is not consulted
             # here at all — doctor stays offline.
-            store = db.claude_mem_store()
-            levels = ((db.claude_mem_activity(store=store).get("worker_log")
+            store = cm.claude_mem_store()
+            levels = ((cm.claude_mem_activity(store=store).get("worker_log")
                        or {}).get("levels") or {})
             errs = levels.get("ERROR", 0)
             if isinstance(errs, int) and errs:
                 parts.append(f"{errs} worker-log ERROR lines")
-            worker = db.claude_mem_worker(store=store)
+            worker = cm.claude_mem_worker(store=store)
             if worker["available"]:
                 parts.append(f"worker up :{worker['port']}" if worker["alive"]
                              else "worker down (on-demand)")
@@ -2183,8 +2187,8 @@ def _tui_classes() -> dict:
             guards against, arrived at by a different mechanism. Liveness is
             `os.kill(pid, 0)`, a syscall, not a request.
             """
-            store = db.claude_mem_store()
-            activity = db.claude_mem_activity(store=store)
+            store = cm.claude_mem_store()
+            activity = cm.claude_mem_activity(store=store)
             if not activity["available"]:
                 return ""
             trace = activity.get("trace") or {}
@@ -2198,7 +2202,7 @@ def _tui_classes() -> dict:
                     bits.append(f"{trace['unrecognized']} trace line(s) of an unknown shape")
             if log:
                 bits.append(f"worker ERROR {(log.get('levels') or {}).get('ERROR', 0):,}")
-            worker = db.claude_mem_worker(store=store)
+            worker = cm.claude_mem_worker(store=store)
             if worker["available"]:
                 bits.append(f"worker up :{worker['port']}" if worker["alive"]
                             else "worker down")
