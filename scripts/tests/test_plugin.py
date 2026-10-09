@@ -1620,3 +1620,23 @@ def test_a_denied_call_stores_no_title_but_still_stores_the_denial(tmp_path):
 
     blob = b"".join(p.read_bytes() for p in Path(tmp_path).glob("iso.db*"))
     assert TITLE_SENTINEL.encode() not in blob, "a permission title reached the database"
+
+
+def test_the_session_handler_keeps_only_the_fields_it_uses(src):
+    """`session.created` hands us a title derived from the user's first message.
+
+    Nothing in this project ever read `ctx.title`, so the read was pure prose
+    sitting in memory for the process lifetime — one `...ctx` splat away from the
+    database. The handler may name `id` and `directory` (both are used: the second
+    resolves the git branch) and may not name the third.
+    """
+    start = src.index('case "session.created":')
+    block = src[start:src.index("return;", start)]     # both labels share one body
+    assert "mergeSession(" in block, "the session context is no longer filled here"
+    # Check what is passed, not what is commented: a scan that fires on prose in
+    # an explanatory comment is a scan nobody can edit, and this one has a comment
+    # saying exactly why the field below is *not* read.
+    m = re.search(r"mergeSession\(\s*info\.id\s*,\s*\{([^}]*)\}", block)
+    assert m, "the session patch literal moved — the key list below is no longer what is kept"
+    keys = {part.split(":")[0].strip() for part in m.group(1).split(",") if part.strip()}
+    assert keys == {"directory"}, f"the session context patch grew: {keys}"

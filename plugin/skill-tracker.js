@@ -2013,9 +2013,12 @@ async function skillTrackerPlugin(input) {
         case "session.updated": {
           const info = props.info;
           if (info && info.id) {
+            // Only the two fields anything reads. `info.title` is a session title
+            // the host derives from the user's first message — nothing here ever
+            // read it, so keeping it meant holding prose in memory for the
+            // lifetime of the process, one `...ctx` away from the database.
             mergeSession(info.id, {
               directory: info.directory || undefined,
-              title: info.title,
             });
           }
           return;
