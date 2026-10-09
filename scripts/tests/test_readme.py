@@ -110,6 +110,10 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
     for needle in (
         "skillt doctor", "skillt cleanup-selftest", "skillt sync --dry-run",
         "skillt scrub-metadata", "skillt claude-mem",
+        # The two commands that *change* data, named in both checklists: a checklist
+        # that describes only the read-only half teaches nobody what to run when the
+        # database or the log outgrows the machine.
+        "skillt rotate-log", "skillt prune-usage",
         "capture.freshness", "log.errors",
         "env.opencode_version", "backups.latest", "integrity_check",
         "skillt-auto-backup.timer", "pytest scripts/tests", "bash -n bin/skillt",

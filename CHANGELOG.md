@@ -487,3 +487,60 @@ Cost     One test caught that the fixture, not the code, had the version orderin
          that the printed count is the same query. Rows leave free pages behind, so the
          message says the file will not shrink until `skillt vacuum` rather than implying it
 Commit   adbebca
+
+### D-044 · 2026-10-09 · guard
+Symptom  M17 had two halves and only one was closed: the reader stopped at
+         `TRACKER_LOG_BYTES_CAP` while the file kept growing, one line per init and per
+         dispose, with nothing in the tool ever moving it. Two caps that are separate
+         numbers are one bug waiting to drift — an active log can hold lines `doctor`
+         never sees
+Change   `skillt rotate-log` (`plan_log_rotation` / `rotate_log` in `skill_db.py`) renames
+         the log at `log.max_bytes`, which **is** `TRACKER_LOG_BYTES_CAP` — one number for
+         both sides. `log.keep_files` generations survive as
+         `skill-tracker.log.<UTC stamp>[-n]`, mode 0600, and only names matching that shape
+         are pruned; the command takes no path argument and `_own_log` refuses any basename
+         that is not one of `LOG_FILE_NAMES`, so a neighbour's log in the same directory is
+         not ours to move. The live file is re-created empty (a missing log makes `doctor`
+         WARN about a healthy plugin) and **without** `O_TRUNC`, because the writer appends
+         per line and can land a line between the rename and the re-create. Needs no
+         database, and dispatches before the database check
+Evidence L0 2026-10-09: `scripts/tests` 628 passed on `python3`, on `.venv/bin/python` and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR` at a nonexistent directory; `__selftest` 63/63
+         (the writer was untouched); `bash -n bin/skillt install.sh`. Against the live log
+         only the read-only paths ran — `rotate-log` and `rotate-log --json` both said
+         "below the cap", and the file's sha256 was identical afterwards; the exact command
+         the timer runs (`~/.local/bin/skillt rotate-log --yes`, through the installed
+         symlink) was also run and left the log byte-identical. `systemd-analyze verify
+         --user` accepts the two-command unit. **Not** verified: starting that unit through
+         systemd since the change, because doing so also prunes real backups
+Cost     The first version of the same-second suffix compared the *name pattern* instead of
+         asking the filesystem, so three rotations inside one second all chose `-1` and each
+         `os.rename` silently replaced the generation before it. A test that loops three
+         rotations found it; `auto-backup`, by contrast, still errors on a same-second name
+         (D-043's row says why the two differ). `MAINTENANCE.md` §0 claimed the timer was
+         "verified by running the service once" — true of the one-command unit, stale for
+         the two-command one, so that row now says which part ran and which did not, in
+         both languages
+Commit   ecc2d5f
+
+### D-045 · 2026-10-09 · guard
+Symptom  The documentation gate that exists because six environment variables shipped
+         undocumented did not look at `install.sh`, which reads three more
+         (`SKILLT_CONFIG_DIR`, `SKILLT_BIN_DIR`, `SKILLT_SYSTEMD_DIR`) and names none of them
+         in either README. Widening it naively also mis-read bash: `${LINK_DST[$i]}` is an
+         array element, not an environment read
+Change   `install.sh` joined the gate's source list, and the bash pattern now requires the
+         name to be followed by `}`, `:-` or `-`. Per-language shapes are the point: the same
+         spelling means a string template in JavaScript and an environment read in shell, so
+         one regex for both files would either demand documentation for nothing or miss a real
+         variable
+Evidence L0 2026-10-09: the gate went red naming exactly the three installer variables and
+         nothing else; after the README rows it passes on both languages, and
+         `test_the_documented_flag_list_matches_the_parsers` caught `--max-bytes` and
+         `--keep-files` missing from `bin/skillt` the moment they entered the registry
+Cost     `test_installing_the_timer_is_still_opt_in` checks the installer by the *actions*
+         (`cp -f`, `systemctl --user`, `mkdir -p "$SYSTEMD_DIR"`) rather than by the words,
+         because naming a directory is harmless and filling it is not — a word-based version
+         of that assertion failed on the variable definition and would have taught nobody
+         anything
+Commit   ecc2d5f

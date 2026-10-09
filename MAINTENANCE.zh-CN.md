@@ -21,7 +21,7 @@
 | AgentOS 顾问存储（2026-10-03 实测；那是另一个进程的状态，会变） | `/home/shade/Public/AgentOS/store/aos.db`——22 条 telemetry、51 条召回（覆盖 8 条记忆）、14 条记忆、**83 个 loop 文件**。阶段耗时已经不是小数：最新的 loop 里 `validate` 跑到 31–37 秒，是 1200ms 预算的约 30 倍。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。某个 loop 是 live 测试样本还是真实用量，不由本项目代答；这里对那个库只读，最新的 loop 自己带着 `model` 标签。 |
 | claude-mem 邻居（2026-10-04 15:56 重测；那是另一个进程的状态，会变） | `~/.claude-mem/`——它的账本：403 条 observation，最新一行距今 0.0 天。它自己的文件：`inject-trace.log` 157 行 → **103 次注入**（59 行裸的 + 44 行带 `source=`）、40 loaded、`unrecognized` 0；worker 日志**已经翻到 `logs/claude-mem-2026-10-04.log`**（374,014 字节 / 2,463 行）→ INFO 2,290 · WARN 168 · **ERROR 5**，`unparsed` 0——读取端按 mtime 挑了最新那个带日期的文件，把 2026-10-03 那份 609,860 字节的日志（连同它的 57 条 ERROR）留在了原地，这就是 `test_only_the_dated_worker_log_is_read` 在真机上的样子；`worker.pid` → 进程活着、端口 37700、`startToken` 从不读。读这三样实测 **8.2–15.8 ms**（跑五次）——那就是 Plugins 页那一行 dim 文本每次重画要付的钱，也是为什么 `claude_mem_http` 绝不在这条路上被调用 |
 | 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，11.3 天 1138 行（首行 2026-09-23）。里面有 **4 行 `[err]`，全是 `selftest FAIL: …`，是本项目的自测在 2026-10-04 07:32Z 写进去的**——那时子 agent 的断言还是红的。`doctor` 的 `log.errors` 会因此 WARN，而它们是测试残留、不是采集故障。**它们暴露的缺口已经修掉**（2026-10-04）：`__selftest()` 现在会把自己的日志改写到临时库旁边的 `skill-tracker-selftest.log`，除非用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定别的路径——所以文档里那条手工配方再也碰不到这个文件。验证方式是照原配方跑一次并对比这份日志的 sha256（前后一致），再**故意跑一次失败的自测**，它的 `[err]` 行落在隔离文件里。那 4 行历史残留仍在，它们早于本次修复，不是采集故障；别手工去删活日志里的行。 |
-| 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`；已实跑一次 service 验证（exit 0、生成备份、删除 0） |
+| 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`。当初手工整跑 service 时，它只有 `auto-backup` 一条命令（exit 0、生成备份、删除 0）。现在这个单元多了第二条 `ExecStart`：`rotate-log --yes`——**改完之后没有再用 systemd 起过这个两条命令的单元**：`systemd-analyze verify --user` 通过，命令行本身用已安装的启动器手工跑过一遍（`below the cap; nothing to rotate`，日志 sha256 未变）。手工起 service 还会按保留策略真的清理备份，所以那是主人该做的事，不是例检 |
 | 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
 | 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份），这个删除会在下一次夜间任务发生 |
 | metadata 清理 | 2026-10-01 已执行 `scrub-metadata --yes`，剥掉 40 行（skill 17 / mcp 10 / plugin 13），用量行与 46 条 `error` 文本全部保留；另外删除 3 个仍含原文的散落备份，并对生产库做了 VACUUM。此后 `skillt scrub-metadata` 必须报 0 行，且 `grep -l '<一段已知原文>' ~/.local/share/opencode/skill-usage.db*` 必须什么都搜不到 |
@@ -91,6 +91,10 @@ wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
 stat -c %s ~/.config/opencode/logs/skill-tracker.log   # 字节数：doctor 只读前 TRACKER_LOG_BYTES_CAP
                                  # （4 MiB），超出就会自称"下限"。这个数字说明的是文件多大，
                                  # 不再是 doctor 要跑多久
+skillt rotate-log                # 同一个上界落到写的一侧：长到 4 MiB 就把日志**改名**挪走，
+                                 # 保留 log.keep_files（默认 5）代。是改名、绝不是截断——
+                                 # doctor 要数的那些 `[err]` 行因此一直都在盘上。加 `--yes`
+                                 # 才动手；备份 timer 每天替你做这件事
 ```
 
 清理删掉的是**值**；WAL 模式下旧字节会留在 `-wal` 里直到 checkpoint。这就是
@@ -286,7 +290,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 ## 7. 已知限制
 
 M1–M23 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英文摘要在 [README.md](README.md#-known-limitations)）。
-维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志不轮转）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）以及 **M23**（同一个 `COALESCE` 会把 `agent` 冻住，所以 Agents 页统计的是一行的 session **首次**报出的 agent，而 `(unknown)` 量的是采集顺序，不是「无主的调用」）。
+维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志会长；现在读写两侧都上了界——读取端是 `TRACKER_LOG_BYTES_CAP`，文件本身由 `skillt rotate-log` 改名）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）以及 **M23**（同一个 `COALESCE` 会把 `agent` 冻住，所以 Agents 页统计的是一行的 session **首次**报出的 agent，而 `(unknown)` 量的是采集顺序，不是「无主的调用」）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修
 
@@ -295,12 +299,11 @@ M1–M23 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英�
 | `branchByDir` 负缓存无 TTL（M16） | 小 | 动采集路径；AGENTS.md 要求改采集必须带测试，且当前 null 的主因是会话目录本身不是 git 仓库 |
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
-| 日志不轮转（M17） | 小 | 读的一侧已封顶（`TRACKER_LOG_BYTES_CAP`），文件本身仍只增不减；轮转 / 截断 / 交给 journald 仍是待定的策略决定 |
 | 每次调用 `skillt agentos` 都会重读 `store/loops/` 下的 loop 文件（`--limit N` 限制的是投影多少条，不是列多少条） | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态。以前让这件事变成“每次按键都要付”的是 Advisor 页，页没了，现在只有跑命令时才付 |
 | 顾问聚合层读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那几个数变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的地方变成 `-` 就是信号 |
 | Plugins 页每次重画都整份重读 claude-mem 的 worker 日志——实测 8.2–15.8 ms | 小 | 上限由 `CLAUDE_MEM_LOG_BYTES_CAP` 兜住，而这一页只在切页、或按键且已过 `REFRESH_STALE_AFTER_S` 时才重画。按 mtime/size 缓存会让这行文本正好在它存在的那个场景上变陈——「发现后台同步开始失败」；这点开销也没到冻住界面的程度 |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
-| `skill_versions` 无上限增长 | 小 | 需要保留策略；目前没有任何清理 |
+| 行级保留只用手跑（M17 已结；`retention.usage_days` 默认 0） | 小 | 把它装上就等于让已记录的历史按一个主人没选过的时间表被删，所以默认关；`skillt prune-usage --yes` 才是那个决定点。`skill_versions` 由 `retention.max_skill_versions` 管，同样默认关 |
 | 从 OpenCode 自己的 `part` 表回填 `subagent_usage`（重启前那 84 次：`explore` 61、`general` 13、`auditor` 5、`researcher` 3、`reviewer` 2、`verifier` 1） | 小——一次只读扫描、8 条白名单 json 路径、按 `(parent_session_id, call_id)` 幂等 | **owner 在 2026-10-04 明确不做**：为一个不是天天问的历史问题，要把一个正在被写的库（OpenCode 自己的，WAL，会话跑着的时候也在写）加进本项目的读集合。于是 `Ran as` 说的是「自上次启动以来」，M24 也在页面上这么讲。等真有需要那些旧数字的问题时再提。 |
 
 ### 已用 live 验证结清（2026-10-01）
