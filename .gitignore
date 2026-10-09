@@ -20,3 +20,12 @@ backups/
 .idea/
 .vscode/
 .DS_Store
+
+# One-off reports and session state. This repository is public, and these files
+# carry real paths under ~/.local/share/opencode plus measured data volumes —
+# never commit. Root-anchored so a later docs/ tree is not swallowed.
+/STATE.md
+/PROFILE.md
+/AUDIT.md
+/PLAN.md
+/VERIFY.md
