@@ -1532,3 +1532,91 @@ def test_permission_events_still_supported_under_the_old_names(tmp_path):
         assert ("test-server", "read_note", "denied") in rows, rows
     finally:
         c.close()
+
+
+# ---------------------------------------------------------------------------
+# The permission `title` is prose, so the writer must not keep it
+# ---------------------------------------------------------------------------
+def test_the_writer_never_names_a_permission_title(src):
+    """A `title` that is not written needs no scrubbing to stay unwritten.
+
+    `skill_db.METADATA_SCRUB_KEYS` declares that a `title` key must not remain in
+    the database, while the writer used to put one there on every denied call.
+    A promise that only holds after someone remembers to run `skillt
+    scrub-metadata` is not a promise, so the three `permission.ask` branches name
+    `source` and may not name `title`. Static because the behavioural checks below
+    need Bun, and CI runs without it.
+    """
+    assert "title: hookInput.title" not in src, "a permission title is being read"
+    assert "metadata.title" not in src, "the writer still admits a title key"
+
+    m = re.search(r"const metadata = \{(.*?)\n  \};", src, re.S)
+    assert m, "buildMetadata's literal moved — the whitelist below is no longer what is stored"
+    keys = {line.strip().rstrip(",").split(":")[0].strip()
+            for line in m.group(1).splitlines() if line.strip()}
+    assert keys == {"tool", "call_id", "agent", "model", "branch", "source"}, keys
+    admitted = set(re.findall(r"if \(meta && meta\.(\w+)\)", src))
+    assert admitted == {"error"}, f"optional metadata keys admitted beyond the whitelist: {admitted}"
+
+
+PERMISSION_TITLE_SCRIPT = """
+const mod = await import(process.env.PLUGIN_PATH);
+const plugin = await mod.default.server(
+  { directory: '/tmp/x', worktree: '/tmp/x', client: {} }, {}
+);
+const title = process.env.TITLE_SENTINEL;
+
+// The mcp branch of permission.ask, with the host's own self-identifying namespace.
+await plugin['permission.ask'](
+  { sessionID: 'sess-pt-mcp', callID: 'call-pt-mcp', type: 'mcp:test-server:*',
+    pattern: ['mcp:test-server:*'], title: title },
+  { status: 'deny' }
+);
+// The skill branch: `type` is the skill tool id, the name arrives in `pattern`.
+await plugin['permission.ask'](
+  { sessionID: 'sess-pt-skill', callID: 'call-pt-skill', type: 'skill',
+    pattern: 'brainstorming', title: title },
+  { status: 'deny' }
+);
+console.log('DONE');
+"""
+
+TITLE_SENTINEL = "0deadbeef-title-carries-user-text-and-must-not-land"
+
+
+@requires_bun
+def test_a_denied_call_stores_no_title_but_still_stores_the_denial(tmp_path):
+    """The denial is the measurement; the text beside it in the payload is not.
+
+    Deleting the `title` write must not delete the row, so this drives both
+    reachable `permission.ask` branches with a sentinel title and then reads the
+    database back: the denied rows are there, their metadata holds only the
+    whitelist, and no file the database touches contains the sentinel. WAL means
+    the newest bytes live in `-wal`, so the main file alone would prove nothing.
+    """
+    env = _isolated(tmp_path)
+    env["TITLE_SENTINEL"] = TITLE_SENTINEL
+    r = _run_bun(PERMISSION_TITLE_SCRIPT, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DONE" in r.stdout, r.stdout + r.stderr
+
+    conn = sqlite3.connect(str(tmp_path / "iso.db"))
+    try:
+        mcp = conn.execute(
+            "SELECT server_name, status, metadata FROM mcp_usage"
+        ).fetchall()
+        skill = conn.execute(
+            "SELECT skill_name, status, metadata FROM skill_usage"
+        ).fetchall()
+        assert ("test-server", "denied") in [(s, st) for s, st, _ in mcp], mcp
+        assert ("brainstorming", "denied") in [(n, st) for n, st, _ in skill], skill
+        for _, _, metadata in mcp + skill:
+            keys = set(json.loads(metadata))
+            assert keys == {"tool", "call_id", "agent", "model", "branch", "source"}, keys
+        # `source` still says which path wrote it, so the row keeps its provenance.
+        assert json.loads(mcp[0][2])["source"] == "permission.ask", mcp
+    finally:
+        conn.close()
+
+    blob = b"".join(p.read_bytes() for p in Path(tmp_path).glob("iso.db*"))
+    assert TITLE_SENTINEL.encode() not in blob, "a permission title reached the database"

@@ -1792,8 +1792,10 @@ def cleanup_selftest(conn, dry_run: bool = True) -> dict:
 # Free-text metadata keys that must not stay in the database. `summary` held a
 # snippet of the user's own prompt: older builds wrote it, the writer has since
 # been removed, but the historical rows are still here. `title` is a permission
-# title, which routinely echoes the same input. Both are already excluded from
-# export by EXPORT_METADATA_KEYS; this closes the other half of the path.
+# title, which routinely echoes the same input — the plugin stopped writing it in
+# 2026-10-09, and it stays listed because rows written before that are still in
+# real databases and in old backups. Both are already excluded from export by
+# EXPORT_METADATA_KEYS; this closes the other half of the path.
 METADATA_SCRUB_KEYS = ("summary", "title")
 
 

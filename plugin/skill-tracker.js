@@ -84,7 +84,7 @@ const SUBAGENT_MAX = 40;
 const SUBAGENT_LABEL_RE = /^[A-Za-z0-9_.:-]{1,40}$/;
 
 const SANITIZE_MAX = 120;
-const META_TEXT_MAX = 200; // cap for sanitized free-text metadata (title/error)
+const META_TEXT_MAX = 200; // cap for the one free-text field that is stored (error)
 const BUSY_TIMEOUT_MS = 5000;
 const MAP_CAP = 5000; // FIFO eviction guard for in-memory maps
 const GIT_TIMEOUT_MS = 500;
@@ -1251,9 +1251,9 @@ export function parseFrontmatter(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Sanitization — applied to every free-text field that reaches the DB
-// (permission `title` and tool `error`). Message bodies are never stored at
-// all, so there is nothing of theirs to sanitize.
+// Sanitization — applied to the one free-text field that reaches the DB
+// (tool `error`). A permission `title` is never read at all. Message bodies are
+// never stored, so there is nothing of theirs to sanitize.
 //
 // Replace -> collapse -> truncate -> replace again (catches a secret that
 // straddles the truncation boundary). Raw text is never persisted or logged.
@@ -1533,9 +1533,11 @@ async function resolveWriteContext(sessionID, projectPath) {
 }
 
 function buildMetadata(ctx, branch, callID, source, toolId, meta) {
-  // Metadata only — never message bodies and never tool-argument values.
-  // `title` and `error` are free text that routinely echoes inputs (commands,
-  // stderr, file contents), so both go through sanitize().
+  // Metadata only — never message bodies, never tool-argument values, and never
+  // a permission `title`: that routinely echoes the input being asked about, and
+  // a key that is simply not written needs no scrubbing pass to stay unwritten.
+  // `skill_db.METADATA_SCRUB_KEYS` keeps `title` only for rows older builds wrote.
+  // `error` is free text too, so it still goes through sanitize().
   const metadata = {
     tool: toolId,
     call_id: callID ?? null,
@@ -1544,7 +1546,6 @@ function buildMetadata(ctx, branch, callID, source, toolId, meta) {
     branch: branch ?? null,
     source,
   };
-  if (meta && meta.title) metadata.title = sanitize(meta.title, META_TEXT_MAX);
   if (meta && meta.error) metadata.error = sanitize(meta.error, META_TEXT_MAX);
   return metadata;
 }
@@ -1939,7 +1940,7 @@ async function skillTrackerPlugin(input) {
           callID: hookInput.callID ?? null,
           durationMs: null,
           argNames: null,
-          meta: { source: "permission.ask", title: hookInput.title },
+          meta: { source: "permission.ask" },
         });
         return;
       }
@@ -1954,7 +1955,7 @@ async function skillTrackerPlugin(input) {
           status: "denied",
           callID: hookInput.callID ?? null,
           durationMs: null,
-          meta: { source: "permission.ask", title: hookInput.title },
+          meta: { source: "permission.ask" },
         });
         return;
       }
@@ -1969,7 +1970,7 @@ async function skillTrackerPlugin(input) {
           status: "denied",
           callID: hookInput.callID ?? null,
           durationMs: null,
-          meta: { source: "permission.ask", title: hookInput.title },
+          meta: { source: "permission.ask" },
         }
       );
     }),
@@ -2539,6 +2540,9 @@ export async function __selftest() {
   );
   const r3 = db.query("SELECT * FROM skill_usage WHERE call_id=?").get("call-perm-1");
   assert(r3 && r3.status === "denied" && r3.trigger_type === "permission_denied", "permission deny recorded");
+  // The payload carried a title above; the row must not carry it. Not written beats
+  // scrubbed: skillt scrub-metadata is for rows older builds already stored.
+  assert(r3 && !/"title"\s*:/.test(String(r3.metadata)), "no permission title reaches metadata");
 
   // Permission denial via user rejection event.
   await plugin.event({
