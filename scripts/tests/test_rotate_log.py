@@ -58,13 +58,28 @@ def logdir(tmp_path):
 
 
 # --- the cap is one number, not two ----------------------------------------
-def test_the_rotation_cap_is_the_number_the_reader_reads():
+def test_the_rotation_cap_is_the_number_the_reader_reads(monkeypatch):
     """If the writer rotated at a bigger size than the reader reads, the file would
-    grow past the cap and `doctor` would quietly count only part of it again."""
+    grow past the cap and `doctor` would quietly count only part of it again.
+
+    Compared at the *resolved* values, because that is where the two used to part:
+    the writer took `args.log_max_bytes` (flag > file > env > default) while the
+    reader took the module default, so raising the knob moved one side only.
+    """
     assert cfg.spec("log.max_bytes")["default"] == st.TRACKER_LOG_BYTES_CAP
     assert st.TRACKER_LOG_BYTES_CAP == cm.CLAUDE_MEM_LOG_BYTES_CAP
     assert cfg.spec("log.keep_files")["default"] == 5
     assert cfg.spec("log.keep_files")["minimum"] == 1
+
+    writer = st.parse_args(["--cli", "rotate-log"])
+    reader = st.parse_args(["--cli", "doctor"])
+    assert writer.log_max_bytes == reader.log_max_bytes == st.TRACKER_LOG_BYTES_CAP
+
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES", "2048")
+    writer = st.parse_args(["--cli", "rotate-log"])
+    reader = st.parse_args(["--cli", "doctor"])
+    assert writer.log_max_bytes == reader.log_max_bytes == 2048, (
+        "the override moved one side of the pair")
 
 
 # --- nothing happens below the cap -----------------------------------------

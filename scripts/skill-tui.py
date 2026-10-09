@@ -816,9 +816,11 @@ MIN_PYTHON = (3, 11)
 # tool has — it must not get slower with age. 4 MiB is this project's own choice;
 # it happens to match `CLAUDE_MEM_LOG_BYTES_CAP`, and `test_doctor.py` pins that
 # they have not drifted apart, but the tracker's bound is not derived from a
-# neighbour's. It is also `settings`' default for `log.max_bytes`, which is what
-# `skillt rotate-log` rotates at: one number for the reader and the writer, so a line
-# in the active log can never be invisible to `doctor`.
+# neighbour's. It is `settings`' **default** for `log.max_bytes` — what both
+# `doctor` and `skillt rotate-log` use when the owner has not said otherwise. The
+# reader takes the *resolved* value, not this constant, because the promise that no
+# line in the active log is invisible to `doctor` holds only while the reader and
+# the rotator stop at the same number, and an override moves both at once.
 TRACKER_LOG_BYTES_CAP = cfg.spec("log.max_bytes")["default"]
 
 # The three streams the plugin writes, in the order the report lists them.
@@ -1088,8 +1090,11 @@ def _doctor_checks(conn, args) -> list:
                 warn=True,
             )
         else:
+            # The resolved knob, not the module default: `skillt rotate-log` moves
+            # this file at `log.max_bytes` too, and the promise that no line is
+            # invisible to `doctor` only holds while the two read the same number.
             text, size, truncated = db._read_bounded_text(
-                TRACKER_LOG_PATH, TRACKER_LOG_BYTES_CAP
+                TRACKER_LOG_PATH, args.log_max_bytes
             )
             if text is None:
                 add("log.errors", False, f"cannot read {TRACKER_LOG_PATH}", warn=True)
@@ -1101,7 +1106,7 @@ def _doctor_checks(conn, args) -> list:
                 )
                 if truncated:
                     detail += (
-                        f"; counted the first {TRACKER_LOG_BYTES_CAP:,} B of "
+                        f"; counted the first {args.log_max_bytes:,} B of "
                         f"{size:,} B — a floor, not a total"
                     )
                 add("log.errors", not lines, detail, warn=True)
@@ -3148,7 +3153,18 @@ def tui_main(args) -> int:
 # Argument parsing
 # ===========================================================================
 class Args:
-    pass
+    """A parsed command line.
+
+    The two log bounds are class defaults, not `parse_args`-only attributes, because
+    `doctor` reads the plugin log at `log_max_bytes` and `rotate-log` moves the file
+    at it. An `Args` that did not carry them would either crash the reader or let it
+    fall back to a *different* number than the writer used — the one thing the
+    "no line invisible to doctor" promise cannot survive. `parse_args` overwrites
+    both with the resolved value (flag > config file > env > default).
+    """
+
+    log_max_bytes = cfg.spec("log.max_bytes")["default"]
+    log_keep_files = cfg.spec("log.keep_files")["default"]
 
 
 CLI_COMMANDS = {

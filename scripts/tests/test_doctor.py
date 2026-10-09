@@ -17,7 +17,15 @@ import settings as cfg
 st = load_module("skill-tui.py", "skill_tui")
 
 
-class Args:
+class Args(st.Args):
+    """A stand-in for one parsed `skillt doctor` command line.
+
+    Subclass of the real `Args` so the log bounds come from the production class:
+    `doctor` reads the plugin log at `log_max_bytes`, and a stand-in that carried its
+    own copy of that number could quietly disagree with the writer it is meant to be
+    compared against. A test that wants a different bound assigns it on the instance.
+    """
+
     def __init__(self, db_path, json=False):
         self.db = db_path
         self.json = json
@@ -374,7 +382,6 @@ def test_a_bounded_log_read_reports_a_floor_never_a_clean_bill(tmp_path, monkeyp
     """
     conn, db_path = _healthy_setup(tmp_path, monkeypatch)
     cap = 64 * 1024                       # shrink the knob; the shape is what matters
-    monkeypatch.setattr(st, "TRACKER_LOG_BYTES_CAP", cap)
     filler = "# " + ("x" * 4096) + "\n"   # no "[err]" — filler must never look like a fault
     log = tmp_path / "big.log"
     with log.open("w", encoding="utf-8") as f:
@@ -385,12 +392,46 @@ def test_a_bounded_log_read_reports_a_floor_never_a_clean_bill(tmp_path, monkeyp
     assert log.stat().st_size > cap
     monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(log))
 
-    status, detail = checks_by_name(conn, Args(db_path))["log.errors"]
+    args = Args(db_path)
+    args.log_max_bytes = cap
+    status, detail = checks_by_name(conn, args)["log.errors"]
     assert status == "WARN", detail
     assert "1 error line(s)" in detail, f"the past-the-cap error leaked into the count: {detail}"
     assert "early failure" in detail, detail
     assert "first" in detail and f"{cap} B" in detail.replace(",", ""), \
         f"a bounded read must name its bound: {detail}"
+    conn.close()
+
+
+def test_the_reader_bound_moves_with_the_writer_bound(tmp_path, monkeypatch):
+    """One knob means both sides, not two defaults that happen to agree.
+
+    `log.max_bytes` decides when `skillt rotate-log` moves the file, and it decides
+    how far `doctor` reads. The reader was pinned to `TRACKER_LOG_BYTES_CAP` — the
+    registry's *default* — so an owner who raised the knob to 8 MiB got rotation at
+    8 MiB and a reader still stopping at 4, which is the one case the "a line
+    `doctor` cannot see is structurally impossible" claim cannot survive. The bound
+    this line prints is therefore the test: it must be the resolved number.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES", "8388608")
+    args = st.parse_args(["--cli", "doctor", "--db", db_path])
+    assert args.log_max_bytes == 8388608, "the knob did not resolve; this proves nothing"
+    assert st.TRACKER_LOG_BYTES_CAP != args.log_max_bytes, (
+        "the default and the override are the same number, so the assertion below "
+        "would pass for the wrong reason")
+
+    seen = []
+    real = db._read_bounded_text
+
+    def spy(path, max_bytes):
+        seen.append((str(path), max_bytes))
+        return real(path, max_bytes)
+
+    monkeypatch.setattr(db, "_read_bounded_text", spy)
+    checks_by_name(conn, args)
+    caps = [c for (p, c) in seen if p == str(st.TRACKER_LOG_PATH)]
+    assert caps == [8388608], f"the reader used {caps}, not the owner's 8388608: {seen}"
     conn.close()
 
 

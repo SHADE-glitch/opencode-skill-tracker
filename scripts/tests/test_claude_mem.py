@@ -899,7 +899,10 @@ def test_a_corrupt_store_is_reported_not_raised(tmp_path, tracker_db):
 
 
 # --- doctor ----------------------------------------------------------------
-class Args:
+class Args(st.Args):
+    """A stand-in `skillt doctor` line, subclassed so the log bounds are the
+    production defaults rather than a second copy that can drift from them."""
+
     def __init__(self, db_path):
         self.db = db_path
         self.json = False
