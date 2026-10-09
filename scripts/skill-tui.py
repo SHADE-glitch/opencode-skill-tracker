@@ -1709,17 +1709,24 @@ def _tui_classes() -> dict:
         CARD_LABELS = ("Skills", "Skill calls", "MCP calls", "Plugin calls",
                        "Today (all)", "Skill success")
         _CARD_CHROME = 4        # border (1+1) plus padding (1+1), per card
-        _CARD_PAGE_PADDING = 2  # #dash-body's own left and right padding
+        # Measured, not read off the CSS: the card grid is 4 columns narrower than
+        # the screen at every width (36 -> 32, 48 -> 44, 120 -> 116) — the page
+        # padding and the scroll container's own column. Textual then hands the
+        # remainder out unevenly, so the *narrowest* card is what has to fit the
+        # label, and it is `(width - 4 - (N-1)) // N`.
+        _CARD_PAGE_PADDING = 4
 
         def _card_columns(self) -> int:
             """The widest card grid, of 6/3/2, that keeps every label on one line.
 
-            N across leaves each card `(width - 2 - (N-1)) // N` columns, 4 of which
-            are its border and padding, so a label of L columns needs
-            `N*(L+4) + (N-1) + 2 <= width`. With the longest label at 13 that is 109
-            for six across and 55 for three. Two across is the floor and is chosen
-            even when the terminal is narrower than it wants: a wrapped label is the
-            lesser harm next to doubling the height of a page that already scrolls.
+            N across leaves the narrowest card `(width - 4 - (N-1)) // N` columns, 4
+            of which are its border and padding, so a label of L columns needs
+            `N*(L+4) + (N-1) + 4 <= width`. With the longest label at 13 that is 111
+            for six across and 57 for three, and both numbers are what the layout
+            actually does at those widths, not what the CSS seems to say. Two across
+            is the floor and is chosen even when the terminal is narrower than it
+            wants: a wrapped label is the lesser harm next to doubling the height of
+            a page that already scrolls.
             """
             need = max(len(label) for label in self.CARD_LABELS) + self._CARD_CHROME
             room = self.size.width - self._CARD_PAGE_PADDING

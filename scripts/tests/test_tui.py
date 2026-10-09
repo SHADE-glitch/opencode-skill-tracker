@@ -2353,29 +2353,54 @@ def _card_geometry(screen):
     return out
 
 
-@pytest.mark.parametrize("size", [(48, 20), (60, 20), (120, 30)])
-def test_no_dashboard_card_label_wraps(seeded_db, size):
-    """A wrapped card label reads as a broken page, not as a tight one.
+@pytest.mark.parametrize("width,columns", [(40, 2), (48, 2), (56, 2), (57, 3),
+                                           (60, 3), (110, 3), (111, 6), (120, 6)])
+def test_the_card_grid_switches_where_the_layout_actually_fits(seeded_db, width,
+                                                               columns):
+    """The break points are where Textual lays the cards out, not where the CSS seems to say.
 
-    The 60 and 120 cases are the control: the same assertion has to hold on every
-    width the grid switches on, so a breakpoint tuned to 48 alone would not pass.
+    First version of `_card_columns` counted the page padding as 2 when the grid is
+    measurably 4 narrower than the screen, and so picked three across at 55 and six
+    at 109 — widths where the narrowest card comes out 16 columns and a 13-column
+    label wraps. 56/57 and 110/111 are in this list for that reason.
     """
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=size) as pilot:
+        async with app.run_test(size=(width, 20)) as pilot:
             await pilot.pause()
-            cards = _card_geometry(app.screen)
-            assert len(cards) == 6, cards
-            for label, room in cards:
+            grid = app.screen.query_one("#cards")
+            assert grid.styles.grid_size_columns == columns, (
+                f"at {width} columns the grid chose "
+                f"{grid.styles.grid_size_columns}")
+            assert grid.styles.grid_size_columns * grid.styles.grid_size_rows == 6, (
+                "six cards must fill the grid with no orphan row")
+            for label, room in _card_geometry(app.screen):
                 assert label, "the cards were never rendered"
                 assert room > 0, f"{label!r}: a card of width 0 is not laid out yet"
                 assert len(label) <= room, (
-                    f"{label!r} needs {len(label)} columns in a {size[0]}-column "
-                    f"terminal that gives it {room}"
-                )
+                    f"{label!r} needs {len(label)} columns in a {width}-column "
+                    f"terminal that gives it {room}")
+
+    _run(_run_it())
+
+
+def test_two_cards_across_is_the_floor_even_when_it_wraps(seeded_db):
+    """Below 40 columns nothing fits, and the page gets taller instead of breaking.
+
+    Pinned as a decision rather than an accident: at 36 columns the narrowest card
+    is 15 and the longest label needs 13 of 11, so it wraps — and the grid still
+    shows three rows of two, not six rows of one.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(36, 20)) as pilot:
+            await pilot.pause()
             grid = app.screen.query_one("#cards")
-            assert (grid.styles.grid_size_columns * grid.styles.grid_size_rows == 6), (
-                "six cards must fill the grid with no orphan row")
+            assert (grid.styles.grid_size_columns,
+                    grid.styles.grid_size_rows) == (2, 3), grid.styles
+            wrapped = [label for label, room in _card_geometry(app.screen)
+                       if len(label) > room]
+            assert wrapped == ["Skill success"], wrapped
 
     _run(_run_it())
 
