@@ -793,9 +793,10 @@ VERSION_PIN_RE = compat.VERSION_PIN_RE
 OPENCODE_VERSION_TIMEOUT_S = 2
 
 # The tracker's own log. `log()` never throws, so a hook that starts failing is
-# invisible in the database — it only ever shows up here.
+# invisible in the database — it only ever shows up here. The filename is ours; the
+# directory comes from the host's layout through `compat`.
 TRACKER_LOG_PATH = os.path.join(
-    db.CONFIG_DIR, compat.LOGS_SUBDIR, "skill-tracker.log"
+    db.CONFIG_DIR, compat.LOGS_SUBDIR, db.LOG_FILE_NAMES[0]
 )
 
 # How stale the newest recorded call may get before doctor says so. A tracker
@@ -815,8 +816,10 @@ MIN_PYTHON = (3, 11)
 # tool has — it must not get slower with age. 4 MiB is this project's own choice;
 # it happens to match `CLAUDE_MEM_LOG_BYTES_CAP`, and `test_doctor.py` pins that
 # they have not drifted apart, but the tracker's bound is not derived from a
-# neighbour's.
-TRACKER_LOG_BYTES_CAP = 4 * 1024 * 1024
+# neighbour's. It is also `settings`' default for `log.max_bytes`, which is what
+# `skillt rotate-log` rotates at: one number for the reader and the writer, so a line
+# in the active log can never be invisible to `doctor`.
+TRACKER_LOG_BYTES_CAP = cfg.spec("log.max_bytes")["default"]
 
 # The three streams the plugin writes, in the order the report lists them.
 STREAM_TABLES = ("skill_usage", "mcp_usage", "plugin_usage")
@@ -1157,6 +1160,57 @@ def _textual_available() -> bool:
         return False
 
 
+def _cli_rotate_log(args) -> int:
+    """`skillt rotate-log` — keep the plugin's own log from outrunning the reader.
+
+    Rotation is a rename: every line that leaves the live file is still on disk in the
+    rotated copy, because those lines are the evidence `doctor log.errors` reads. The
+    cap is the same number the reader reads, so an active log can never hold a line
+    `doctor` cannot see. Dry-run by default; a scheduled unit passes `--yes`.
+    """
+    path = TRACKER_LOG_PATH          # module attribute, so a test can point it elsewhere
+    res = db.rotate_log(path, args.log_max_bytes, args.log_keep_files,
+                        dry_run=not args.yes)
+
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+
+    def mb(n):
+        return f"{n:,} B"
+
+    print(f"Log     {path}")
+    if not os.path.isfile(path):
+        print(f"  no log yet ({mb(res['size'])}) — the plugin has not initialised; "
+              "nothing to rotate")
+        return 0
+    print(f"  size {mb(res['size'])}  ·  cap {mb(res['max_bytes'])}  ·  "
+          f"keep {res['keep_files']} rotated file(s)")
+
+    if not res["needed"]:
+        print("  below the cap; nothing to rotate")
+        if res["pruned"]:
+            print(f"  pruned {len(res['pruned'])} older rotation(s): "
+                  + ", ".join(res["pruned"]))
+        return 0
+
+    if res["dry_run"]:
+        print(f"[dry-run] would move the file to {res['target']} and start a fresh one.")
+        if res["would_prune"]:
+            print(f"  would prune {len(res['would_prune'])} rotation(s) beyond the "
+                  f"number kept: " + ", ".join(res["would_prune"]))
+        print("Nothing was moved. Re-run with --yes to apply.")
+        return 0
+
+    print(f"rotated to {res['rotated']}  ·  the live file is empty again and the "
+          "plugin's next append recreates its contents there")
+    print(f"  every previous line is in {res['rotated']} (mode 0600), not deleted")
+    if res["pruned"]:
+        print(f"  pruned {len(res['pruned'])} older rotation(s): "
+              + ", ".join(res["pruned"]))
+    return 0
+
+
 def _cli_config(args) -> int:
     """`skillt config` — every setting, where its value came from, and how to change it.
 
@@ -1249,7 +1303,10 @@ def _cli_config(args) -> int:
 
 
 def cli_main(args) -> int:
-    if args.command == "config":
+    if args.command in ("config", "rotate-log"):
+        # Neither needs a database. The log exists before the database does on a
+        # fresh machine, and rotation is the command that keeps it readable there.
+        return _cli_config(args) if args.command == "config" else _cli_rotate_log(args)
         # Settings need no database: on a fresh machine `skillt config list` is the
         # one command that must work before the first skill has ever run.
         return _cli_config(args)
@@ -2961,7 +3018,7 @@ class Args:
 CLI_COMMANDS = {
     "insight", "export", "sync", "cleanup-selftest", "scrub-metadata", "health",
     "mcp", "plugins", "agentos", "claude-mem", "auto-backup", "doctor", "config",
-    "prune-usage",
+    "prune-usage", "rotate-log",
 }
 
 
@@ -3004,6 +3061,8 @@ def parse_args(argv):
     # a flag overrides it for one run. Both default to 0, which means off.
     a.keep_days = settings["retention.usage_days"]
     a.keep_versions = settings["retention.max_skill_versions"]
+    a.log_max_bytes = settings["log.max_bytes"]
+    a.log_keep_files = settings["log.keep_files"]
     a.yes = False
     a.no_sync = False
     a.positional = []
@@ -3032,7 +3091,7 @@ def parse_args(argv):
             a.no_sync = True
         elif t in ("--db", "--days", "--min-uses", "--limit", "--out",
                    "--freshness-days", "--recent-rows", "--keep-days",
-                   "--keep-versions"):
+                   "--keep-versions", "--max-bytes", "--keep-files"):
             i += 1
             if i >= len(argv):
                 raise SystemExit(f"{t} requires a value")
@@ -3054,6 +3113,11 @@ def parse_args(argv):
                 a.keep_days = _int_arg("--keep-days", val, minimum=0)
             elif t == "--keep-versions":
                 a.keep_versions = _int_arg("--keep-versions", val, minimum=0)
+            elif t == "--max-bytes":
+                a.log_max_bytes = _int_arg("--max-bytes", val, minimum=1024)
+            elif t == "--keep-files":
+                # 0 would delete the only copy of the lines that just rotated out.
+                a.log_keep_files = _int_arg("--keep-files", val, minimum=1)
             else:
                 a.out = val
         elif t in ("-h", "--help"):
@@ -3099,7 +3163,8 @@ def main(argv):
             raise SystemExit(
                 "--cli requires a subcommand: "
                 "insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|"
-                "plugins|agentos|claude-mem|auto-backup|doctor|config|prune-usage"
+                "plugins|agentos|claude-mem|auto-backup|doctor|config|prune-usage|"
+                "rotate-log"
             )
         return cli_main(args)
 

@@ -8,6 +8,9 @@
 #
 #   ./install.sh            install (refuses to replace real files/dirs)
 #   ./install.sh --force    also replace existing real files/dirs
+#   ./install.sh --with-timer   also install the user systemd units for the daily
+#                        backup + log rotation. Off by default: writing into
+#                        ~/.config/systemd/user is a change outside this project.
 #
 # The headless subcommands (skillt insight/health/doctor/...) need nothing but
 # python3; only the interactive TUI needs the venv.
@@ -18,12 +21,15 @@
 set -euo pipefail
 
 FORCE=0
+TIMER=0
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
+    --with-timer) TIMER=1 ;;
     -h|--help)
-      echo "usage: ./install.sh [--force]"
-      echo "  --force  replace existing non-symlink files/dirs at the install locations"
+      echo "usage: ./install.sh [--force] [--with-timer]"
+      echo "  --force        replace existing non-symlink files/dirs at the install locations"
+      echo "  --with-timer   install and enable the user systemd units (daily backup + log rotation)"
       exit 0
       ;;
     *)
@@ -108,6 +114,43 @@ echo
 echo "==> skillt doctor"
 "$BIN_DIR/skillt" doctor || echo "  (doctor reported FAIL/WARN — see the lines above)"
 
+SYSTEMD_DIR="${SKILLT_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
+
+if [ "$TIMER" -eq 1 ]; then
+  # Everything that touches systemd is inside this branch: `--with-timer` is the
+  # opt-in, and a default install must not leave a unit behind that runs code the
+  # owner never asked for.
+  echo "==> installing user systemd units (daily backup + log rotation)"
+  mkdir -p "$SYSTEMD_DIR"
+  cp -f "$REPO_DIR/skill-tracker/systemd/skillt-auto-backup.service" \
+        "$REPO_DIR/skill-tracker/systemd/skillt-auto-backup.timer" "$SYSTEMD_DIR/"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    systemctl --user enable --now skillt-auto-backup.timer
+    echo "  enabled skillt-auto-backup.timer in $SYSTEMD_DIR"
+    echo "  check: systemctl --user status skillt-auto-backup.timer"
+  else
+    echo "  units copied to $SYSTEMD_DIR, but systemctl is unavailable — enable by hand" >&2
+  fi
+fi
+
+if [ "$TIMER" -eq 1 ]; then
+  TIMER_NOTE="Daily backup + log rotation are scheduled (skillt-auto-backup.timer)."
+else
+  # Built with printf rather than a nested here-document: nesting one here-doc inside
+  # a command substitution inside another leaves the outer delimiter unmatched, which
+  # bash only warns about and then prints something nobody asked for.
+  TIMER_NOTE="$(printf '%s\n' \
+    '' \
+    'Optional daily backups and log rotation (one timer runs both):' \
+    '  ./install.sh --with-timer' \
+    '  # or by hand:' \
+    '  mkdir -p ~/.config/systemd/user' \
+    "  cp $REPO_DIR/skill-tracker/systemd/skillt-auto-backup.* ~/.config/systemd/user/" \
+    '  systemctl --user daemon-reload' \
+    '  systemctl --user enable --now skillt-auto-backup.timer')"
+fi
+
 cat <<EOF
 
 Installed.
@@ -115,12 +158,8 @@ Installed.
   skillt           launch the interactive TUI
   skillt doctor    health check (PASS/WARN/FAIL)
   skillt insight   usage summary, no TUI required
+  skillt config    the settings file, and where each value came from
 
 Restart OpenCode so it loads the plugin from $CONFIG_DIR/plugin/.
-
-Optional daily backups:
-  mkdir -p ~/.config/systemd/user
-  cp "$REPO_DIR/skill-tracker/systemd/skillt-auto-backup."* ~/.config/systemd/user/
-  systemctl --user daemon-reload
-  systemctl --user enable --now skillt-auto-backup.timer
+$TIMER_NOTE
 EOF

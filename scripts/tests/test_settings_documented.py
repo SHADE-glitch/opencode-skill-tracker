@@ -26,6 +26,10 @@ SOURCES = (
     ROOT / "scripts" / "skill-stats.py",
     ROOT / "scripts" / "settings.py",
     ROOT / "bin" / "skillt",
+    # The installer is user-facing surface too: it reads two override variables, and
+    # the gate that exists because six variables shipped undocumented should not stop
+    # at the directory boundary of `bin/`.
+    ROOT / "install.sh",
 )
 
 
@@ -74,7 +78,7 @@ def _env_names_in_source() -> set[str]:
         r"os\.environ(?:\.get)?\(\s*[\"']([A-Z_][A-Z0-9_]*)[\"']"
         r"|[A-Za-z_]*_ENV\s*=\s*[\"']([A-Z_][A-Z0-9_]*)[\"']"
     )
-    sh = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)[:-]?")
+    sh = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?:[:-]|\})")
     found = set()
     for path in SOURCES:
         text = path.read_text(encoding="utf-8")

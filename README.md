@@ -273,6 +273,7 @@ skillt prune-usage [--keep-days N] [--keep-versions N] [--yes] [--json]
 skillt agentos   [--json] [--limit N]
 skillt claude-mem [--json] [--days N]
 skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
+skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 ```
 
 - `insight` — most used / fastest growing / **never used** / dormant / highest
@@ -332,6 +333,20 @@ skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
   `worker.version` and the free-text `details` are dropped. None of it is written
   into the tracker's tables, and none of it happens inside the TUI: the Plugins
   page prints the same log-file numbers as one dim line and never opens a socket.
+- `rotate-log` — keeps the plugin's own log from outrunning the reader (M17). It
+  **renames** the file rather than emptying it: every line that leaves the live path is
+  still on disk in `skill-tracker.log.<UTC stamp>`, because those lines are the evidence
+  `doctor log.errors` reads. The cap is `log.max_bytes`, which is the same 4 MiB the
+  reader reads, so the two cannot drift apart; `log.keep_files` rotations are kept and
+  anything older is pruned (only names matching this rotation shape, never a neighbour's
+  log — the command takes no path argument). The live file is re-created empty rather
+  than left missing, because a missing log makes `doctor` WARN about a plugin that is
+  running fine, and it is created without `O_TRUNC`: the writer appends per line, so a
+  line can land between the rename and the re-create. Dry-run by default; the backup
+  timer runs it with `--yes`. Needs **no database** — on a fresh machine the log exists
+  first. A second rotation inside the same second gets a `-2` suffix instead of renaming
+  onto the copy already there — that would lose a generation of the log in silence, and
+  it is the opposite of `auto-backup`, where a same-second name is an error.
 - `prune-usage` — the only command here that **deletes recorded history**. Off by
   default: `retention.usage_days` and `retention.max_skill_versions` are both `0`, and
   with either at 0 nothing is scheduled. It lists the rows it would remove and deletes
@@ -412,6 +427,8 @@ skillt config list --json
 | `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | how many events the Recent timeline lists. Older events stay in the database; only what the screen holds changes |
 | `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | how few calls make a skill "worth advising about" in `skillt insight` |
 | `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | how old the newest recorded call may get before `doctor` warns that capture looks stalled — and the same clock the claude-mem line is judged by |
+| `log.max_bytes` | `4194304` | `--max-bytes` | `OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES` | when the plugin's own log passes this size `skillt rotate-log` moves it aside. It is the same number the reader uses (`TRACKER_LOG_BYTES_CAP`) on purpose: a line in the active log that `doctor` cannot see would be a silent loss. Floor 1024 — a smaller cap would rotate on the first line |
+| `log.keep_files` | `5` | `--keep-files` | `OPENCODE_SKILL_TRACKER_LOG_KEEP_FILES` | how many rotated logs stay beside the live one. Rotation is a rename, so the lines move rather than disappear; this is how far back that history goes |
 | `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0` = off: nothing is ever deleted.** Usage rows older than this many days become the delete set of `skillt prune-usage`, which lists them first and only removes them with `--yes`, after a backup |
 | `retention.max_skill_versions` | `0` | `--keep-versions` | `OPENCODE_SKILL_TRACKER_RETENTION_MAX_SKILL_VERSIONS` | **`0` = off.** Keep at most this many `skill_versions` rows per skill — the newest N, so retention cannot eat the current content. The table gains a row per content change and never loses one |
 The environment name is **derived by rule**: uppercase the key, replace `.` with
@@ -506,6 +523,9 @@ did not exist while six variables shipped undocumented.
 | `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` | the advisor's per-call budget the "over budget" flag is measured against (default 1200, see M21) |
 | `SKILLT_SCRIPTS` | override the `scripts/` directory the launcher uses |
 | `SKILLT_VENV` | point the launcher at a venv dir or a python binary |
+| `SKILLT_CONFIG_DIR` | installer only: the OpenCode config directory to link into (default `~/.config/opencode`) — for a sandboxed install test |
+| `SKILLT_BIN_DIR` | installer only: where the `skillt` launcher is linked (default `~/.local/bin`) |
+| `SKILLT_SYSTEMD_DIR` | installer only, and only with `--with-timer`: where the user units are copied (default `~/.config/systemd/user`) |
 | `HOME` | inherited, not a knob: the writer builds every default above from it, so setting it moves the whole tree unless a specific override pins it |
 | `TMPDIR` | inherited: where `__selftest()` creates its throwaway database (default `/tmp`) |
 | `TERM` | inherited: the TUI refuses to start on an empty or `dumb` terminal rather than painting garbage |
@@ -597,7 +617,15 @@ loginctl enable-linger "$USER"                        # run while logged out
 ```
 
 The unit's `ExecStart` is `%h/.local/bin/skillt` because systemd's user `PATH`
-does not include `~/.local/bin`.
+does not include `~/.local/bin`, and it runs two maintenance jobs: `auto-backup` (the
+retention above) and `rotate-log --yes` (the plugin's own log, M17). The same thing can
+be done by `./install.sh --with-timer`, which is still opt-in — writing a unit is a
+change outside this project's directory.
+
+Neither job bounds the **database rows**. Usage rows are kept forever unless
+`retention.usage_days` is set and `skillt prune-usage --yes` is run, which is a decision
+nobody should make on a schedule they did not choose; and the database *file* only
+shrinks under `skillt vacuum`.
 
 ### Restore
 
@@ -732,13 +760,18 @@ The full audit — M1 through M24, with reproduction notes — lives in
   **forever** (the tradeoff that fixed M7/M8), until `vcs.branch.updated` or a
   process restart. A 500 ms timeout on a healthy repo therefore silences branch
   for the rest of that OpenCode process.
-- **M17** The plugin log is never rotated: `~/.config/opencode/logs/skill-tracker.log`
-  only grows (measured ~69 lines/day, one per init and one per dispose). It is
-  also the only place capture errors appear, which is what
-  `doctor log.errors` reads — clearing it erases that history. The **read** side is
-  now bounded: doctor counts only the first `TRACKER_LOG_BYTES_CAP` (4 MiB, the same
-  bound the claude-mem reader uses) from the start of the file, and says so in the
-  line it prints ("a floor, not a total") — the growth side is still open.
+- **M17** The plugin log grows: `~/.config/opencode/logs/skill-tracker.log` gains one
+  line per init and one per dispose (measured ~69 lines/day), and it is the only place
+  capture errors appear, which is what `doctor log.errors` reads — so clearing it erases
+  that history. **Both sides are now bounded.** The reader counts only the first
+  `TRACKER_LOG_BYTES_CAP` (4 MiB, the same bound the claude-mem reader uses) from the
+  **start** of the file and says so in the line it prints ("a floor, not a total");
+  `skillt rotate-log` renames the file at that same size — `log.max_bytes` *is*
+  `TRACKER_LOG_BYTES_CAP`, one number, so a line cannot sit in the active log and be
+  invisible to the reader at the same time — and keeps `log.keep_files` rotated copies.
+  What is left open is the shape of the history: rotation is opt-in unless the backup
+  timer is installed (`./install.sh --with-timer`), and a log that nobody rotates stops
+  being evidence the moment it is truncated by the cap.
 - **M18** All three upserts keep `metadata = COALESCE(existing, incoming)`. If
   the hook path wrote a row first and the event path arrives later carrying the
   actual error text, `status` is corrected to `error` (the monotonic rule) but

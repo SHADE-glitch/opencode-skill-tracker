@@ -79,6 +79,23 @@ REGISTRY = (
         "从库里看是一样的。",
     ),
     _spec(
+        "log.max_bytes", 4 * 1024 * 1024, 1024, "--max-bytes",
+        "How big the plugin's own log may get before `skillt rotate-log` moves it "
+        "aside. It is the same number the reader uses (`TRACKER_LOG_BYTES_CAP`), on "
+        "purpose: a line in the active log that `doctor` cannot see would be a "
+        "silent loss, and the cap exists to stop exactly that.",
+        "插件自己的日志长到多少字节后由 `skillt rotate-log` 挪走。**故意**与读取端用同一个数"
+        "（`TRACKER_LOG_BYTES_CAP`）：活日志里有 `doctor` 看不见的一行就是静默丢失，而上界要挡的"
+        "正是这件事。",
+    ),
+    _spec(
+        "log.keep_files", 5, 1, "--keep-files",
+        "How many rotated logs to keep besides the live one. Rotation is a rename, so "
+        "the lines move rather than disappear; this is how far back that history goes.",
+        "除当前那份以外保留多少个轮转后的日志。轮转是**改名**，行不会消失；这个数字决定那段历史"
+        "往回留多久。",
+    ),
+    _spec(
         "retention.usage_days", 0, 0, "--keep-days",
         "Delete usage rows older than this many days. **0 = off: nothing is ever "
         "deleted.** `skillt prune-usage` lists the rows it would remove and only "

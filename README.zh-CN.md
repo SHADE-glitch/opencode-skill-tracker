@@ -185,6 +185,7 @@ skillt prune-usage [--keep-days N] [--keep-versions N] [--yes] [--json]
 skillt agentos    [--json] [--limit N]
 skillt claude-mem [--json] [--days N]
 skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
+skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 ```
 
 - `insight`：最常使用 / 增长最快 / **从未使用** / 长期未使用 / 失败率最高，并附观察样本（session 数与天数）。
@@ -200,6 +201,7 @@ skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
 - `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
 
+- `rotate-log`：管住插件自己日志的生长（M17）。它是**改名**而不是清空：从活文件里走的每一行都还在 `skill-tracker.log.<UTC 时间戳>` 里，因为那些行正是 `doctor log.errors` 要读的证据。上界 `log.max_bytes` **就是** `TRACKER_LOG_BYTES_CAP`（同一个数），读取端与写入端不会再各说各话；`log.keep_files` 是保留几代轮转，超出的才删——而且只删**这个形状的名字**，绝不动邻居的日志（这条命令根本不接受路径参数）。活文件被重新创建成**空文件**而不是"没有文件"：文件不存在时 `doctor` 会对一个运行正常的插件 WARN「插件没初始化过」。重建**不带 `O_TRUNC`**：写入端逐行 `appendFileSync`，改名与重建之间可能正好落进来一行。默认 dry-run；备份 timer 用 `--yes` 跑它。**不需要数据库**——新机器上日志比数据库先出现。同一秒内的第二次轮转拿到 `-2` 后缀，而不是覆盖上一代（备份那边同名冲突是报错，这里必须继续）。
 - `prune-usage`：**本项目里唯一会删掉已记录历史的一条命令**。默认关：`retention.usage_days` 与 `retention.max_skill_versions` 都是 `0`，只要有一个是 0 就没有任何东西被排入删除。它先列出要删的行，只有加 `--yes` 才真删，而 `--yes` 先写一份备份、备份失败就中止；整个删除是**一个事务**。dry-run 报的数与真删的数出自同一条 SELECT，所以那是测量不是预测。时间戳解析不出来的行**保留**并计为 `undated`——"早于 N 天"是对一个我们并没有的日期的断言。`subagent_usage` 永远不在删除集合里：那些行是事件而非调用，启动记录是子 agent 跑过的唯一见证（M24）。删行只是释放页，文件要等 `skillt vacuum` 才变小。
 - `agentos`：**只读**聚合 AgentOS 顾问插件**它自己的库**。顾问**不注册任何工具**、也**不注册任何命令**，所以 `skill_usage` / `mcp_usage` / `plugin_usage` 里指名它的记录是 **0 行**，`plugin_inventory` 只有 1 行且工具列表与命令列表都是空的；这一项改读它的 `store/aos.db` 与 `store/loops/*.json`，而且现在是唯一读它的入口（TUI 已无 Advisor 页）。需要 `AGENT_OS_ROOT`（或 `OPENCODE_SKILL_TRACKER_AGENTOS_DB`），没配就明说"未聚合"。每个 loop 给出逐段状态与耗时、最慢段相对顾问单次预算是否超支、同一会话在 tracker 里到底产生过多少可度量的工具调用（这一列最有用），以及召回的记忆**是否真的进了提示**——显示成 `searched 3 / recalled 3 / reached the prompt 4 (1234 chars)`。`memory_ids` 与 `injected_memory_ids` 刻意分开：假设(hypothesis)可以单独被注入，合并成一个数就把这件事藏掉了。**从不写那个库**；字段是逐个白名单投影出来的，所以 loop 里的 `task_text`（任务原文）和各阶段 payload 一律读不到。见 M21。
 
@@ -248,6 +250,8 @@ skillt config list --json
 | `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | Recent 时间线列出多少条事件。更早的事件仍在库里，这里只改屏幕装多少 |
 | `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | 一个 skill 至少被调用多少次才进入 `skillt insight` 的建议范围 |
 | `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | 最新一条记录超过多少天，`doctor` 就提示采集可能停了；claude-mem 那一行用的是同一把尺 |
+| `log.max_bytes` | `4194304` | `--max-bytes` | `OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES` | 插件自己的日志长到多少字节后由 `skillt rotate-log` 挪走。**故意**与读取端同一个数（`TRACKER_LOG_BYTES_CAP`）：活日志里有 `doctor` 看不见的一行就是静默丢失。下限 1024——再小就会每写一行轮转一次 |
+| `log.keep_files` | `5` | `--keep-files` | `OPENCODE_SKILL_TRACKER_LOG_KEEP_FILES` | 除当前那份外保留多少个轮转日志。轮转是**改名**，行不会消失；这个数字决定那段历史往回留多久 |
 | `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0`=关闭：什么都不删。** 早于这么多天的用量行进入 `skillt prune-usage` 的删除集合；这条命令先列出来，只有加 `--yes` 才删，而 `--yes` 会先写备份 |
 | `retention.max_skill_versions` | `0` | `--keep-versions` | `OPENCODE_SKILL_TRACKER_RETENTION_MAX_SKILL_VERSIONS` | **`0`=关闭。** 每个 skill 最多保留多少条 `skill_versions`——按**最新**的 N 条留，所以保留策略不会吃掉当前内容。这张表每次内容变化多一行、从不减少 |
 环境变量名是**按规则推导**的：键转大写、`.` 换成 `_`、前缀 `OPENCODE_SKILL_TRACKER_`。
@@ -303,6 +307,9 @@ README，`scripts/tests/test_settings_documented.py` 就把构建判红——正
 | `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` | "是否超预算"所量的那把尺（默认 1200ms，见 M21） |
 | `SKILLT_SCRIPTS` | 覆盖启动器使用的 `scripts/` 目录 |
 | `SKILLT_VENV` | 让启动器指向某个 venv 目录或 python 可执行文件 |
+| `SKILLT_CONFIG_DIR` | 仅安装脚本：要链接进去的 OpenCode 配置目录（默认 `~/.config/opencode`），用来在沙箱里试装 |
+| `SKILLT_BIN_DIR` | 仅安装脚本：`skillt` 启动器链到哪儿（默认 `~/.local/bin`） |
+| `SKILLT_SYSTEMD_DIR` | 仅安装脚本，且只在 `--with-timer` 时生效：用户单元复制到哪儿（默认 `~/.config/systemd/user`） |
 | `HOME` | 继承而来，不是旋钮：上面每个默认路径都由写入端用它的拼出来，设它等于把整棵树搬走，除非某个变量已经把它钉住 |
 | `TMPDIR` | 继承而来：`__selftest()` 在哪创建它的临时库（默认 `/tmp`） |
 | `TERM` | 继承而来：终端是空或 `dumb` 时，TUI 拒绝启动，而不是画一屏乱码 |
@@ -375,6 +382,7 @@ skillt auto-backup             # 真正执行
 ```
 
 - 备份写入 `~/.local/share/opencode/backups/`（0700），命名固定为 `skill-usage-backup-YYYYMMDD-HHMMSS.db`；所有备份路径都指向这一个目录（M19）。
+- **这个保留策略只管备份文件**，不管库里的行。用量行会永远留着，除非设了 `retention.usage_days` 并跑 `skillt prune-usage --yes`；而 `.db` 文件本身要 `skillt vacuum` 才会变小。
 - 保留策略：**最近 30 个每日**（每天留最新一个）+ **最近 12 个月每月**（每月留最新一个），其余删除。
 - 安全护栏：
   - 只处理**名称完全匹配** `skill-usage-backup-<8位日期>-<6位时间>.db` 的文件；
@@ -384,9 +392,9 @@ skillt auto-backup             # 真正执行
   - 同名（同一秒）冲突会**报错而不是覆盖**；
   - 有 `.lock` 文件防止并发运行（锁超过 10 分钟视为过期，可被接管）。
 
-### 6.3 用 systemd timer 定时备份（可选，需你手动启用）
+### 6.3 用 systemd timer 定时备份与轮转日志（可选，需你手动启用）
 
-单元文件在 `~/.config/opencode/skill-tracker/systemd/`。启用步骤：
+单元文件在 `~/.config/opencode/skill-tracker/systemd/`。service 里跑**两件**维护活：`auto-backup`（上面那套备份保留）与 `rotate-log --yes`（插件日志，M17）——日志没有别的清扫者，而没人排队的轮转就等于永远不会发生。也可以直接 `./install.sh --with-timer`（默认仍不装：写 systemd 单元是本项目目录之外的改动）。启用步骤：
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -513,7 +521,7 @@ rm -rf ~/.local/share/opencode/backups
   另一个容易漏掉的事实：**删掉值不等于删掉字节**。WAL 模式下被替换的旧内容会留在 `-wal` 文件里直到 checkpoint，所以 `--yes` 结束时执行 `wal_checkpoint(TRUNCATE)`；库正忙时会明确告知，此时关掉 OpenCode 再跑一次 `skillt vacuum`。检查方法见 MAINTENANCE §3。
 - **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
 - **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
-- **M17 插件日志不轮转。** `~/.config/opencode/logs/skill-tracker.log` 只增不减；实测约 69 行/天（每次 init/dispose 各一行）。它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**，所以清了日志要说明是清的。**读**这一侧已经封住：doctor 只从文件**开头**数前 `TRACKER_LOG_BYTES_CAP`（4 MiB，与 claude-mem 读取器同一个上界），并在结论里写明"只覆盖前 N 字节，是下限不是总数"；**增长**那一侧仍未处理。
+- **M17 插件日志会一直长。** `~/.config/opencode/logs/skill-tracker.log` 每次 init/dispose 各加一行（实测约 69 行/天），而它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**。**两侧现在都上了界。** 读取端只从文件**开头**数前 `TRACKER_LOG_BYTES_CAP`（4 MiB，与 claude-mem 读取器同一个上界），并在结论里写明"只覆盖前 N 字节，是下限不是总数"；写入端由 `skillt rotate-log` 在**同一个数**（`log.max_bytes` 就是 `TRACKER_LOG_BYTES_CAP`，一个数字，不是两处约定）处改名，保留 `log.keep_files` 份轮转。仍要说清的是历史的形状：除非装了备份 timer（`./install.sh --with-timer`），轮转是手动动作——而没人轮转的日志，一旦被上界截断，就不再是证据了。
 - **M22 claude-mem 的数字来自别人的 schema，而且只是数字。** `skillt claude-mem` 以只读方式打开另一个插件的 SQLite 库：只取计数、时间戳和很短的分类标签，绝不取它们旁边的文本列（`prompt_text`、`text`、`narrative`、`tool_input` 等），也绝不打开它的 `settings.json`。上游改字段名只会让某个数字变空，不牵连别处（又是 M21 那个形状）；一张表都读不到的库会被报成「读不懂」，而不是「装了但是空的」。claude-mem **做了什么**（它自己的 hook、它自己的总结进程）从这里根本观测不到——这里读的是它写下了什么，不是它干了什么。它的两个日志文件守同一条约定：按行的**形状**解析（格式变了的行计入 `unrecognized`，不会被悄悄丢掉；任何一行原文都不回显），并且从文件**开头**整份扫描、带字节上限——尾部读取看不见文件前半段，而真机上那 57 条 ERROR **全在开头**。上限生效时结果里写着 `truncated`，此时数字是下界不是总量。HTTP 的投影同时按字段名**和**类型过滤，所以某个字段被改名去装文本时，结果是啥也没有，而不是漏出去。
 - **M23 Agents 页统计的是某一行的 session **首次**上报的 agent，不是跑掉这次调用的那个 agent。** 三张用量表的 upsert 都写成 `metadata = COALESCE(existing, excluded)`，谁先写进这一行的 JSON 就永远冻在这儿；而 `agent` 只在更晚的 `chat.message` 里才到。于是在它的 session 报出 agent 之前落库的调用会**永远**是 `(unknown)`——`(unknown)` 量的是**采集顺序**，不是「无主的调用」。它连同自己的计数一起显示，为的就是这张表不能被读成「这些 agent 干了这些」。2026-10-03 的两份备份实测：619 行与 664 行里，没有 agent 的是 0 行，所以正常机器上这个桶是空的；写下来是因为它**从页面上推导不出来**。
 - **M24 子 agent 里没用到「被测工具」时，它的工作是看不见的。** `task` 是内置工具，而内置是刻意不测的（M13），所以一条启动记录就是「它跑过」的唯一证据：宿主被要求用哪个名字、它拿到哪个子会话、有没有跑完、跑了多久。由此有两件事要钉住。其一，Agents 页的 `Spawned` 数的是**启动次数**，绝不并入 `Total`——否则同一列今天叫「调用」、明天叫「调用加事件」。其二，名字来自宿主的 `subagent_type` 参数，只有**长得像一个标签**才准入（`SUBAGENT_LABEL_RE`：不含空格、不含路径、至多 40 字符）；这是**形状**判定，不是「散文探测器」，不合格的值会被计成 `(unnamed)` 而不是打印出来。同一段载荷里的任务原文、一句话描述、title、子 agent 的回报与报错字符串，一行都不进表——写入端除了这几个标识符字段外不点任何字段名。这条流在旧库上起点是空的：表要等下一个会迁移的入口（`skillt`、`sync`、`doctor`）跑过才出现，而正在运行的 OpenCode 要**重启**才会加载新的写入端，所以在这些之前开始的会话里 `Spawned` 会显示 0。想关掉就设 `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1`；至于宿主对内置工具究竟会触发 hook 还是事件——这里**不赌**，两条路都写，由 `(parent_session_id, call_id)` 决定只留一行。同一条边界也让一行可以是「缺席」而不是「错」：`Ran as` 说不含写入端存在之前跑过的子 agent。要恢复那段历史技术上很干净——OpenCode 自己的 `opencode.db`里每条 `task` 都带着 `subagent_type` 和两个会话 id——但这里**刻意不做**，因为它会给本项目加一个正在被写的外来库；这个取舍记在 §8 暂缓表里，让「没实现」和「没决定」以后还看得出来。

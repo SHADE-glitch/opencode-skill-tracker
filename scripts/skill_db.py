@@ -2372,6 +2372,132 @@ def _read_bounded_text(path: str, cap: int):
 
 
 # ---------------------------------------------------------------------------
+# Log rotation — the growth half of M17. The reader above stops at a cap; this
+# keeps the file from outrunning it.
+# ---------------------------------------------------------------------------
+
+# The only two files this may ever move. A path argument is deliberately not part of
+# the public surface: the neighbour's log lives in the same directory as ours, and
+# "rotate a log" without a name whitelist is "rename any file in ~/.config/opencode".
+LOG_FILE_NAMES = ("skill-tracker.log", "skill-tracker-selftest.log")
+
+
+def _own_log(path: str) -> str:
+    """Refuse any basename that is not ours. Returns the base name."""
+    base = os.path.basename(path)
+    if base not in LOG_FILE_NAMES:
+        raise ValueError(
+            f"refusing to rotate {base!r}: only {', '.join(LOG_FILE_NAMES)} are "
+            f"this project's logs to move")
+    return base
+
+
+def _rotated_pattern(base: str):
+    """`skill-tracker.log.<YYYYMMDD>-<HHMMSS>[-<n>]` — nothing else is a rotation of ours."""
+    return re.compile(rf"^{re.escape(base)}\.\d{{8}}-\d{{6}}(-\d+)?$")
+
+
+def _rotation_target(base: str, directory: str = ".") -> str:
+    """A UTC stamp in the name, because the rows in the file are UTC timestamps.
+
+    The suffix is a *filesystem* check, not a pattern check: two rotations inside one
+    second would otherwise pick the same name, and `os.rename` onto an existing file
+    replaces it — which is a lost generation of the log, silently.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    name = f"{base}.{stamp}"
+    n = 1
+    while os.path.exists(os.path.join(directory, name)):
+        n += 1
+        name = f"{base}.{stamp}-{n}"
+    if n > 1000:
+        raise OSError(f"too many log rotations inside {stamp}: giving up at {name}")
+    return name
+
+
+def plan_log_rotation(path: str, max_bytes: int, keep: int) -> dict:
+    """What rotation would do, from a stat and a directory listing. Writes nothing."""
+    base = _own_log(path)
+    max_bytes = int(max_bytes)
+    keep = int(keep)
+    if max_bytes < 1 or keep < 1:
+        raise ValueError(f"max_bytes must be >= 1 and keep >= 1, got {max_bytes}/{keep}")
+    exists = os.path.isfile(path)
+    size = os.path.getsize(path) if exists else 0
+    pattern = _rotated_pattern(base)
+    directory = os.path.dirname(path) or "."
+    rotated = sorted((n for n in os.listdir(directory) if pattern.match(n)), reverse=True) \
+        if os.path.isdir(directory) else []
+    return {
+        "path": path,
+        "base": base,
+        "exists": exists,
+        "size": size,
+        "max_bytes": max_bytes,
+        "keep_files": keep,
+        "needed": bool(exists and size > max_bytes),
+        "target": _rotation_target(base, directory),
+        "rotated": rotated,
+        # Only ever names that matched the rotated shape for this base name.
+        "prune": rotated[keep:] if len(rotated) > keep else [],
+    }
+
+
+def _prune_rotations(directory: str, names: list) -> list:
+    """Delete the named rotation files, oldest first. Returns what actually went."""
+    removed = []
+    for name in names:
+        try:
+            os.remove(os.path.join(directory, name))
+        except OSError:
+            # A rotation file we cannot delete is reported, not retried blindly: the
+            # live log is already small again, which is what the cap is for.
+            continue
+        removed.append(name)
+    return removed
+
+
+def rotate_log(path: str, max_bytes: int, keep: int, dry_run: bool = True) -> dict:
+    """Move a too-big log aside and keep the newest `keep` rotations.
+
+    A rename, never a deletion of content: the lines that leave the live file are the
+    evidence `doctor log.errors` reads, so rotation preserves them under a name and
+    prunes only *rotated* files beyond the number named.
+
+    The live path is re-created empty rather than left missing, because a missing log
+    makes `doctor` WARN "the plugin has not initialised" about a plugin that is
+    running fine. It is created **without** `O_TRUNC`: the writer appends with
+    `appendFileSync`, so a line can land between the rename and this call, and
+    truncating here would eat it.
+    """
+    plan = plan_log_rotation(path, max_bytes, keep)
+    directory = os.path.dirname(path) or "."
+    result = {**{k: plan[k] for k in ("path", "size", "max_bytes", "keep_files",
+                                      "needed", "target")},
+              "dry_run": dry_run, "rotated": None, "pruned": [],
+              "would_rotate": plan["needed"], "would_prune": plan["prune"]}
+    if dry_run:
+        return result
+    if not plan["needed"]:
+        # Nothing to move, but the backlog may still be longer than the number named.
+        result["pruned"] = _prune_rotations(directory, plan["prune"])
+        return result
+
+    os.chmod(path, 0o600)          # the log carries paths; the rotated copy inherits
+    # Recomputed rather than taken from the plan: a second rotation running
+    # concurrently must not be renamed onto this one's target.
+    target = _rotation_target(plan["base"], directory)
+    os.rename(path, os.path.join(directory, target))
+    result["rotated"] = target
+
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
+    os.close(fd)
+
+    result["pruned"] = _prune_rotations(directory, plan["prune"])
+    return result
+
+
+# ---------------------------------------------------------------------------
 # The two read-only neighbours live in their own modules:
 # `skill_db_agentos.py` and `skill_db_claude_mem.py`. They import this module;
 # this one never imports them, so a name has one home and the dependency graph

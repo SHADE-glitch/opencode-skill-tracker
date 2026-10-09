@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenCode skill tracker automatic backup
+Description=OpenCode skill tracker automatic backup and log rotation
 Documentation=https://github.com/SHADE-glitch/opencode-skill-tracker/blob/master/README.zh-CN.md
 
 [Service]
@@ -7,6 +7,10 @@ Type=oneshot
 # %h-relative on purpose: systemd's user PATH does not include ~/.local/bin, and
 # an absolute path would hardcode one machine's home directory.
 ExecStart=%h/.local/bin/skillt auto-backup
+# The log has no other sweeper. Rotation is a rename (no line is lost), and a
+# rotation nobody schedules is a rotation that quietly never happens — so it rides
+# along with the one job that already runs. --yes belongs here, not on a prompt.
+ExecStart=%h/.local/bin/skillt rotate-log --yes
 Environment=LANG=C.UTF-8
 Environment=PYTHONIOENCODING=utf-8
 Nice=10
