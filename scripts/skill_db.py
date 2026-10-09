@@ -38,22 +38,19 @@ HOME = os.path.expanduser("~")
 # place to edit.
 DATA_DIR = os.path.join(HOME, *compat.DATA_HOME)
 CONFIG_DIR = os.path.join(HOME, *compat.CONFIG_HOME)
-DB_PATH = os.environ.get(
-    "OPENCODE_SKILL_TRACKER_DB",
-    os.path.join(DATA_DIR, "skill-usage.db"),
-)
-SKILLS_DIR = os.environ.get(
-    "OPENCODE_SKILL_TRACKER_SKILLS_DIR",
-    os.path.join(CONFIG_DIR, compat.SKILLS_SUBDIR),
-)
+# The defaults are named so a test can assert *where the default came from*
+# without depending on whether an environment override is in force (the suite
+# runs both ways on purpose).
+DB_PATH_DEFAULT = os.path.join(DATA_DIR, "skill-usage.db")
+SKILLS_DIR_DEFAULT = os.path.join(CONFIG_DIR, compat.SKILLS_SUBDIR)
+BACKUP_DIR_DEFAULT = os.path.join(DATA_DIR, "backups")
+DB_PATH = os.environ.get("OPENCODE_SKILL_TRACKER_DB", DB_PATH_DEFAULT)
+SKILLS_DIR = os.environ.get("OPENCODE_SKILL_TRACKER_SKILLS_DIR", SKILLS_DIR_DEFAULT)
 BUSY_TIMEOUT_MS = 5000
 
 # Dedicated directory for retained backups. Kept separate from the DB's own
 # directory so the retention sweep can never touch an unrelated .db file.
-BACKUP_DIR = os.environ.get(
-    "OPENCODE_SKILL_TRACKER_BACKUP_DIR",
-    os.path.join(DATA_DIR, "backups"),
-)
+BACKUP_DIR = os.environ.get("OPENCODE_SKILL_TRACKER_BACKUP_DIR", BACKUP_DIR_DEFAULT)
 
 # Only files matching this exact name shape are ever considered for deletion.
 # Anything else (hand-made copies, the live DB, exports) is left alone.

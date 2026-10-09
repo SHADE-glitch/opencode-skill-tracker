@@ -49,7 +49,15 @@ def _healthy_setup(tmp_path, monkeypatch):
 
     plugin = tmp_path / "skill-tracker.js"
     plugin.write_text(
-        "tool.execute.before tool.execute.after permission.ask event:\n"
+        # A stand-in for a plugin of the current generation: the marker strings
+        # doctor greps for are the hook names, which the real file now spells once
+        # inside its CONTRACT block. Kept as literals here on purpose — this is a
+        # fingerprint fixture, not a copy of the writer.
+        'HOOK_TOOL_BEFORE: "tool.execute.before",\n'
+        'HOOK_TOOL_AFTER: "tool.execute.after",\n'
+        'HOOK_PERMISSION_ASK: "permission.ask",\n'
+        'HOOK_CHAT_MESSAGE: "chat.message",\n'
+        'HOOK_DISPOSE: "dispose",\n'
         "mcp_usage function classify( recordMcpUsage\n"
         "plugin_usage recordPluginUsage command.execute.before\n"
         "// Builtin tool ids, verified against OpenCode 1.18.33 with\n",

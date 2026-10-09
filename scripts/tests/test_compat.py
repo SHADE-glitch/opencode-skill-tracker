@@ -13,6 +13,7 @@ its name to `opencode_compat` in the same commit.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 from pathlib import Path
@@ -164,12 +165,18 @@ def test_the_host_paths_come_from_the_module_not_from_callers():
     """`~/.config/opencode` was spelled out in three files.
 
     The tracker's own filenames stay with the tracker; the directory names are the
-    host's, so `skill_db` must build its paths from these tuples.
+    host's, so `skill_db` builds its paths from these tuples. Defaults, not live
+    values: an environment override may point elsewhere, and the suite runs with
+    one set on purpose.
     """
-    assert db.CONFIG_DIR.endswith(os.path.join(*compat.CONFIG_HOME))
-    assert db.DATA_DIR.endswith(os.path.join(*compat.DATA_HOME))
-    assert db.SKILLS_DIR == os.path.join(db.CONFIG_DIR, compat.SKILLS_SUBDIR)
+    home = os.path.expanduser("~")
+    assert db.CONFIG_DIR == os.path.join(home, *compat.CONFIG_HOME)
+    assert db.DATA_DIR == os.path.join(home, *compat.DATA_HOME)
+    assert db.SKILLS_DIR_DEFAULT == os.path.join(db.CONFIG_DIR, compat.SKILLS_SUBDIR)
+    assert db.DB_PATH_DEFAULT.startswith(db.DATA_DIR)
+    assert db.BACKUP_DIR_DEFAULT == os.path.join(db.DATA_DIR, "backups")
     assert compat.CONFIG_FILE_NAMES == ("opencode.json", "opencode.jsonc")
+    assert compat.PROJECT_CONFIG_DIR == ".opencode"
     assert compat.PROJECT_CONFIG_DIR in ("./.opencode", ".opencode")
 
 
@@ -198,3 +205,63 @@ def test_the_tool_id_pin_is_a_claim_the_plugin_actually_makes(src):
     assert m.group(1) == compat.PIN_TOOL_IDS, (
         f"plugin says {m.group(1)}, compat says {compat.PIN_TOOL_IDS} — edit both on a refresh"
     )
+
+
+def _js_contract(src):
+    """The writer's own `const CONTRACT = { KEY: "value", … }` block, as a dict.
+
+    A regex over one deliberately flat object literal: if the block gains nesting
+    this helper returns something wrong, and the test that uses it goes red rather
+    than passing on a partial read.
+    """
+    m = re.search(r"const CONTRACT = \{(.*?)\n\};", src, re.S)
+    assert m, "the plugin lost its CONTRACT block: upstream names are scattered again"
+    return dict(re.findall(r'^\s*([A-Z][A-Z0-9_]*)\s*:\s*"([^"]+)"', m.group(1), re.M))
+
+
+def test_the_writer_declares_the_same_names_the_module_declares(src):
+    """Two languages cannot share one constant, so they must share one *list*.
+
+    `test_compat` reads the plugin's CONTRACT block and compares it with
+    `opencode_compat`: hooks first (the loader looks keys up by exact name, so a
+    rename on one side means recording silently stops), then the bus event types.
+    The comparison is by value set, not by key spelling — the JS key is this
+    project's style, the value is the host's.
+    """
+    contract = _js_contract(src)
+    js_hooks = {v for k, v in contract.items() if k.startswith("HOOK_")}
+    assert js_hooks == set(compat.HOOKS), (
+        f"hooks differ — JS {sorted(js_hooks)} vs Python {sorted(compat.HOOKS)}"
+    )
+    js_events = {v for k, v in contract.items() if k.startswith("EVENT_")}
+    declared_events = {
+        v for k, v in vars(compat).items() if k.startswith("EVENT_") and isinstance(v, str)
+    }
+    assert js_events == declared_events, (
+        f"event types differ — JS {sorted(js_events)} vs Python {sorted(declared_events)}"
+    )
+
+
+def test_the_writer_registers_hooks_by_reference_not_by_repeating_a_string(src):
+    """`"tool.execute.before": safe("tool.execute.before", …)` spelled the name twice.
+
+    A rename then had two places to forget, and the selftest drove the hooks
+    through a third spelling (`plugin["tool.execute.before"]`). Registration keys,
+    `safe()` labels and hook accesses must all come out of CONTRACT.
+
+    What is deliberately *not* covered: `meta: { source: "permission.ask" }` and
+    `triggerType === "event_detected" ? "event" : "hook"` still hold literals.
+    Those are this project's own provenance labels — they are what the database
+    stores and the TUI prints, so renaming them is a data change, not a rename of
+    a host name. They merely happen to read like the hook that wrote them.
+    """
+    contract = _js_contract(src)
+    for key, value in ((k, v) for k, v in contract.items() if k.startswith("HOOK_")):
+        assert f'safe("{value}"' not in src, f"{value} is still passed to safe() by literal"
+        assert f'"{value}":' not in src, f"{value} is still registered by literal"
+        assert f'plugin["{value}"]' not in src, f"{value} is still accessed by literal"
+        assert f"[CONTRACT.{key}]:" in src, f"{key} is not used as a registration key"
+        assert f"safe(CONTRACT.{key}," in src, f"{key} has no CONTRACT label"
+    for key, value in ((k, v) for k, v in contract.items() if k.startswith("EVENT_")):
+        assert f'case "{value}":' not in src, f"{value} is still switched on by literal"
+        assert f"case CONTRACT.{key}:" in src, f"{key} is not used as a case label"

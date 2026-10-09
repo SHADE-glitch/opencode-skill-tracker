@@ -38,6 +38,7 @@ HOOK_PERMISSION_ASK = "permission.ask"
 HOOK_COMMAND_BEFORE = "command.execute.before"
 HOOK_EVENT = "event"
 HOOK_CHAT_MESSAGE = "chat.message"
+HOOK_CHAT_PARAMS = "chat.params"
 HOOK_DISPOSE = "dispose"
 
 HOOKS = (
@@ -47,14 +48,17 @@ HOOKS = (
     HOOK_COMMAND_BEFORE,
     HOOK_EVENT,
     HOOK_CHAT_MESSAGE,
+    HOOK_CHAT_PARAMS,
     HOOK_DISPOSE,
 )
 
 # What `doctor` looks for in the **installed** plugin file to tell one plugin
 # generation from another. The hook names come from above; the rest are this
 # project's own identifiers (`mcp_usage` is our table, `recordPluginUsage` our
-# writer), which is why they live here rather than in the TUI.
-PLUGIN_BASE_MARKERS = ("event:", "chat.message")
+# writer), which is why they live here rather than in the TUI. They are matched as
+# plain substrings, which is why they are the hook *names* and not the `key:` form
+# — the writer spells each name exactly once, inside its CONTRACT block.
+PLUGIN_BASE_MARKERS = (HOOK_CHAT_MESSAGE, HOOK_DISPOSE)
 PLUGIN_SKILL_MARKERS = (HOOK_TOOL_BEFORE, HOOK_TOOL_AFTER, HOOK_PERMISSION_ASK)
 PLUGIN_MCP_MARKERS = ("mcp_usage", "function classify(", "recordMcpUsage")
 PLUGIN_PLUGIN_MARKERS = ("plugin_usage", "recordPluginUsage", HOOK_COMMAND_BEFORE)

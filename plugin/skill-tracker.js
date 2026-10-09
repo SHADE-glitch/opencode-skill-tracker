@@ -97,6 +97,39 @@ const PLUGIN_ITEM_MAX = 120;
 // The plugin name used when a tool is provably not builtin and not MCP, but no
 // installed plugin could be matched to it. Never a guess at a specific plugin.
 const UNKNOWN_PLUGIN = "(unknown)";
+// ---------------------------------------------------------------------------
+// The names OpenCode chose, in one block.
+//
+// The Python twin of this list is `scripts/opencode_compat.py`, and
+// `scripts/tests/test_compat.py` compares the two by value. This is not
+// cosmetic: a name that changes on one side only leaves a plugin that registers
+// nothing and records nothing while the TUI keeps reporting "0 calls" as if the
+// week were quiet. Every hook is registered through these keys and every bus
+// event type is switched on through them, which is why each string appears
+// exactly once in this file.
+// ---------------------------------------------------------------------------
+const CONTRACT = {
+  HOOK_TOOL_BEFORE: "tool.execute.before",
+  HOOK_TOOL_AFTER: "tool.execute.after",
+  HOOK_PERMISSION_ASK: "permission.ask",
+  HOOK_COMMAND_BEFORE: "command.execute.before",
+  HOOK_EVENT: "event",
+  HOOK_CHAT_MESSAGE: "chat.message",
+  HOOK_CHAT_PARAMS: "chat.params",
+  HOOK_DISPOSE: "dispose",
+  // Both permission spellings are handled on purpose. The host emits
+  // `permission.asked` then `permission.replied` (measured on 1.18.33); the SDK
+  // types declare `permission.updated` / `permissionID`, and coding to the SDK
+  // names alone once made every real rejection write nothing (limitation M20).
+  EVENT_SESSION_CREATED: "session.created",
+  EVENT_SESSION_UPDATED: "session.updated",
+  EVENT_VCS_BRANCH_UPDATED: "vcs.branch.updated",
+  EVENT_MESSAGE_PART_UPDATED: "message.part.updated",
+  EVENT_PERMISSION_ASKED: "permission.asked",
+  EVENT_PERMISSION_UPDATED: "permission.updated",
+  EVENT_PERMISSION_REPLIED: "permission.replied",
+};
+
 // Builtin tool ids, verified against OpenCode 1.18.34 with
 // `curl /experimental/tool/ids` (2026-10-03, against `opencode serve --pure`,
 // which loads no plugins so the list is the host's own). The 1.18.34 list is
@@ -1817,7 +1850,7 @@ async function skillTrackerPlugin(input) {
 
   return {
     // -- primary path -------------------------------------------------------
-    "tool.execute.before": safe("tool.execute.before", async (hookInput, hookOutput) => {
+    [CONTRACT.HOOK_TOOL_BEFORE]: safe(CONTRACT.HOOK_TOOL_BEFORE, async (hookInput, hookOutput) => {
       if (!hookInput) return;
       // A builtin, so `classify` would drop it: recorded as a spawn, never as usage.
       if (hookInput.tool === TASK_TOOL) {
@@ -1850,7 +1883,7 @@ async function skillTrackerPlugin(input) {
       });
     }),
 
-    "tool.execute.after": safe("tool.execute.after", async (hookInput) => {
+    [CONTRACT.HOOK_TOOL_AFTER]: safe(CONTRACT.HOOK_TOOL_AFTER, async (hookInput) => {
       if (!hookInput) return;
       if (hookInput.tool === TASK_TOOL) {
         const key = callKey(hookInput.sessionID, hookInput.callID);
@@ -1924,7 +1957,7 @@ async function skillTrackerPlugin(input) {
     }),
 
     // -- permission-level denials ------------------------------------------
-    "permission.ask": safe("permission.ask", async (hookInput, hookOutput) => {
+    [CONTRACT.HOOK_PERMISSION_ASK]: safe(CONTRACT.HOOK_PERMISSION_ASK, async (hookInput, hookOutput) => {
       if (!hookInput) return;
       const c = classifyPermission(hookInput);
       if (!c) return;
@@ -1980,7 +2013,7 @@ async function skillTrackerPlugin(input) {
     // command can only ever be recorded as 'unknown' status — and only when the
     // init scan positively resolved its owner, which is what keeps OpenCode's
     // own builtin commands out of the table.
-    "command.execute.before": safe("command.execute.before", async (hookInput) => {
+    [CONTRACT.HOOK_COMMAND_BEFORE]: safe(CONTRACT.HOOK_COMMAND_BEFORE, async (hookInput) => {
       if (!hookInput) return;
       const cmd = hookInput.command;
       if (typeof cmd !== "string" || !cmd) return;
@@ -2004,13 +2037,13 @@ async function skillTrackerPlugin(input) {
     }),
 
     // -- fallback + context -------------------------------------------------
-    event: safe("event", async ({ event }) => {
+    [CONTRACT.HOOK_EVENT]: safe(CONTRACT.HOOK_EVENT, async ({ event }) => {
       if (!event || !event.type) return;
       const props = event.properties || {};
 
       switch (event.type) {
-        case "session.created":
-        case "session.updated": {
+        case CONTRACT.EVENT_SESSION_CREATED:
+        case CONTRACT.EVENT_SESSION_UPDATED: {
           const info = props.info;
           if (info && info.id) {
             // Only the two fields anything reads. `info.title` is a session title
@@ -2024,13 +2057,13 @@ async function skillTrackerPlugin(input) {
           return;
         }
 
-        case "vcs.branch.updated": {
+        case CONTRACT.EVENT_VCS_BRANCH_UPDATED: {
           const branch = props.branch ?? null;
           if (pluginDir) setCapped(branchByDir, pluginDir, branch);
           return;
         }
 
-        case "message.part.updated": {
+        case CONTRACT.EVENT_MESSAGE_PART_UPDATED: {
           const part = props.part;
           if (!part || part.type !== "tool") return;
           // Checked before `classify`, which returns null for a builtin and would
@@ -2124,8 +2157,8 @@ async function skillTrackerPlugin(input) {
         //
         // The call being refused is at `tool.callID` (an object) on the 1.18.33
         // event and at `callID` on the SDK's shape; read both.
-        case "permission.asked":
-        case "permission.updated": {
+        case CONTRACT.EVENT_PERMISSION_ASKED:
+        case CONTRACT.EVENT_PERMISSION_UPDATED: {
           const perm = props; // properties is the Permission object
           const id = perm.id ?? perm.permissionID;
           if (!id) return;
@@ -2148,7 +2181,7 @@ async function skillTrackerPlugin(input) {
           return;
         }
 
-        case "permission.replied": {
+        case CONTRACT.EVENT_PERMISSION_REPLIED: {
           // 1.18.33 replies with `requestID` + `reply`; the older spelling is
           // `permissionID` + `response`. A miss here used to be silent, which is
           // how every real rejection went unrecorded.
@@ -2220,7 +2253,7 @@ async function skillTrackerPlugin(input) {
     // Captures agent/model for the session. The message text is deliberately
     // not read at all: storing even a sanitized snippet of it would contradict
     // the "no message bodies" contract the README makes.
-    "chat.message": safe("chat.message", async (hookInput) => {
+    [CONTRACT.HOOK_CHAT_MESSAGE]: safe(CONTRACT.HOOK_CHAT_MESSAGE, async (hookInput) => {
       const sid = hookInput && hookInput.sessionID;
       if (!sid) return;
       const model = hookInput.model
@@ -2234,7 +2267,7 @@ async function skillTrackerPlugin(input) {
       });
     }),
 
-    "chat.params": safe("chat.params", async (hookInput) => {
+    [CONTRACT.HOOK_CHAT_PARAMS]: safe(CONTRACT.HOOK_CHAT_PARAMS, async (hookInput) => {
       const sid = hookInput && hookInput.sessionID;
       if (!sid || !hookInput.model) return;
       const model = `${hookInput.model.providerID ?? ""}/${
@@ -2243,7 +2276,7 @@ async function skillTrackerPlugin(input) {
       mergeSession(sid, { model });
     }),
 
-    dispose: safe("dispose", async () => {
+    [CONTRACT.HOOK_DISPOSE]: safe(CONTRACT.HOOK_DISPOSE, async () => {
       sessionCtx.clear();
       callCtx.clear();
       branchByDir.clear();
@@ -2395,12 +2428,12 @@ export async function __selftest() {
   const cid = "call-test-1";
   // The text part is passed on purpose: the handler must ignore message
   // content entirely, so nothing from it may reach the DB (asserted below).
-  await plugin["chat.message"](
+  await plugin[CONTRACT.HOOK_CHAT_MESSAGE](
     { sessionID: sid, agent: "build", model: { providerID: "p", modelID: "m" } },
     { parts: [{ type: "text", text: "please use the ark-00000000-0000-0000-0000-000000000000 skill" }] }
   );
-  await plugin["tool.execute.before"]({ tool: "skill", sessionID: sid, callID: cid }, { args: { name: "brainstorming" } });
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE]({ tool: "skill", sessionID: sid, callID: cid }, { args: { name: "brainstorming" } });
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     { tool: "skill", sessionID: sid, callID: cid, args: { name: "brainstorming" } },
     { title: "", output: "", metadata: {} }
   );
@@ -2460,11 +2493,11 @@ export async function __selftest() {
   // subagent ran. Its payload carries the task and the report in prose: every text
   // field below gets a sentinel, and the row must hold none of it.
   const TASK_TEXT = "SENTINEL-TASK-TEXT-MUST-NEVER-BE-STORED";
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "task", sessionID: sid, callID: "call-test-task-1" },
     { args: { subagent_type: "general", description: TASK_TEXT, prompt: TASK_TEXT + " " + TASK_TEXT } }
   );
-  await plugin["tool.execute.after"]({ tool: "task", sessionID: sid, callID: "call-test-task-1" });
+  await plugin[CONTRACT.HOOK_TOOL_AFTER]({ tool: "task", sessionID: sid, callID: "call-test-task-1" });
   const sub1 = db.query("SELECT * FROM subagent_usage WHERE call_id=?").get("call-test-task-1");
   assert(
     sub1 && sub1.subagent === "general" && sub1.parent_session_id === sid,
@@ -2537,7 +2570,7 @@ export async function __selftest() {
   );
 
   // Permission denial via hook.
-  await plugin["permission.ask"](
+  await plugin[CONTRACT.HOOK_PERMISSION_ASK](
     { type: "skill", sessionID: sid, callID: "call-perm-1", pattern: "java-knowledge-sharded-audit", title: "Skill" },
     { status: "deny" }
   );
@@ -2566,11 +2599,11 @@ export async function __selftest() {
   // before+after on an MCP tool: server/tool split, arg NAMES only.
   const mCid = "call-mcp-1";
   const mArgs = { identifier: "ARGVALUE-ONE", query: "ARGVALUE-TWO" };
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "test-server_read_note", sessionID: mSid, callID: mCid },
     { args: mArgs }
   );
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     { tool: "test-server_read_note", sessionID: mSid, callID: mCid, args: mArgs },
     { title: "", output: "", metadata: {} }
   );
@@ -2593,11 +2626,11 @@ export async function __selftest() {
   );
 
   // Longest-prefix match: `test-server-extra` must beat `test-server`.
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "test-server-extra_ping", sessionID: mSid, callID: "call-mcp-2" },
     { args: {} }
   );
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     { tool: "test-server-extra_ping", sessionID: mSid, callID: "call-mcp-2", args: {} },
     {}
   );
@@ -2608,11 +2641,11 @@ export async function __selftest() {
   );
 
   // A tool name that itself contains underscores must survive intact.
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "test-server_list_memory_projects", sessionID: mSid, callID: "call-mcp-3" },
     { args: { project: "x" } }
   );
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     { tool: "test-server_list_memory_projects", sessionID: mSid, callID: "call-mcp-3", args: { project: "x" } },
     {}
   );
@@ -2623,11 +2656,11 @@ export async function __selftest() {
   );
 
   // Builtin tools must never land in mcp_usage.
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "bash", sessionID: mSid, callID: "call-builtin" },
     { args: { command: "echo hi" } }
   );
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     { tool: "bash", sessionID: mSid, callID: "call-builtin", args: { command: "echo hi" } },
     {}
   );
@@ -2654,7 +2687,7 @@ export async function __selftest() {
   );
 
   // MCP permission denial, expressed as the mcp:<server>:* namespace.
-  await plugin["permission.ask"](
+  await plugin[CONTRACT.HOOK_PERMISSION_ASK](
     { type: "mcp:test-server:*", sessionID: mSid, callID: "call-mcp-perm", pattern: "mcp:test-server:*", title: "MCP" },
     { status: "deny" }
   );
@@ -2679,11 +2712,11 @@ export async function __selftest() {
 
   // The init scan resolved `selftest_tool` to the throwaway plugin, so a
   // before+after pair must be attributed to it by name.
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "selftest_tool", sessionID: pSid, callID: "call-plugin-1" },
     { args: { secret: "PLUGINVALUE" } }
   );
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     {
       tool: "selftest_tool",
       sessionID: pSid,
@@ -2718,11 +2751,11 @@ export async function __selftest() {
   );
 
   // A builtin tool is not a plugin tool.
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "bash", sessionID: pSid, callID: "call-plugin-builtin" },
     { args: { command: "echo hi" } }
   );
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     { tool: "bash", sessionID: pSid, callID: "call-plugin-builtin", args: { command: "echo hi" } },
     {}
   );
@@ -2735,11 +2768,11 @@ export async function __selftest() {
 
   // An unattributed tool fails OPEN: recorded as (unknown), never dropped —
   // otherwise plugin usage would be silently lost.
-  await plugin["tool.execute.before"](
+  await plugin[CONTRACT.HOOK_TOOL_BEFORE](
     { tool: "mystery_tool", sessionID: pSid, callID: "call-plugin-unknown" },
     { args: {} }
   );
-  await plugin["tool.execute.after"](
+  await plugin[CONTRACT.HOOK_TOOL_AFTER](
     { tool: "mystery_tool", sessionID: pSid, callID: "call-plugin-unknown", args: {} },
     {}
   );
@@ -2768,7 +2801,7 @@ export async function __selftest() {
 
   // A scanned command is recorded from `command.execute.before`, with status
   // "unknown": OpenCode exposes no command completion hook.
-  await plugin["command.execute.before"]({
+  await plugin[CONTRACT.HOOK_COMMAND_BEFORE]({
     command: "selftest:run",
     sessionID: pSid,
     arguments: [],
@@ -2785,7 +2818,7 @@ export async function __selftest() {
 
   // An unattributed command fails CLOSED: there is no builtin-command
   // allowlist, so fail-open would flood the table with /init and friends.
-  await plugin["command.execute.before"]({ command: "init", sessionID: pSid, arguments: [] });
+  await plugin[CONTRACT.HOOK_COMMAND_BEFORE]({ command: "init", sessionID: pSid, arguments: [] });
   assert(
     db.query("SELECT COUNT(*) AS c FROM plugin_usage WHERE item_name=?").get("init").c === 0,
     "unattributed commands are not recorded"

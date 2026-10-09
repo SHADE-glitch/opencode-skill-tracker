@@ -109,7 +109,16 @@ def _put_plugin(
 # Structure
 # ---------------------------------------------------------------------------
 def test_plugin_registers_all_hooks(src):
-    for marker in ("tool.execute.before", "tool.execute.after", "permission.ask", "event:"):
+    """The installed plugin must still be the generation `doctor` thinks it is.
+
+    The marker names come from `opencode_compat` — this file used to spell the hook
+    names out a second time, which is the drift the compat module exists to end.
+    `test_compat.py` is what proves each name is *registered* through CONTRACT;
+    this one only proves the fingerprints are present, the way doctor reads them.
+    """
+    import opencode_compat as compat
+
+    for marker in (*compat.PLUGIN_SKILL_MARKERS, *compat.PLUGIN_BASE_MARKERS):
         assert marker in src, f"hook marker missing: {marker}"
 
 
@@ -402,7 +411,7 @@ def test_commands_fail_closed_when_unattributed(src):
     fail-open here would flood plugin_usage with `/init`, `/undo` and every
     other builtin slash command. The hook must return before writing.
     """
-    body = src.split('"command.execute.before": safe(', 1)[1].split("\n    }),", 1)[0]
+    body = src.split("[CONTRACT.HOOK_COMMAND_BEFORE]: safe(", 1)[1].split("\n    }),", 1)[0]
     assert "commandToPlugin.get(cmd)" in body
     assert "if (!plugin) return;" in body, "the unresolved case must bail out"
     guard = body.index("if (!plugin) return;")
@@ -1630,7 +1639,7 @@ def test_the_session_handler_keeps_only_the_fields_it_uses(src):
     database. The handler may name `id` and `directory` (both are used: the second
     resolves the git branch) and may not name the third.
     """
-    start = src.index('case "session.created":')
+    start = src.index("case CONTRACT.EVENT_SESSION_CREATED:")
     block = src[start:src.index("return;", start)]     # both labels share one body
     assert "mergeSession(" in block, "the session context is no longer filled here"
     # Check what is passed, not what is commented: a scan that fires on prose in
