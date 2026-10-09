@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import load_module
+
 import opencode_compat as compat
 import skill_db as db
 
@@ -265,3 +267,22 @@ def test_the_writer_registers_hooks_by_reference_not_by_repeating_a_string(src):
     for key, value in ((k, v) for k, v in contract.items() if k.startswith("EVENT_")):
         assert f'case "{value}":' not in src, f"{value} is still switched on by literal"
         assert f"case CONTRACT.{key}:" in src, f"{key} is not used as a case label"
+
+
+def test_the_host_config_dir_override_reaches_the_readers_too(tmp_path, monkeypatch):
+    """The plugin honoured `OPENCODE_SKILL_TRACKER_CONFIG_DIR`; the readers ignored it.
+
+    A writer pointed at another config tree records the skills it can see, and the
+    TUI then scans the *default* tree for them: an empty Skills page that reads
+    like "no skills installed" while the data says otherwise. One variable, both
+    sides. Reloaded rather than patched, because these paths are bound at import.
+    """
+    alt = str(tmp_path / "other-config-tree")
+    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CONFIG_DIR", alt)
+    monkeypatch.delenv("OPENCODE_SKILL_TRACKER_SKILLS_DIR", raising=False)
+    fresh = load_module("skill_db.py", "skill_db_cfg_env")
+    assert fresh.CONFIG_DIR == alt
+    assert fresh.SKILLS_DIR == os.path.join(alt, compat.SKILLS_SUBDIR)
+    assert fresh.DB_PATH == db.DB_PATH_DEFAULT, (
+        "the data directory is not the config directory; a config override "
+        "must not move the database")

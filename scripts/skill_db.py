@@ -37,7 +37,12 @@ HOME = os.path.expanduser("~")
 # directory names come from `opencode_compat` so a host layout change has one
 # place to edit.
 DATA_DIR = os.path.join(HOME, *compat.DATA_HOME)
-CONFIG_DIR = os.path.join(HOME, *compat.CONFIG_HOME)
+# The writer resolves its config tree through the same variable, so the readers
+# must too: with the override in force and only one side honouring it, a relocated
+# config records skills that the TUI then scans for in the default tree, and the
+# Skills page reads as "none installed".
+CONFIG_DIR = os.environ.get(
+    "OPENCODE_SKILL_TRACKER_CONFIG_DIR", os.path.join(HOME, *compat.CONFIG_HOME))
 # The defaults are named so a test can assert *where the default came from*
 # without depending on whether an environment override is in force (the suite
 # runs both ways on purpose).
