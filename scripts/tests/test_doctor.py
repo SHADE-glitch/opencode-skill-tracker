@@ -338,3 +338,45 @@ def test_the_new_checks_can_never_fail_doctor(tmp_path, monkeypatch):
         assert found[n][0] != "FAIL", found[n]
     assert st._cli_doctor(conn, Args(db_path)) == 0
     conn.close()
+
+
+def test_the_log_read_is_bounded_like_every_other_log_we_open(tmp_path, monkeypatch):
+    """doctor read the whole plugin log with a plain `open()`; nothing else does.
+
+    The claude-mem reader stops at `CLAUDE_MEM_LOG_BYTES_CAP` because a foreign log
+    is not ours to size. The tracker's own log grows one line per recorded error
+    forever (M17: no rotation), so an unbounded read here is a stall that gets
+    worse with age on the cheapest diagnostic the tool has. The cap must be named
+    in the module, not inline, or the message cannot say what it covered.
+    """
+    assert st.TRACKER_LOG_BYTES_CAP == db.CLAUDE_MEM_LOG_BYTES_CAP
+
+
+def test_a_bounded_log_read_reports_a_floor_never_a_clean_bill(tmp_path, monkeypatch):
+    """A bound is allowed; a bound that hides itself is not.
+
+    Two errors, one at the top of the file and one past the cap: the count is then
+    1 and the line must say the counts cover only the first N bytes. Reading the
+    tail instead would have been worse — the real log's failures were at the top,
+    and a 64 KB tail reported 0 of its 57 ERROR lines.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    cap = 64 * 1024                       # shrink the knob; the shape is what matters
+    monkeypatch.setattr(st, "TRACKER_LOG_BYTES_CAP", cap)
+    filler = "# " + ("x" * 4096) + "\n"   # no "[err]" — filler must never look like a fault
+    log = tmp_path / "big.log"
+    with log.open("w", encoding="utf-8") as f:
+        f.write("[2026-10-09T00:00:00.000Z] [err] [skill] early failure\n")
+        while f.tell() < cap + 4096:
+            f.write(filler)
+        f.write("[2026-10-09T00:00:01.000Z] [err] [skill] failure past the cap\n")
+    assert log.stat().st_size > cap
+    monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(log))
+
+    status, detail = checks_by_name(conn, Args(db_path))["log.errors"]
+    assert status == "WARN", detail
+    assert "1 error line(s)" in detail, f"the past-the-cap error leaked into the count: {detail}"
+    assert "early failure" in detail, detail
+    assert "first" in detail and f"{cap} B" in detail.replace(",", ""), \
+        f"a bounded read must name its bound: {detail}"
+    conn.close()

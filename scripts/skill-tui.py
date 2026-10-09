@@ -733,6 +733,12 @@ TRACKER_LOG_PATH = os.path.join(db.HOME, ".config", "opencode", "logs", "skill-t
 # that stopped writing looks exactly like an idle machine from the inside.
 CAPTURE_FRESHNESS_DAYS = 7
 
+# The plugin log is read from the start and never in full: it grows one line per
+# error forever (M17, no rotation), and `doctor` is the cheapest diagnostic this
+# tool has — it must not get slower with age. Same bound the claude-mem reader
+# uses, because a bound we set is a bound we can state in the message.
+TRACKER_LOG_BYTES_CAP = db.CLAUDE_MEM_LOG_BYTES_CAP
+
 # The three streams the plugin writes, in the order the report lists them.
 STREAM_TABLES = ("skill_usage", "mcp_usage", "plugin_usage")
 
@@ -981,17 +987,23 @@ def _doctor_checks(conn, args) -> list:
                 warn=True,
             )
         else:
-            count, last = 0, ""
-            with open(TRACKER_LOG_PATH, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    if "[err]" in line:
-                        count += 1
-                        last = line.rstrip()
-            add(
-                "log.errors", count == 0,
-                f"{count} error line(s)" + (f"; last: {last[:90]}" if last else ""),
-                warn=True,
+            text, size, truncated = db._read_bounded_text(
+                TRACKER_LOG_PATH, TRACKER_LOG_BYTES_CAP
             )
+            if text is None:
+                add("log.errors", False, f"cannot read {TRACKER_LOG_PATH}", warn=True)
+            else:
+                lines = [ln for ln in text.splitlines() if "[err]" in ln]
+                detail = (
+                    f"{len(lines)} error line(s)"
+                    + (f"; last: {lines[-1][:90]}" if lines else "")
+                )
+                if truncated:
+                    detail += (
+                        f"; counted the first {TRACKER_LOG_BYTES_CAP:,} B of "
+                        f"{size:,} B — a floor, not a total"
+                    )
+                add("log.errors", not lines, detail, warn=True)
     except OSError as e:
         add("log.errors", False, f"read failed: {e}", warn=True)
 
