@@ -50,14 +50,24 @@ below). Three layers, in dependency order:
 `bin/skillt` is a bash dispatcher that resolves its own location through
 symlinks and execs one of the above.
 
+`scripts/opencode_compat.py` is **not** a fifth layer: it is the single place
+where OpenCode's own names are written down (hook ids, event types, payload field
+paths, the host's directory layout, the version pins, the derived `source` and
+`status` vocabularies). Everything else in the project refers to it.
+
 ## Commands
 
 ```bash
-python3 -m pytest scripts/tests -q             # no venv needed; skips TUI tests
-.venv/bin/python -m pytest scripts/tests -q    # full suite, includes TUI tests
+python3 -m pytest scripts/tests -q             # L0: no venv needed
+.venv/bin/python -m pytest scripts/tests -q    # the same suite on the venv interpreter
 bash -n bin/skillt                             # syntax-check the dispatcher
 ./install.sh                                   # create .venv + link install locations
 ```
+
+Both interpreters on this machine carry textual 8.2.8, so **both commands run the whole
+suite including the TUI tests** — the venv run is not a stronger tier, and neither one
+is a proof that the other passed. Never write a case count into this file: the suite
+prints it.
 
 Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 
@@ -207,6 +217,15 @@ the code; the schema versions track the data. Never conflate them.
   prune on the basis of an `OPENCODE_SKILL_TRACKER_PLUGINS` override, and never
   prune at all unless a global config file parsed: a broken or missing config looks
   exactly like "no plugins installed".
+- **An OpenCode name is written once, in `scripts/opencode_compat.py`.** Hook ids,
+  event types, payload field paths, `~/.config/opencode` layout, tool ids and the
+  version pins come from that module; callers import it. What does **not** belong
+  there: numbers and policy this project chose (byte caps, retention counts,
+  `BUSY_TIMEOUT_MS`, sanitiser limits, export allowlists, `BACKUP_RE`) — those stay
+  with the code that acts on them, or the module becomes a config dump and stops
+  reducing coupling. When you add a read of a host field, add its declaration in
+  the same commit: `test_compat.py` can prove a declared name is still present in
+  the writer, and cannot prove an undeclared read exists.
 - **The schema lives in two places and must not drift**: `TABLES_SQL` /
   `VIEWS_SQL` in the plugin, and `SCHEMA_SQL` in `skill_db.py`. Nothing else
   carries a copy — `skill-stats.py` imports `skill_db`, and the test fixtures

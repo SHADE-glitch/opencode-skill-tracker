@@ -312,3 +312,24 @@ Evidence L0 2026-10-09: `scripts/tests` 542 passed; the guard was red first with
 Cost     Nothing was lost: no view, query or export ever named a session title. It is a second
          instance of the D-034 shape — a read that no consumer wanted
 Commit   550635f
+
+### D-037 · 2026-10-09 · fix
+Symptom  OpenCode's own names lived in about forty places across three languages, and
+         `skill-tui.py` re-spelled the plugin's hook names as strings so `doctor` could grep the
+         installed file: one upstream rename needed edits in at least three files. The two
+         hand-mirrored halves of the derived `source` rule also disagreed on one input — the SQL
+         CASE let an empty category through as `''` while `source_of()` answered `unknown`
+Change   `scripts/opencode_compat.py` now holds the hook ids, event types (both permission
+         spellings), payload field paths, the host's directory layout, the version pins and the
+         `source`/`status` vocabularies. `skill_db` and `skill-tui` refer to it; the CASE renders
+         from the same map as `source_of()`, with `NULLIF` closing the disagreement
+Evidence L0 2026-10-09: `scripts/tests` 550 passed. `test_compat.py` evaluates the SQL CASE and
+         `source_of()` over the same categories inside one SQLite instance, and greps the writer for
+         every declared name. The **installed** `skillt` (symlinked `scripts/` dir, so the sibling
+         import is exercised) ran `doctor` and `stats` from outside the repo: 16 PASS / 3 WARN, same
+         numbers as before the change
+Cost     One semantic delta, on a value the writer cannot produce: a `''` category now reads
+         `unknown`. Payload paths are checked by leaf accessor (`.parentSessionId`) because the
+         writer reaches host fields through short-lived locals (`st`, `md`, `perm`) — and no form of
+         this check can see a read that was never declared, which stays a review rule
+Commit   5d20b9a

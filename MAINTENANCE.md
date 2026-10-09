@@ -215,6 +215,9 @@ inventories resolve only at init (M11/M12). So:
 4. Update `DEFAULT_BUILTIN_TOOLS` in `plugin/skill-tracker.js` **and** the
    `verified against OpenCode X.Y.Z` comment on the same line — that comment is
    what `doctor` parses, so leaving it behind re-creates the drift it detects.
+   `scripts/opencode_compat.py` carries the same claim as `PIN_TOOL_IDS`, plus
+   `PIN_LOADER` / `PIN_PERMISSION_SHAPE`; `test_compat.py` fails if the comment and
+   `PIN_TOOL_IDS` diverge, so edit them together.
 5. Restart OpenCode. Confirm with `skillt plugins` that the inventory refreshed.
 
 6. Re-measure the event payloads after any major upgrade. Payload names have

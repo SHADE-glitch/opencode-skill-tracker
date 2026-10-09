@@ -390,6 +390,10 @@ OpenCode runtime
   never modifies it.
 - **Shared data layer**: `scripts/skill_db.py` — schema, migrations, queries,
   export and backup — used by both `skill-tui.py` and the test suite.
+- **Upstream contract**: `scripts/opencode_compat.py` — every name OpenCode chose
+  (hook ids, event types, payload field paths, its own directory layout, the
+  version pins) in one file, so an upgrade means editing one place. Numbers and
+  policy that *this* tool chose are not there.
 
 ### Environment variables
 

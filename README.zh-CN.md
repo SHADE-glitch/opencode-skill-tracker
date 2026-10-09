@@ -74,6 +74,7 @@ OpenCode 运行
 |---|---|
 | `~/.config/opencode/plugin/skill-tracker.js` | OpenCode 插件，唯一的写入方（**不要改捕获逻辑**） |
 | `~/.config/opencode/scripts/skill_db.py` | 共享数据层（schema/迁移/查询/导出/备份） |
+| `~/.config/opencode/scripts/opencode_compat.py` | **上游契约唯一副本**：OpenCode 自己选的名字（hook 名、事件类型、载荷字段路径、它的目录布局、版本 pin）。本工具自己定的数字与策略不放这里 |
 | `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
 | `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |
 | `~/.config/opencode/scripts/tests/` | pytest 测试 |
