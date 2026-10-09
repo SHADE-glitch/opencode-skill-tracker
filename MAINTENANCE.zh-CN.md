@@ -173,6 +173,11 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
    字段逐一对。探针请只留在 `/tmp`：它会打印字段值，用在合成沙箱会话里可以，放在有
    真实文本的地方不行。
 
+   真的发现改名，就是**一次提交里改两个文件**：`plugin/skill-tracker.js` 的 `CONTRACT` 块，
+   和 `scripts/opencode_compat.py`。别处不许再放 hook 名或事件类型——`test_compat.py` 按**值**
+   比对这两份清单，还会检查写入端确实是经由 `CONTRACT` 注册的，所以只改一半会让构建变红，
+   而不是安静地什么都不记。
+
 不想改插件就设 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS`——但那样 `env.opencode_version` 会**故意**一直 WARN。
 
 ## 6. 刻意为之的偏离（别"顺手修回去"）

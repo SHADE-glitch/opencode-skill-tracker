@@ -333,3 +333,24 @@ Cost     One semantic delta, on a value the writer cannot produce: a `''` catego
          writer reaches host fields through short-lived locals (`st`, `md`, `perm`) — and no form of
          this check can see a read that was never declared, which stays a review rule
 Commit   5d20b9a
+
+### D-038 · 2026-10-09 · guard
+Symptom  The writer spelled each hook name at least twice — once as the registration key, once as
+         the `safe()` label — and its selftest drove the hooks through a third spelling
+         (`plugin["tool.execute.before"]`). A rename had three places to forget, and a half-rename
+         registers nothing while the TUI still prints "0 calls" as if the week were quiet
+Change   One `CONTRACT` block holds the host's hook ids and event types; registration keys, `safe()`
+         labels, hook accesses and the seven `case` labels all reference it, so each string exists
+         once, as a value. `test_compat.py` compares the block's `HOOK_*`/`EVENT_*` values against
+         `opencode_compat` by set and proves the writer registers by reference
+Evidence L0 2026-10-09: `scripts/tests` 552 passed on all three documented commands, and the plugin
+         loaded under Bun reports the eight keys it registers: chat.message, chat.params,
+         command.execute.before, dispose, event, permission.ask, tool.execute.after,
+         tool.execute.before — with `EXPORT_KEYS=["id","server"]` intact
+Cost     Comparing two languages means parsing one, so `_js_contract` is a regex over a deliberately
+         flat object literal — nesting that block would make the helper read a partial list, and the
+         test would go red rather than pass quietly. Provenance labels (`meta.source`) stayed
+         literal: they are data the database holds and the TUI prints. The comparison caught that
+         `chat.params` had never been declared in Python — a module that is a second copy is worth
+         what it costs
+Commit   67e3563

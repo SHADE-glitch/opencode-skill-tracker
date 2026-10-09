@@ -372,7 +372,7 @@ and script parsing.
 
 ```
 OpenCode runtime
-   │  tool.execute.before/after, permission.ask, event, chat.message
+   │  tool.execute.before/after, permission.ask, event, chat.message, chat.params
    ▼
 ~/.config/opencode/plugin/skill-tracker.js     (Bun runtime, bun:sqlite)
    │  writes
@@ -390,10 +390,13 @@ OpenCode runtime
   never modifies it.
 - **Shared data layer**: `scripts/skill_db.py` — schema, migrations, queries,
   export and backup — used by both `skill-tui.py` and the test suite.
-- **Upstream contract**: `scripts/opencode_compat.py` — every name OpenCode chose
-  (hook ids, event types, payload field paths, its own directory layout, the
-  version pins) in one file, so an upgrade means editing one place. Numbers and
-  policy that *this* tool chose are not there.
+- **Upstream contract**: every name OpenCode chose is written once per language —
+  `scripts/opencode_compat.py` on the Python side, the `CONTRACT` block in
+  `plugin/skill-tracker.js` on the writer's side (hooks are registered and events
+  switched on *through* it, so each name appears once, as a value).
+  `scripts/tests/test_compat.py` compares the two, so a half-finished rename fails
+  the build instead of silently recording nothing. Numbers and policy that *this*
+  tool chose are not there.
 
 ### Environment variables
 

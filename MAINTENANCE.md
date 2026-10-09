@@ -230,6 +230,12 @@ inventories resolve only at init (M11/M12). So:
    probe in `/tmp`: it dumps field values, which is fine for a synthetic sandbox
    session and not fine anywhere real text lives.
 
+   A rename you *do* find is a two-file edit, in one commit: the `CONTRACT` block in
+   `plugin/skill-tracker.js` and `scripts/opencode_compat.py`. Nothing else may hold
+   a hook id or an event type — `test_compat.py` compares the two sets by value and
+   checks the writer registers through `CONTRACT`, so a half-edit fails the build
+   instead of silently recording nothing.
+
 If you don't want to touch the plugin, set `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS`
 instead — but then `env.opencode_version` keeps WARNING on purpose.
 

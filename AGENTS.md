@@ -14,7 +14,7 @@ below). Three layers, in dependency order:
 1. `plugin/skill-tracker.js` — the **only writer**. Runs inside OpenCode's Bun
    runtime. Listens on `tool.execute.before` / `tool.execute.after` /
    `permission.ask` / `command.execute.before` / `event` / `chat.message` /
-   `dispose`.
+   `chat.params` / `dispose`, all of them registered through one `CONTRACT` block.
    Every registered tool goes through the same wrapper, so MCP and plugin tools
    are captured alongside skills; an MCP tool id is `{server}_{tool}` and is
    resolved against the configured server list by longest-prefix match. Plugin
@@ -217,15 +217,23 @@ the code; the schema versions track the data. Never conflate them.
   prune on the basis of an `OPENCODE_SKILL_TRACKER_PLUGINS` override, and never
   prune at all unless a global config file parsed: a broken or missing config looks
   exactly like "no plugins installed".
-- **An OpenCode name is written once, in `scripts/opencode_compat.py`.** Hook ids,
-  event types, payload field paths, `~/.config/opencode` layout, tool ids and the
-  version pins come from that module; callers import it. What does **not** belong
-  there: numbers and policy this project chose (byte caps, retention counts,
+- **An OpenCode name is written once per language, and the two copies are
+  compared.** Python: `scripts/opencode_compat.py`. Writer: the `CONTRACT` block in
+  `plugin/skill-tracker.js` — hooks are registered as `[CONTRACT.HOOK_*]:
+  safe(CONTRACT.HOOK_*, …)` and bus events are switched on as
+  `case CONTRACT.EVENT_*:`, so each host string occurs exactly once, as a value.
+  `test_compat.py` compares the two sets by value; it cannot import across
+  languages, so it parses the block. Hook ids, event types, payload field paths,
+  `~/.config/opencode` layout, tool ids and the version pins come from these two
+  places; every other module refers to them. What does **not** belong there:
+  numbers and policy this project chose (byte caps, retention counts,
   `BUSY_TIMEOUT_MS`, sanitiser limits, export allowlists, `BACKUP_RE`) — those stay
   with the code that acts on them, or the module becomes a config dump and stops
-  reducing coupling. When you add a read of a host field, add its declaration in
-  the same commit: `test_compat.py` can prove a declared name is still present in
-  the writer, and cannot prove an undeclared read exists.
+  reducing coupling. Provenance labels the database stores and the TUI prints
+  (`meta.source`, `triggerType ? "event" : "hook"`) are ours, not the host's, and
+  stay literal. When you add a read of a host field, add its declaration in the
+  same commit: the tests can prove a declared name is still present in the writer,
+  and cannot prove an undeclared read exists.
 - **The schema lives in two places and must not drift**: `TABLES_SQL` /
   `VIEWS_SQL` in the plugin, and `SCHEMA_SQL` in `skill_db.py`. Nothing else
   carries a copy — `skill-stats.py` imports `skill_db`, and the test fixtures
