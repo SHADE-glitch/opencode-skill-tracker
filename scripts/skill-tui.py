@@ -1703,6 +1703,31 @@ def _tui_classes() -> dict:
             "tab-data": "#data-info",
         }
 
+        # The six dashboard cards, in the order they are composed. One source for
+        # the labels because `_card_columns` has to know the longest of them to pick
+        # a grid that cannot wrap, and six strings copied twice drift apart.
+        CARD_LABELS = ("Skills", "Skill calls", "MCP calls", "Plugin calls",
+                       "Today (all)", "Skill success")
+        _CARD_CHROME = 4        # border (1+1) plus padding (1+1), per card
+        _CARD_PAGE_PADDING = 2  # #dash-body's own left and right padding
+
+        def _card_columns(self) -> int:
+            """The widest card grid, of 6/3/2, that keeps every label on one line.
+
+            N across leaves each card `(width - 2 - (N-1)) // N` columns, 4 of which
+            are its border and padding, so a label of L columns needs
+            `N*(L+4) + (N-1) + 2 <= width`. With the longest label at 13 that is 109
+            for six across and 55 for three. Two across is the floor and is chosen
+            even when the terminal is narrower than it wants: a wrapped label is the
+            lesser harm next to doubling the height of a page that already scrolls.
+            """
+            need = max(len(label) for label in self.CARD_LABELS) + self._CARD_CHROME
+            room = self.size.width - self._CARD_PAGE_PADDING
+            for cols in (6, 3):
+                if (room - (cols - 1)) // cols >= need:
+                    return cols
+            return 2
+
         def __init__(self):
             super().__init__()
             # Read time per tab id, plus the base text and the failure note of
@@ -1946,6 +1971,32 @@ def _tui_classes() -> dict:
             return (f"[dim]no {noun} recorded yet   ·   press r to re-read   ·   "
                     "the writer adds a row on the next call[/dim]")
 
+        def _offscreen_note(self, page: str) -> str:
+            """One line when the page's table is wider than the screen.
+
+            A `DataTable` does scroll its trailing columns (measured on a 48-column
+            terminal: `right` moves `scroll_x`, `max_scroll_x` is 52), so the defect
+            is not lost data — it is that the page shows a table that *looks*
+            complete. The shortfall is reported in columns, which is exactly what
+            sits past the edge.
+
+            A table that has not been laid out yet reports width 0; that is the
+            instrument, not the page, so it is skipped rather than read as "every
+            column is off-screen".
+            """
+            for tid in self._PAGE_TABLES.get(page, ()):
+                try:
+                    table = self.query_one(tid, DataTable)
+                except Exception:  # noqa: BLE001 - widget not composed yet
+                    continue
+                if not table.region.width:
+                    continue
+                past = table.virtual_size.width - table.region.width
+                if past > 0:
+                    return (f"\n[dim]{past} columns of this table sit past the right"
+                            " edge — the right arrow scrolls them into view[/dim]")
+            return ""
+
         def _paint_status(self, page: str) -> None:
             """Write `base_text + freshness` to the page's status widget.
 
@@ -1957,7 +2008,8 @@ def _tui_classes() -> dict:
                 return
             base = self._page_status_base.get(page, "")
             try:
-                self.query_one(wid, Static).update(base + self._freshness(page))
+                self.query_one(wid, Static).update(
+                    base + self._freshness(page) + self._offscreen_note(page))
             except Exception:  # noqa: BLE001 - widget not composed yet
                 pass
 
@@ -1969,20 +2021,27 @@ def _tui_classes() -> dict:
 
         def on_resize(self, event) -> None:
             self._layout_cards()
+            # The off-screen column note is a claim about the width the page has
+            # right now, so a resize has to re-evaluate it — otherwise a terminal
+            # dragged wider keeps promising a scroll that is no longer needed.
+            for page in self._page_status_base:
+                self._paint_status(page)
 
         def _layout_cards(self) -> None:
-            """Six cards across on a wide terminal, 3x2 on a narrow one.
+            """Six cards across when they fit, then three, then two.
 
-            A single six-across row wraps every label below ~120 columns
-            ("Plugin calls" becomes "Plugin" / "calls"), which looks broken.
+            A wrapped card label ("Plugin" over "calls") reads as a broken page, so
+            the grid gives up columns before it gives up a line. The rule used to be
+            one test (`width >= 120`) with 3x2 underneath it, which wrapped the
+            labels at 48 columns.
             """
             try:
                 cards = self.query_one("#cards")
             except Exception:  # noqa: BLE001 - before compose in tests
                 return
-            wide = self.size.width >= 120
-            cards.styles.grid_size_columns = 6 if wide else 3
-            cards.styles.grid_size_rows = 1 if wide else 2
+            cols = self._card_columns()
+            cards.styles.grid_size_columns = cols
+            cards.styles.grid_size_rows = len(self.CARD_LABELS) // cols
 
         # -- rendering ------------------------------------------------------
         # Which tables belong to which page, so a per-page refresh sizes only
@@ -2078,32 +2137,30 @@ def _tui_classes() -> dict:
                 for page in {p for p, _ in failures}:
                     self._paint_status(page)
                 self.app.notify("; ".join(m for _, m in failures), severity="error")
+            # A status line now quotes the widths its tables were laid out with, and
+            # those are not final until this frame has been laid out: a table that has
+            # just been shown reports width 0, and reading that as "every column is
+            # off-screen" is a claim about the instrument, not the page.
+            self.call_after_refresh(self._repaint_statuses, pages)
+
+        def _repaint_statuses(self, pages) -> None:
+            for page in pages:
+                self._paint_status(page)
 
         def _render_cards(self, conn) -> None:
             s = db.dashboard_summary(conn)
-            self.query_one("#card-skills", Static).update(
-                f"[b]{s['total_skills']}[/b]\n[dim]Skills[/dim]"
-            )
-            self.query_one("#card-usage", Static).update(
-                f"[b]{s['total_usage']}[/b]\n[dim]Skill calls[/dim]"
-            )
-            self.query_one("#card-mcp", Static).update(
-                f"[b]{s['total_mcp']}[/b]\n[dim]MCP calls[/dim]"
-            )
-            self.query_one("#card-plugin", Static).update(
-                f"[b]{s.get('total_plugin', 0)}[/b]\n[dim]Plugin calls[/dim]"
-            )
-            self.query_one("#card-today", Static).update(
-                f"[b]{s.get('today_all', s['today_usage'])}[/b]\n[dim]Today (all)[/dim]"
-            )
             rows = db.stats_rows(conn)
             tot = sum(r["total"] for r in rows)
             ok = sum(r["success"] for r in rows)
-            # The number carries the meaning (green/amber/red), so the card
-            # border stays neutral instead of being permanently amber.
-            self.query_one("#card-rate", Static).update(
-                f"[b]{rate_text(tot, ok)}[/b]\n[dim]Skill success[/dim]"
-            )
+            values = (s["total_skills"], s["total_usage"], s["total_mcp"],
+                      s.get("total_plugin", 0),
+                      s.get("today_all", s["today_usage"]),
+                      # The number carries the meaning (green/amber/red), so the card
+                      # border stays neutral instead of being permanently amber.
+                      rate_text(tot, ok))
+            for card, value, label in zip(self.query(".card"), values,
+                                          self.CARD_LABELS, strict=True):
+                card.update(f"[b]{value}[/b]\n[dim]{label}[/dim]")
             self._page_status_base["tab-dash"] = (
                 f"[dim]Today (all) = {s['today_usage']} skill + {s['today_mcp']} mcp"
                 f" + {s.get('today_plugin', 0)} plugin  ·  "
@@ -2912,12 +2969,14 @@ def _tui_classes() -> dict:
         def _result(self, msg: str, ok: bool = True) -> None:
             """Report an action's outcome on the Data page.
 
-            The colour is set here rather than in CSS: failures used to be
-            written in the success colour, so a failed backup looked fine.
+            The outcome is a class, not a colour: failures used to be written in
+            the success colour, and the literal that fixed it could not follow a
+            theme either. `#data-result.ok` / `.bad` in the CSS own the colour now.
             """
             try:
                 w = self.query_one("#data-result", Static)
-                w.styles.color = "green" if ok else "red"
+                w.set_class(ok, "ok")
+                w.set_class(not ok, "bad")
                 w.update(msg)
             except Exception:  # noqa: BLE001
                 pass
@@ -2928,8 +2987,8 @@ def _tui_classes() -> dict:
         Screen { layout: vertical; }
         #dash-body { padding: 0 1; }
         /* Grid so the six cards keep their full labels instead of wrapping:
-           six columns on a wide terminal, three columns (two rows) on a
-           narrow one. on_resize switches grid-size-columns. */
+           six columns when they all fit, then three, then two. on_resize asks
+           _card_columns() which of the three the current width can hold. */
         #cards {
             layout: grid; grid-size: 6 1; grid-rows: 5; grid-gutter: 0 1;
             height: auto;
@@ -2956,8 +3015,12 @@ def _tui_classes() -> dict:
         #data-help { padding: 1 2; }
         #data-info { padding: 0 2 1 2; height: auto; }
         #data-buttons { height: 3; padding: 0 2; }
-        /* colour is set from _result() so failures are not shown in green */
+        /* One class per outcome, coloured from the theme's own tokens. An
+           imperative assignment of a literal colour here could not follow a theme,
+           so the source is guarded against it coming back. */
         #data-result { padding: 1 2; }
+        #data-result.ok { color: $success; }
+        #data-result.bad { color: $error; }
         #detail-body { padding: 1 2; }
         #detail-title { padding: 1 0; text-style: bold; }
         #detail-meta, #detail-stats { padding: 1 2; border: round $primary-muted; margin: 0 0 1 0; }
@@ -2972,7 +3035,10 @@ def _tui_classes() -> dict:
         #health-table { height: auto; max-height: 20; }
         ConfirmScreen { align: center middle; }
         #confirm-box {
-            width: 60; height: auto; padding: 1 2;
+            /* Never wider than the screen: at `width: 60` a 48-column terminal got
+               a 60-column box pinned at x=0, with the Confirm button ending 8
+               columns off the right edge. */
+            width: 100%; max-width: 60; height: auto; padding: 1 2;
             border: thick $error; background: $surface;
         }
         #confirm-msg { padding: 1 0; }

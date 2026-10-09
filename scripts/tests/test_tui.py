@@ -245,24 +245,24 @@ def test_delete_requires_skills_tab(seeded_db):
 # show both the number and the label. Before the fix, `padding: 1` left only one
 # content row, so the labels were silently clipped.
 # ---------------------------------------------------------------------------
-CARD_LABELS = {
-    "#card-skills": "Skills",
-    "#card-usage": "Skill calls",
-    "#card-mcp": "MCP calls",
-    "#card-plugin": "Plugin calls",
-    "#card-today": "Today",
-    "#card-rate": "Skill success",
-}
+# The labels themselves now live in one place (`MainScreen.CARD_LABELS`, which is
+# also what `_card_columns` sizes the grid against). What is pinned here is the
+# *pairing*: the widget id that must carry each label, in compose order — a label
+# that moves between two cards passes a tuple check and fails this one.
+CARD_WIDGETS = ("#card-skills", "#card-usage", "#card-mcp", "#card-plugin",
+                "#card-today", "#card-rate")
 
 
 def test_tui_dashboard_cards_have_labels_and_height(seeded_db):
     from textual.widgets import Static
 
+    labels = st._tui_classes()["MainScreen"].CARD_LABELS
+
     async def _run_it():
         app = SkillTUI(db_path=seeded_db, no_sync=True)
         async with app.run_test() as pilot:
             await pilot.pause()
-            for wid, label in CARD_LABELS.items():
+            for wid, label in zip(CARD_WIDGETS, labels, strict=True):
                 w = app.screen.query_one(wid, Static)
                 text = str(w.content)
                 assert label in text, f"{wid} must be labelled '{label}', got {text!r}"
@@ -2334,3 +2334,136 @@ def test_a_new_binding_documents_itself_in_the_help(monkeypatch):
     help_text = screen.key_help()
     assert "  w " in help_text, help_text
     assert "Backup" in help_text, help_text
+
+
+# --- S8d: narrow terminals --------------------------------------------------
+# Measured at 48x20 before writing these: `#confirm-box` laid out as
+# Region(x=0, width=60) — 12 columns off the right edge, with the Confirm button
+# ending at x=56 — and the six cards laid out 14 columns wide, which is 10 columns
+# of content for labels of 12 and 13. Both are geometry, so both are checked as
+# geometry: nothing here matches a string that happens to describe the layout.
+def _card_geometry(screen):
+    """(label actually printed, content columns actually available) per card."""
+    from rich.text import Text
+    out = []
+    for card in screen.query(".card"):
+        label = Text.from_markup(str(card.content).splitlines()[-1]).plain
+        # 4 columns per card: border (1+1) and padding (1+1).
+        out.append((label, card.region.width - 4))
+    return out
+
+
+@pytest.mark.parametrize("size", [(48, 20), (60, 20), (120, 30)])
+def test_no_dashboard_card_label_wraps(seeded_db, size):
+    """A wrapped card label reads as a broken page, not as a tight one.
+
+    The 60 and 120 cases are the control: the same assertion has to hold on every
+    width the grid switches on, so a breakpoint tuned to 48 alone would not pass.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            cards = _card_geometry(app.screen)
+            assert len(cards) == 6, cards
+            for label, room in cards:
+                assert label, "the cards were never rendered"
+                assert room > 0, f"{label!r}: a card of width 0 is not laid out yet"
+                assert len(label) <= room, (
+                    f"{label!r} needs {len(label)} columns in a {size[0]}-column "
+                    f"terminal that gives it {room}"
+                )
+            grid = app.screen.query_one("#cards")
+            assert (grid.styles.grid_size_columns * grid.styles.grid_size_rows == 6), (
+                "six cards must fill the grid with no orphan row")
+
+    _run(_run_it())
+
+
+def test_the_confirm_modal_stays_inside_a_narrow_screen(seeded_db):
+    """`width: 60` was a promise about the terminal, not about the box.
+
+    Measured before the change, at 48 columns: `Region(x=0, width=60)` and the
+    Confirm button ending at x=56. A box that reports width 0 here is a screen that
+    has not been laid out — which is why the region is asserted non-zero first: an
+    un-laid-out widget passes every "fits inside" comparison.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test(size=(48, 20)) as pilot:
+            await pilot.pause()
+            app.screen._confirm("Delete all records for a skill?", lambda: None)
+            await pilot.pause()
+            box = app.screen.query_one("#confirm-box")
+            assert box.region.width > 0, "the modal was never laid out"
+            assert box.region.width <= app.size.width, box.region
+            assert 0 <= box.region.x, box.region
+            for button in app.screen.query("#confirm-buttons Button"):
+                assert button.region.right <= box.region.right, (
+                    f"{button.id} ends at {button.region.right}, outside the box "
+                    f"that ends at {box.region.right}")
+
+    _run(_run_it())
+
+
+def test_columns_past_the_right_edge_are_announced(seeded_plugin_db):
+    """A 9-column table in 44 columns renders 5 of them and scrolls the rest.
+
+    The scroll is real (measured: `right` moves `scroll_x` with `max_scroll_x=52`),
+    so the defect is not unreachable data — it is that the page shows a full-looking
+    table with no hint that four more columns exist. The note therefore names the
+    count and the key, and the control case at 120 columns proves it is a claim
+    about width rather than a sentence that is always printed.
+    """
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(48, 20)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-plugins"
+            await pilot.pause()
+            table = app.screen.query_one("#plugins-table", DataTable)
+            assert table.virtual_size.width > table.region.width, (
+                "the fixture no longer overflows — this test proves nothing")
+            note = str(app.screen.query_one("#plugins-label", Static).content)
+            assert "past the right edge" in note, note
+            assert "right arrow" in note, note
+
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test(size=(140, 30)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("TabbedContent").active = "tab-plugins"
+            await pilot.pause()
+            table = app.screen.query_one("#plugins-table", DataTable)
+            assert table.virtual_size.width <= table.region.width, (
+                "the wide control is not wide any more")
+            note = str(app.screen.query_one("#plugins-label", Static).content)
+            assert "past the right edge" not in note, note
+
+    _run(_run_it())
+
+
+def test_the_result_colour_is_a_theme_token_and_not_a_literal(seeded_db):
+    """`_result` used to paint green/red literals, so a theme change could not reach it.
+
+    Three separate proofs, because the bug class is "the colour is right by
+    accident": the widget must carry the matching class, the CSS must resolve that
+    class to a token, and no literal colour may come back into the source.
+    """
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "skill-tui.py"
+              ).read_text(encoding="utf-8")
+    assert "styles.color" not in source, "an imperative colour is back"
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            w = screen.query_one("#data-result", Static)
+            screen._result("Backed up: x.db")
+            assert "ok" in w.classes and "bad" not in w.classes, w.classes
+            screen._result("Backup failed: disk full", ok=False)
+            assert "bad" in w.classes and "ok" not in w.classes, w.classes
+
+    _run(_run_it())
+    css = st._tui_classes()["SkillTUI"].CSS
+    assert "#data-result.ok" in css and "$success" in css, css
+    assert "#data-result.bad" in css and "$error" in css, css
