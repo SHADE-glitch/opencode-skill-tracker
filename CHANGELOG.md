@@ -452,3 +452,38 @@ Cost     A new environment read must be documented in the same change or the sui
          new spelling of reading the environment has to be added to the patterns, so
          the gate's own list is a third thing to keep in step
 Commit   4e0c29d
+
+### D-043 · 2026-10-09 · guard
+Symptom  Nothing bounded the rows: three usage tables grew one row per event forever and
+         `skill_versions` one row per content change, while the retention work already done
+         covered only backup *files*. `doctor backups.latest` looked healthy in the same
+         report that said nothing about the database's own growth, so the gap read as if it
+         had been handled
+Change   `plan_usage_retention()` (pure SELECT, the shape of `plan_retention()`) and
+         `prune_usage()` (the dry-run → `--yes` shape of `scrub_metadata()`, one
+         `_write_txn`, WAL checkpointed after). Two settings keys arm it —
+         `retention.usage_days` and `retention.max_skill_versions`, both default 0 = off —
+         resolved through the same flag > file > env > default chain, and `skillt
+         prune-usage` prints the plan before removing anything. The guards are the change:
+         dry-run and delete share one query; a timestamp that will not parse is kept and
+         counted as `undated` (a bare `timestamp < cutoff` would delete `''` as ancient);
+         `subagent_usage` is excluded by name and the report names the exclusion (M24 — the
+         spawn row is the only witness, and it grows by spawns, not by calls); `--yes`
+         writes a backup first and aborts without one, while an empty plan never produces a
+         pointless backup file
+Evidence L0 2026-10-09: `scripts/tests` 610 passed on `python3`, on `.venv/bin/python` and
+         with `OPENCODE_SKILL_TRACKER_SKILLS_DIR` at a nonexistent directory; `__selftest`
+         63/63 (the writer was untouched); `bash -n bin/skillt`. Against the live database
+         only the read-only paths ran: off → "nothing is scheduled", `--keep-days 365` →
+         0 rows, `--keep-days 1 --json` → 163 rows scheduled and `"deleted": {"total": 0}`,
+         and the database came back byte-for-byte the same as before the run (606,208 B,
+         4 / 21 / 139 / 3 / 44 / 81 rows). The `--yes` path ran on a synthetic sandbox
+         database in `/tmp`: a 200-day row deleted, a 1-day row kept, and the backup taken
+         first still held both
+Cost     One test caught that the fixture, not the code, had the version ordering backwards:
+         `h1` was the newest, so "kept the oldest versions" was a wrong *expectation* and the
+         `recorded_at DESC` ranking was right. Writing the delete set as an id list rather
+         than re-running a DELETE predicate costs a chunked `IN (…)`, and buys the guarantee
+         that the printed count is the same query. Rows leave free pages behind, so the
+         message says the file will not shrink until `skillt vacuum` rather than implying it
+Commit   adbebca
