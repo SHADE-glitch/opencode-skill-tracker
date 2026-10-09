@@ -5,4 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "opencode-skill-tracker"
 version = "0.1.0"
+# The floor the READMEs badge and `skillt doctor`'s env.python check compare
+# against; all three are pinned by test_the_python_floor_is_the_same_number_everywhere.
+requires-python = ">=3.11"
 dependencies = ["textual>=8.2,<9"]

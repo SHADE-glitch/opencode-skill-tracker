@@ -368,6 +368,61 @@ and script parsing.
 
 ---
 
+## ⚙️ Settings
+
+Zero configuration is a supported configuration. Every key has a default, and the
+defaults *are* the behaviour the screens already show — nothing here is needed for
+the plugin, the CLI or the TUI to work, and the file does not exist until you make
+it.
+
+**Precedence: flag → config file → environment → default.** The file is
+`~/.local/share/opencode/skillt-config.json`: the tracker's own data directory,
+never `~/.config/opencode/`, which belongs to OpenCode. Change it with the CLI
+rather than by hand, because the CLI validates and reports where each value came
+from:
+
+```bash
+skillt config list                    # every key: value, origin, and what it does
+skillt config get view.days
+skillt config set view.days 45
+skillt config unset view.days
+skillt config explain view.min_uses   # default, minimum, flag, env name, both languages
+skillt config path
+skillt config list --json
+```
+
+| Key | Default | Flag | Environment | What it changes |
+|---|---|---|---|---|
+| `view.days` | `30` | `--days` | `OPENCODE_SKILL_TRACKER_VIEW_DAYS` | how many days the headless reports cover (`insight`, `claude-mem`). The interactive screens are pinned to fixed windows — 7-day trends, 30-day totals — so this does not stretch them |
+| `view.limit` | `10` | `--limit` | `OPENCODE_SKILL_TRACKER_VIEW_LIMIT` | how many rows `skillt insight` lists per ranked table. The interactive tables hold every row and scroll |
+| `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | how many events the Recent timeline lists. Older events stay in the database; only what the screen holds changes |
+| `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | how few calls make a skill "worth advising about" in `skillt insight` |
+| `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | how old the newest recorded call may get before `doctor` warns that capture looks stalled — and the same clock the claude-mem line is judged by |
+
+The environment name is **derived by rule**: uppercase the key, replace `.` with
+`_`, prefix `OPENCODE_SKILL_TRACKER_`. There is no second list to keep in step, and
+`scripts/tests/test_settings_documented.py` fails the build if a key, its flag or
+its default is missing from either README — the gate whose absence let six
+variables ship undocumented.
+
+**A refused value is reported, never hidden.** A file saying `"view.days": "thirty"`
+still shows 30 on screen, and `skillt config list` prints that key's origin as
+`config file (rejected)` with the reason; `skillt doctor` carries a matching
+`config.file` WARN. Silent fallback is how a settings layer stops being believable.
+
+**A file that does not parse is never rewritten.** `skillt config set` against a
+broken or unknown-key file refuses with exit 2 instead of rebuilding it from the
+lines that happened to parse. The typo is your evidence, and it is one line to fix.
+Keys are `group.key`, one level; an unrecognised key is named and ignored, and
+`skillt config set view.dayz 7` answers with the nearest real key.
+
+What settings deliberately do **not** cover: what the recorder captures, or how
+long it keeps it — those are `OPENCODE_SKILL_TRACKER_*` (table below) and code. And
+the privacy invariants (purely local, no network, no message text) are not
+configurable at all; a toggle for them would be a way to break them.
+
+---
+
 ## 🔬 How it works
 
 ```
@@ -403,19 +458,42 @@ OpenCode runtime
 
 ### Environment variables
 
+Every name this project reads, in one table, on both sides of the documentation —
+`scripts/tests/test_settings_documented.py` enumerates the environment reads out of
+the source and fails if a name is missing here or from `README.zh-CN.md`. That gate
+did not exist while six variables shipped undocumented.
+
 | Variable | Effect |
 |---|---|
 | `OPENCODE_SKILL_TRACKER_DB` | override the database path (the plugin) |
+| `OPENCODE_SKILL_TRACKER_CONFIG` | the settings file's path (readers only; default `~/.local/share/opencode/skillt-config.json`) |
+| `OPENCODE_SKILL_TRACKER_CONFIG_DIR` | the OpenCode config tree (default `~/.config/opencode`) — **both sides**: the writer records the skills it finds there, the readers scan the same tree, so a one-sided override would show an empty Skills page over real data |
+| `OPENCODE_SKILL_TRACKER_SKILLS_DIR` | the skills tree (default `$CONFIG_DIR/skills`) — both writer and readers |
+| `OPENCODE_SKILL_TRACKER_PACKAGES_DIR` | where npm plugin sources are looked up for the static scan (default `~/.cache/opencode/packages`) |
+| `OPENCODE_SKILL_TRACKER_PLUGINS` | comma-separated plugin specs; **when set, reading the installed set out of OpenCode's config is skipped** (even when empty). Nothing is pruned from the inventory under an override: it says nothing about what is installed |
+| `OPENCODE_SKILL_TRACKER_PLUGIN_EXCLUDE` | comma-separated specs appended to the default exclusions (the tracker itself, `opencode-notifier`) |
+| `OPENCODE_SKILL_TRACKER_TOOL` | the name of the skill tool (default `skill`), for a host that renamed it |
 | `OPENCODE_SKILL_TRACKER_MCP_SERVERS` | comma-separated MCP server names; **when set, automatic detection is skipped** (even when empty) |
 | `OPENCODE_SKILL_TRACKER_MCP_DISABLE` | `1` stops MCP recording while skill recording stays on |
 | `OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE` | `1` stops plugin tool/command recording only |
 | `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE` | `1` stops recording that a subagent was started (the builtin `task` tool). The other three streams are unaffected |
 | `OPENCODE_SKILL_TRACKER_DISABLE` | `1` disables the plugin entirely |
+| `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` | replaces the builtin-tool allowlist (pinned to OpenCode 1.18.34, see M13) |
 | `OPENCODE_SKILL_TRACKER_LOG` | the plugin's own log file (default `~/.config/opencode/logs/skill-tracker.log`, the one `skillt doctor` reads). `__selftest()` ignores the **default** value and writes beside its temp database instead — a failed selftest must not land in the owner's error count |
 | `OPENCODE_SKILL_TRACKER_DEBUG` | `1` enables per-call debug lines in the plugin log |
+| `OPENCODE_SKILL_TRACKER_BACKUP_DIR` | where `VACUUM INTO` backups are written and retention sweeps look (default `~/.local/share/opencode/backups`) |
 | `OPENCODE_SKILL_TRACKER_STREAMS` | read side: comma list of streams `doctor` may call stalled (default: all three). An excluded stream is still printed, marked `(excluded)` |
+| `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` | the claude-mem store to read (default `~/.claude-mem/claude-mem.db`) |
+| `CLAUDE_MEM_DIR` | that plugin's own directory name for the same purpose; `…_CLAUDE_MEM_DB` wins |
+| `AGENT_OS_ROOT` | the advisor's root, from which `store/aos.db` and `store/loops/*.json` are resolved |
+| `OPENCODE_SKILL_TRACKER_AGENTOS_DB` | the advisor database directly, bypassing `AGENT_OS_ROOT` |
+| `AOS_DB` | AgentOS's own variable name for the same file, tried last — the readers follow the neighbour's convention rather than inventing a third |
+| `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` | the advisor's per-call budget the "over budget" flag is measured against (default 1200, see M21) |
 | `SKILLT_SCRIPTS` | override the `scripts/` directory the launcher uses |
 | `SKILLT_VENV` | point the launcher at a venv dir or a python binary |
+| `HOME` | inherited, not a knob: the writer builds every default above from it, so setting it moves the whole tree unless a specific override pins it |
+| `TMPDIR` | inherited: where `__selftest()` creates its throwaway database (default `/tmp`) |
+| `TERM` | inherited: the TUI refuses to start on an empty or `dumb` terminal rather than painting garbage |
 
 ### Database
 

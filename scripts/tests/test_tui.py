@@ -2127,3 +2127,47 @@ def test_tui_cursor_up_does_not_raise(seeded_db):
     _run(_run_it())
 
 
+
+
+# --- view.recent_rows: the one dashboard number the interactive layer can set ---
+def test_the_recent_timeline_length_is_a_setting_not_a_literal(seeded_db, monkeypatch):
+    """`render_recent` used to hand `unified_recent_rows` the literal 100.
+
+    A flag that no screen reads is worse than no flag: `skillt --recent-rows 20`
+    looked configured and did nothing. The length must arrive as an argument.
+    """
+    import settings as cfg
+    seen = []
+    real = st.db.unified_recent_rows
+
+    def spy(conn, limit):
+        seen.append(limit)
+        return real(conn, limit)
+
+    monkeypatch.setattr(st.db, "unified_recent_rows", spy)
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True, recent_rows=20)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+        assert 20 in seen, seen
+        assert cfg.spec("view.recent_rows")["default"] == 100
+
+    _run(_run_it())
+
+
+def test_the_setting_really_shortens_the_timeline(seeded_db):
+    """The seeded DB holds 20 skill rows, so 3 and 100 cannot look the same."""
+    async def _run_it():
+        short = SkillTUI(db_path=seeded_db, no_sync=True, recent_rows=3)
+        async with short.run_test() as pilot:
+            await pilot.pause()
+            assert short.screen.query_one("#recent-table", DataTable).row_count == 3
+
+        full = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with full.run_test() as pilot:
+            await pilot.pause()
+            n = full.screen.query_one("#recent-table", DataTable).row_count
+            assert n > 3, f"the default length truncated as well: {n}"
+
+    _run(_run_it())

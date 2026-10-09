@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +12,7 @@ from conftest import load_module
 
 import skill_db as db
 import skill_db_claude_mem as cm
+import settings as cfg
 
 st = load_module("skill-tui.py", "skill_tui")
 
@@ -389,3 +392,75 @@ def test_a_bounded_log_read_reports_a_floor_never_a_clean_bill(tmp_path, monkeyp
     assert "first" in detail and f"{cap} B" in detail.replace(",", ""), \
         f"a bounded read must name its bound: {detail}"
     conn.close()
+
+
+# --- config.file: the settings layer is only honest if doctor reads it out -----
+def test_doctor_passes_a_clean_or_absent_config_file(tmp_path, monkeypatch):
+    """No file is the normal case, and a readable one is the good case.
+
+    A silent absence would be indistinguishable from "the tool ignored my file",
+    so the check prints the path it looked at either way.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    absent = tmp_path / "skillt-config.json"
+    monkeypatch.setenv(cfg.CONFIG_PATH_ENV, str(absent))
+    status, detail = checks_by_name(conn, Args(db_path))["config.file"]
+    assert status == "PASS", detail
+    assert str(absent) in detail and "not created" in detail
+
+    absent.write_text('{"view.days": 45}', encoding="utf-8")
+    status, detail = checks_by_name(conn, Args(db_path))["config.file"]
+    assert status == "PASS", detail
+    assert "1 key" in detail, detail
+    conn.close()
+
+
+def test_doctor_warns_loudly_about_a_setting_it_refused(tmp_path, monkeypatch):
+    """The failure this check exists for: a value typed that never took effect.
+
+    Owner types `view.days: "thirty"`, the screen still says 30, and without a
+    line in `doctor` there is no way to find out why short of reading the source.
+    """
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    p = tmp_path / "skillt-config.json"
+    p.write_text('{"view.days": "thirty"}', encoding="utf-8")
+    monkeypatch.setenv(cfg.CONFIG_PATH_ENV, str(p))
+    status, detail = checks_by_name(conn, Args(db_path))["config.file"]
+    assert status == "WARN", detail
+    assert "is not a number" in detail, detail
+    conn.close()
+
+
+def test_the_suite_isolates_the_settings_file_the_checks_read(tmp_path):
+    """The isolation fixture is the only thing keeping this check hermetic.
+
+    `config.file` reads whatever path the environment resolves to, so a suite
+    that forgot to isolate it would pass or fail depending on what the developer
+    last typed into `skillt config set`. Pinned here, because that is a failure
+    that looks like a code change.
+    """
+    assert cfg.config_path() == str(tmp_path / "isolated-skillt-config.json")
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_the_python_floor_is_the_same_number_everywhere():
+    """`requires-python`, the README badge and doctor must state one floor.
+
+    The READMEs said 3.11+ while doctor warned below 3.10, so a user on 3.10 read
+    "supported" in one place and "you are behind" in the other. The number is
+    pinned in three prints and nothing says which one is right except this test.
+    """
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'requires-python\s*=\s*">=\s*(\d+)\.(\d+)"', pyproject)
+    assert m, "pyproject.toml states no requires-python"
+    assert (int(m.group(1)), int(m.group(2))) == st.MIN_PYTHON, (
+        f"requires-python and doctor disagree: {m.group(0)} vs {st.MIN_PYTHON}")
+    plain = f"{st.MIN_PYTHON[0]}.{st.MIN_PYTHON[1]}+"
+    for name in ("README.md", "README.zh-CN.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        # `+` is URL-encoded inside a shields.io badge, so the same claim is
+        # spelled two ways in one file. Either counts; a third number does not.
+        assert plain in text or plain.replace("+", "%2B") in text, (
+            f"{name} states no Python floor of {plain}")

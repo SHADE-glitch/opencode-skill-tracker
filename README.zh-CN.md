@@ -218,6 +218,93 @@ skillt help
 
 ---
 
+### 4.4 设置与环境变量
+
+**零配置是一种被支持的配置。** 每个键都有默认值，而默认值**就是**屏幕上现在显示的行为：
+插件、CLI、TUI 都不需要任何配置即可工作；在你自己创建之前，那个文件根本不存在。
+
+**优先级：命令行参数 → 配置文件 → 环境变量 → 默认值。** 配置文件是
+`~/.local/share/opencode/skillt-config.json`——tracker 自己的数据目录，**不是**
+`~/.config/opencode/`（那是 OpenCode 的）。请用命令改，别手改，因为命令会校验取值，
+并且会告诉你每个值是从哪一层来的：
+
+```bash
+skillt config list                    # 每个键：值、来源、以及它管什么
+skillt config get view.days
+skillt config set view.days 45
+skillt config unset view.days
+skillt config explain view.min_uses   # 默认值、下限、参数名、环境变量名、中英说明
+skillt config path
+skillt config list --json
+```
+
+| 键 | 默认 | 参数 | 环境变量 | 管什么 |
+|---|---|---|---|---|
+| `view.days` | `30` | `--days` | `OPENCODE_SKILL_TRACKER_VIEW_DAYS` | 无头报告（`insight`、`claude-mem`）覆盖多少天历史。交互页面的排版钉死在固定窗口上（7 天趋势、30 天合计），**不会**被它拉长 |
+| `view.limit` | `10` | `--limit` | `OPENCODE_SKILL_TRACKER_VIEW_LIMIT` | `skillt insight` 每张排名表列多少行。交互表格全部列出、靠滚动看 |
+| `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | Recent 时间线列出多少条事件。更早的事件仍在库里，这里只改屏幕装多少 |
+| `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | 一个 skill 至少被调用多少次才进入 `skillt insight` 的建议范围 |
+| `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | 最新一条记录超过多少天，`doctor` 就提示采集可能停了；claude-mem 那一行用的是同一把尺 |
+
+环境变量名是**按规则推导**的：键转大写、`.` 换成 `_`、前缀 `OPENCODE_SKILL_TRACKER_`。
+所以不存在第二份需要人工同步的清单；而只要有键、参数或默认值没写进**任何一份**
+README，`scripts/tests/test_settings_documented.py` 就把构建判红——正是这份缺失的闸门
+放任六个环境变量裸奔过。
+
+**被拒绝的取值会被说出来，不会被藏成默认值。** 文件里写 `"view.days": "thirty"`，屏幕
+当然还是 30，但 `skillt config list` 会把这一项的来源印成 `config file (rejected)` 并附
+原因，`skillt doctor` 的 `config.file` 也会 WARN 同一件事。静默回退是让设置层失去可信度
+的方式。
+
+**解析不了的文件绝不会被重写。** 对着一个坏了、或含未知键的文件执行 `skillt config set`
+会以退出码 2 拒绝，而不是拿"碰巧能解析的那几行"重建整个文件：你的笔误就是证据本身，
+而它只有一行要改。键的形式是 `组.名`，只有一层；无法识别的键会被点名后忽略，
+`skillt config set view.dayz 7` 会回答最接近的真键名。
+
+设置**刻意不管**两件事：采集什么、保留多久——那是下一张表的 `OPENCODE_SKILL_TRACKER_*`
+和代码本身。而隐私不变量（纯本地、无网络、不存消息正文）根本不提供开关：给它一个开关
+就是给它一个被关掉的机会。
+
+### 4.5 环境变量总表
+
+本项目读的每一个环境变量都在这一张表里，两份文档都要有：
+`scripts/tests/test_settings_documented.py` 会**从源码里枚举**环境读取的写法，再逐个来
+这张表对账。
+
+| 变量 | 作用 |
+|---|---|
+| `OPENCODE_SKILL_TRACKER_DB` | 覆盖数据库路径（写入端） |
+| `OPENCODE_SKILL_TRACKER_CONFIG` | 设置文件的路径（**只读侧**；默认 `~/.local/share/opencode/skillt-config.json`） |
+| `OPENCODE_SKILL_TRACKER_CONFIG_DIR` | OpenCode 配置树（默认 `~/.config/opencode`）——**两侧都用**：写入端记录它看到的 skills，读取端扫同一棵树。只有一侧认这个变量时，改过位置的配置会表现为"一个 skill 都没装"的空页面，而库里明明有数据 |
+| `OPENCODE_SKILL_TRACKER_SKILLS_DIR` | skills 目录（默认 `$CONFIG_DIR/skills`），写入端与读取端都是 |
+| `OPENCODE_SKILL_TRACKER_PACKAGES_DIR` | 静态扫描去哪儿找 npm 插件源码（默认 `~/.cache/opencode/packages`） |
+| `OPENCODE_SKILL_TRACKER_PLUGINS` | 逗号分隔的插件 spec 清单；**一旦设置（哪怕是空）就跳过"从 OpenCode 配置里读已安装插件"**。走这条路时不做 inventory 清理：这份覆盖说明不了机器上到底装了什么 |
+| `OPENCODE_SKILL_TRACKER_PLUGIN_EXCLUDE` | 逗号分隔的 spec，追加在默认排除项（tracker 自身、`opencode-notifier`）之后 |
+| `OPENCODE_SKILL_TRACKER_TOOL` | skill 工具的名字（默认 `skill`），给改过名的宿主用 |
+| `OPENCODE_SKILL_TRACKER_MCP_SERVERS` | 逗号分隔的 MCP server 名；**一旦设置（哪怕为空）就跳过自动探测** |
+| `OPENCODE_SKILL_TRACKER_MCP_DISABLE` | `1` 只关 MCP 记录，skill 记录照旧 |
+| `OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE` | `1` 只关插件工具/命令记录 |
+| `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE` | `1` 不再记录"启动过子 agent"（内置 `task` 工具），另外三条流不受影响 |
+| `OPENCODE_SKILL_TRACKER_DISABLE` | `1` 整个插件停用 |
+| `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` | 替换内置工具 allowlist（钉在 OpenCode 1.18.34，见 M13） |
+| `OPENCODE_SKILL_TRACKER_LOG` | 插件自己的日志文件（默认 `~/.config/opencode/logs/skill-tracker.log`，也就是 `skillt doctor` 读的那份）。`__selftest()` **忽略默认值**，把行写到它的临时库旁边——一次失败的自测不该进主人的错误计数 |
+| `OPENCODE_SKILL_TRACKER_DEBUG` | `1` 在插件日志里打开逐次调用调试行 |
+| `OPENCODE_SKILL_TRACKER_BACKUP_DIR` | `VACUUM INTO` 备份写到哪儿、保留策略清理哪儿（默认 `~/.local/share/opencode/backups`） |
+| `OPENCODE_SKILL_TRACKER_STREAMS` | 读侧：允许 `doctor` 判定为"停滞"的流清单（默认三条全判）。被排除的流照样打印，并标注 `(excluded)` |
+| `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` | 要读的 claude-mem 库（默认 `~/.claude-mem/claude-mem.db`） |
+| `CLAUDE_MEM_DIR` | 那个插件自己用的目录名，同一目的；两个都设时以 `…_CLAUDE_MEM_DB` 为准 |
+| `AGENT_OS_ROOT` | 顾问的根目录，`store/aos.db` 与 `store/loops/*.json` 由它推出来 |
+| `OPENCODE_SKILL_TRACKER_AGENTOS_DB` | 直接给出顾问库路径，绕过 `AGENT_OS_ROOT` |
+| `AOS_DB` | AgentOS 自己对同一个文件的叫法，排在最后试——读取端跟邻居的约定走，不再发明第三种 |
+| `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` | "是否超预算"所量的那把尺（默认 1200ms，见 M21） |
+| `SKILLT_SCRIPTS` | 覆盖启动器使用的 `scripts/` 目录 |
+| `SKILLT_VENV` | 让启动器指向某个 venv 目录或 python 可执行文件 |
+| `HOME` | 继承而来，不是旋钮：上面每个默认路径都由写入端用它的拼出来，设它等于把整棵树搬走，除非某个变量已经把它钉住 |
+| `TMPDIR` | 继承而来：`__selftest()` 在哪创建它的临时库（默认 `/tmp`） |
+| `TERM` | 继承而来：终端是空或 `dumb` 时，TUI 拒绝启动，而不是画一屏乱码 |
+
+---
+
 ## 💽 5. 数据库说明
 
 ### 5.1 表

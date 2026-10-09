@@ -21,6 +21,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import skill_db as db  # noqa: E402
+import settings as cfg  # noqa: E402
 
 
 def load_module(filename: str, module_name: str):
@@ -123,6 +124,22 @@ def write_claude_mem_files(root, *, trace=CM_TRACE_LINES, worker=CM_WORKER_LINES
             "startedAt": "2026-10-03T12:54:49.179Z",
         }), encoding="utf-8")
     return str(root / "claude-mem.db")
+
+
+@pytest.fixture(autouse=True)
+def isolate_config_file(tmp_path, monkeypatch):
+    """No test may read or write the developer's own `skillt config` file.
+
+    The settings layer resolves to `~/.local/share/opencode/skillt-config.json`
+    with no configuration, which is exactly what makes it dangerous in a suite:
+    `skillt config set view.days 45` on this machine would change what every
+    unrelated test sees, and the failure would look like the code under test had
+    changed. Tests that want a file point the env var at their own path.
+    """
+    monkeypatch.setenv(cfg.CONFIG_PATH_ENV,
+                       str(tmp_path / "isolated-skillt-config.json"))
+    for spec in cfg.REGISTRY:
+        monkeypatch.delenv(cfg.env_name(spec["key"]), raising=False)
 
 
 @pytest.fixture(autouse=True)

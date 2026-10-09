@@ -35,6 +35,7 @@ import skill_db as db  # noqa: E402
 import opencode_compat as compat  # noqa: E402
 import skill_db_claude_mem as cm  # noqa: E402
 import skill_db_agentos as aos  # noqa: E402
+import settings as cfg  # noqa: E402
 
 SORT_MODES = ["count", "last_used", "success_rate", "name"]
 SORT_LABELS = {
@@ -740,8 +741,16 @@ TRACKER_LOG_PATH = os.path.join(
 )
 
 # How stale the newest recorded call may get before doctor says so. A tracker
-# that stopped writing looks exactly like an idle machine from the inside.
-CAPTURE_FRESHNESS_DAYS = 7
+# that stopped writing looks exactly like an idle machine from the inside. The
+# number is `settings`' default for `doctor.freshness_days`, so the knob, the
+# `config list` line and the fallback here can never disagree.
+CAPTURE_FRESHNESS_DAYS = cfg.spec("doctor.freshness_days")["default"]
+
+# The floor `pyproject.toml`'s `requires-python` states and the READMEs badge.
+# Kept as a tuple here because doctor must compare, and `test_doctor.py` pins
+# that the three places (this tuple, `requires-python`, the README badge) still
+# say the same number rather than trusting anybody to remember.
+MIN_PYTHON = (3, 11)
 
 # The plugin log is read from the start and never in full: it grows one line per
 # error forever (M17, no rotation), and `doctor` is the cheapest diagnostic this
@@ -862,7 +871,9 @@ def _doctor_checks(conn, args) -> list:
             add("plugin.plugin_hooks", False, f"read failed: {e}", warn=True)
 
     # --- Environment ----------------------------------------------------
-    add("env.python", sys.version_info >= (3, 10), sys.version.split()[0], warn=True)
+    want_python = ".".join(str(p) for p in MIN_PYTHON)
+    add("env.python", sys.version_info >= MIN_PYTHON,
+        f"{sys.version.split()[0]} (want >= {want_python})", warn=True)
     has_textual = _textual_available()
     add("env.textual", has_textual, "available" if has_textual else "not installed", warn=True)
     # Inside *a* virtualenv? The venv's name/path is deliberately not checked:
@@ -870,6 +881,23 @@ def _doctor_checks(conn, args) -> list:
     # both valid, so matching on "skillt-venv" reported a false WARN.
     in_venv = sys.prefix != sys.base_prefix
     add("env.venv", in_venv, sys.executable, warn=True)
+
+    # --- Settings -------------------------------------------------------
+    # The config file is the one place a value can be typed once and then quietly
+    # not apply. Printing only the path would still leave the owner guessing why
+    # the screen says 30 after they wrote 45, so the refused values go here.
+    try:
+        cfg_path = cfg.config_path()
+        cfg_values, cfg_problems = cfg.read_file(cfg_path)
+        if cfg_problems:
+            add("config.file", False, "  ·  ".join(cfg_problems), warn=True)
+        elif not os.path.isfile(cfg_path):
+            add("config.file", True, f"{cfg_path} — not created, every default applies")
+        else:
+            add("config.file", True,
+                f"{cfg_path} — {len(cfg_values)} key(s) in force")
+    except Exception as e:  # noqa: BLE001
+        add("config.file", False, f"error: {e}", warn=True)
 
     # --- Backups --------------------------------------------------------
     try:
@@ -954,7 +982,7 @@ def _doctor_checks(conn, args) -> list:
     # written by a background worker, so "stale" and "failing" are different
     # stories and both matter.
     try:
-        summary = cm.claude_mem_summary(conn, days=CAPTURE_FRESHNESS_DAYS)
+        summary = cm.claude_mem_summary(conn, days=limit)
         if summary["available"]:
             age = cm.claude_mem_age_days(summary)
             obs = (summary["tables"].get("observations") or {}).get("n")
@@ -983,8 +1011,8 @@ def _doctor_checks(conn, args) -> list:
             if worker["available"]:
                 parts.append(f"worker up :{worker['port']}" if worker["alive"]
                              else "worker down (on-demand)")
-            want = f"want <= {CAPTURE_FRESHNESS_DAYS}d"
-            if age is None or age > CAPTURE_FRESHNESS_DAYS or fails or errs:
+            want = f"want <= {limit}d"
+            if age is None or age > limit or fails or errs:
                 add("claude_mem.capture", False, "  ·  ".join(parts + [want]), warn=True)
             else:
                 add("claude_mem.capture", True, "  ·  ".join(parts + [want]))
@@ -1071,7 +1099,103 @@ def _textual_available() -> bool:
         return False
 
 
+def _cli_config(args) -> int:
+    """`skillt config` — every setting, where its value came from, and how to change it.
+
+    `list` is the honest view: value, origin and the plain-language line in the
+    language the terminal is asking for. A value whose origin reads
+    `config file (rejected)` is the whole reason this command exists — the number
+    on screen is then *not* the one the owner typed, and nothing else would say so.
+    """
+    action = args.positional[0] if args.positional else "list"
+    key = args.positional[1] if len(args.positional) > 1 else None
+    raw = args.positional[2] if len(args.positional) > 2 else None
+    path = cfg.config_path()
+
+    if action == "path":
+        print(path)
+        return 0
+
+    if action == "explain":
+        if not key:
+            print("skillt config explain <key>", file=sys.stderr)
+            return 2
+        try:
+            spec = cfg.spec(key)
+        except KeyError:
+            print(f"unknown setting {key!r} — list them with: skillt config list",
+                  file=sys.stderr)
+            return 2
+        print(f"{spec['key']}\n  default   {spec['default']}\n"
+              f"  minimum   {spec['minimum']}\n"
+              f"  flag      {spec['flag'] or '(no flag)'}\n"
+              f"  env       {cfg.env_name(spec['key'])}\n"
+              f"  file      {path}\n\n  {spec['en']}\n  {spec['zh']}")
+        return 0
+
+    if action in ("set", "unset"):
+        if not key:
+            print(f"skillt config {action} <key>{' <value>' if action == 'set' else ''}",
+                  file=sys.stderr)
+            return 2
+        code, msg = (cfg.write_value(key, raw) if action == "set"
+                     else cfg.reset_value(key))
+        print(msg, file=sys.stderr if code else sys.stdout)
+        return code
+
+    if action not in ("list", "get"):
+        print(f"unknown action {action!r} — expected: list | get | set | unset | path | explain",
+              file=sys.stderr)
+        return 2
+
+    resolved, problems = cfg.effective()
+    if action == "get":
+        if not key:
+            print("skillt config get <key>", file=sys.stderr)
+            return 2
+        if key not in resolved:
+            print(f"unknown setting {key!r}", file=sys.stderr)
+            return 2
+        value, origin = resolved[key]
+        if args.json:
+            print(json.dumps({"key": key, "value": value, "origin": origin,
+                              "default": cfg.spec(key)["default"]}))
+        else:
+            print(f"{key} = {value}  ({origin})")
+        return 0
+
+    if args.json:
+        print(json.dumps({
+            "path": path,
+            "exists": os.path.isfile(path),
+            "problems": problems,
+            "settings": {k: {"value": v, "origin": o, "default": cfg.spec(k)["default"]}
+                         for k, (v, o) in resolved.items()},
+        }, indent=2))
+        return 0
+
+    print(f"Settings  (file: {path}{'' if os.path.isfile(path) else ' — not created'})")
+    print(f"precedence: flag > file > env > default")
+    print("-" * 72)
+    for spec in cfg.REGISTRY:
+        value, origin = resolved[spec["key"]]
+        marker = "" if origin != "default" else "  (default)"
+        print(f"{spec['key']:<32}{value:>6}   from {origin}{marker}")
+        print(f"  {spec['en']}")
+    if problems:
+        print("-" * 72)
+        for p in problems:
+            print(f"  ! {p}")
+        print("  Fix the file before setting anything: a rewrite would drop these lines.")
+    return 0
+
+
 def cli_main(args) -> int:
+    if args.command == "config":
+        # Settings need no database: on a fresh machine `skillt config list` is the
+        # one command that must work before the first skill has ever run.
+        return _cli_config(args)
+
     if not os.path.exists(args.db):
         print(f"No database at {args.db}. Run a skill in OpenCode first.", file=sys.stderr)
         return 1
@@ -2084,7 +2208,7 @@ def _tui_classes() -> dict:
                     pass
 
         def render_recent(self) -> None:
-            rows = db.unified_recent_rows(self.app.conn, 100)
+            rows = db.unified_recent_rows(self.app.conn, self.app.recent_rows)
             self.app.recent_rows_cache = rows
             table = self.query_one("#recent-table", DataTable)
             if not table.columns:
@@ -2664,7 +2788,8 @@ def _tui_classes() -> dict:
         TITLE = "Skill Tracker"
         SUB_TITLE = "OpenCode skill usage"
 
-        def __init__(self, db_path: str, no_sync: bool = False):
+        def __init__(self, db_path: str, no_sync: bool = False,
+                     recent_rows: int | None = None):
             super().__init__()
             # Textual slides the tab-bar underline for 0.3 s on every switch
             # (`Tabs._highlight_active` animates at level "basic", so the global
@@ -2675,6 +2800,12 @@ def _tui_classes() -> dict:
             self.animation_level = "none"
             self.db_path = db_path
             self.no_sync = no_sync
+            # `view.recent_rows`, resolved by the caller. Defaulted here rather than
+            # read from the environment inside the app so a test can build an app
+            # with a known length and `tui_main` stays the only place settings are
+            # looked up.
+            self.recent_rows = (cfg.spec("view.recent_rows")["default"]
+                                 if recent_rows is None else recent_rows)
             self.conn = None
             self.all_rows: list[dict] = []
             self.recent_rows_cache: list[dict] = []
@@ -2741,7 +2872,7 @@ def tui_main(args) -> int:
         print(f"skillt: --db must be a file, not a directory: {args.db}", file=sys.stderr)
         return 2
 
-    app = SkillTUI(db_path=args.db, no_sync=args.no_sync)
+    app = SkillTUI(db_path=args.db, no_sync=args.no_sync, recent_rows=args.recent_rows)
     app.run()
     return 0
 
@@ -2755,7 +2886,7 @@ class Args:
 
 CLI_COMMANDS = {
     "insight", "export", "sync", "cleanup-selftest", "scrub-metadata", "health",
-    "mcp", "plugins", "agentos", "claude-mem", "auto-backup", "doctor",
+    "mcp", "plugins", "agentos", "claude-mem", "auto-backup", "doctor", "config",
 }
 
 
@@ -2778,18 +2909,24 @@ def parse_args(argv):
     a.cli = False
     a.command = None
     a.json = False
-    a.days = 30
-    a.min_uses = 3
-    a.limit = 10
+    # Every numeric default is the resolved setting, so precedence holds no matter
+    # which entry point ran: flag > config file > env > default. A flag below
+    # overwrites what `cfg.values()` worked out; nothing here re-reads the file.
+    settings = cfg.values()
+    a.days = settings["view.days"]
+    a.min_uses = settings["view.min_uses"]
+    a.limit = settings["view.limit"]
+    a.recent_rows = settings["view.recent_rows"]
     a.out = None
     a.pretty = False
     a.force = False
     a.skills_only = False
     a.dry_run = False
     a.prune_orphans = False
-    a.freshness_days = CAPTURE_FRESHNESS_DAYS
+    a.freshness_days = settings["doctor.freshness_days"]
     a.yes = False
     a.no_sync = False
+    a.positional = []
 
     rest = []
     i = 0
@@ -2813,7 +2950,8 @@ def parse_args(argv):
             a.yes = True
         elif t == "--no-sync":
             a.no_sync = True
-        elif t in ("--db", "--days", "--min-uses", "--limit", "--out", "--freshness-days"):
+        elif t in ("--db", "--days", "--min-uses", "--limit", "--out",
+                   "--freshness-days", "--recent-rows"):
             i += 1
             if i >= len(argv):
                 raise SystemExit(f"{t} requires a value")
@@ -2826,6 +2964,8 @@ def parse_args(argv):
                 a.min_uses = _int_arg("--min-uses", val, minimum=0)
             elif t == "--limit":
                 a.limit = _int_arg("--limit", val, minimum=1)
+            elif t == "--recent-rows":
+                a.recent_rows = _int_arg("--recent-rows", val, minimum=1)
             elif t == "--freshness-days":
                 a.freshness_days = _int_arg("--freshness-days", val, minimum=1)
             else:
@@ -2839,8 +2979,15 @@ def parse_args(argv):
 
     if rest:
         a.command = rest[0]
+        a.positional = list(rest[1:])
         if a.command not in CLI_COMMANDS:
             raise SystemExit(f"unknown command: {a.command} (expected one of {sorted(CLI_COMMANDS)})")
+        if a.positional and a.command != "config":
+            # Only `config` reads words after the command name. Accepting them
+            # anywhere else turned a typo (`skillt insight --dsys 5`) into a run
+            # with the wrong assumptions.
+            raise SystemExit(
+                f"{a.command} takes no arguments, got: {' '.join(a.positional)}")
     return a
 
 
@@ -2866,7 +3013,7 @@ def main(argv):
             raise SystemExit(
                 "--cli requires a subcommand: "
                 "insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|"
-                "plugins|agentos|claude-mem|auto-backup|doctor"
+                "plugins|agentos|claude-mem|auto-backup|doctor|config"
             )
         return cli_main(args)
 
