@@ -26,7 +26,7 @@ import skill_db_agentos as aos  # noqa: E402
 
 st = load_module("skill-tui.py", "skill_tui")
 
-from textual.widgets import DataTable, Static, TabbedContent  # noqa: E402
+from textual.widgets import DataTable, Input, Static, TabbedContent  # noqa: E402
 
 
 def static_text(widget) -> str:
@@ -2171,3 +2171,166 @@ def test_the_setting_really_shortens_the_timeline(seeded_db):
             assert n > 3, f"the default length truncated as well: {n}"
 
     _run(_run_it())
+
+
+# --- S8a: an empty table has to say why it is empty -------------------------
+# Every page renders a header row whether or not there is data, so "nothing
+# recorded yet", "your search filtered it all out" and "the recorder is broken"
+# are three different states that look exactly the same on screen. The note goes
+# into the page's own status line, which is the one place the freshness suffix is
+# already written.
+def test_an_empty_recent_page_names_the_reason(empty_db, temp_skills):
+    async def _run_it():
+        app = SkillTUI(db_path=empty_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#recent-table", DataTable)
+            assert table.row_count == 0
+            note = static_text(app.screen.query_one("#recent-label", Static))
+            assert "no events recorded yet" in note, note
+            assert "r to re-read" in note, note
+
+    _run(_run_it())
+
+
+def test_an_empty_skills_page_does_not_look_like_a_broken_scan(empty_db, tmp_path,
+                                                               monkeypatch):
+    """An empty skills directory is a real state and must be told apart from
+    "nothing has been used"."""
+    import skill_db as db
+    empty_dir = tmp_path / "no-skills-here"
+    empty_dir.mkdir()
+    monkeypatch.setattr(db, "SKILLS_DIR", str(empty_dir))
+
+    async def _run_it():
+        app = SkillTUI(db_path=empty_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.query_one("#skills-table", DataTable).row_count == 0
+            note = static_text(app.screen.query_one("#sort-label", Static))
+            assert "no skills" in note, note
+            assert str(empty_dir) in note, f"the note must say which directory: {note}"
+
+    _run(_run_it())
+
+
+def test_a_search_that_filters_everything_says_hidden_not_none(seeded_mcp_db):
+    """`0 tool(s)` after a search is not an empty database, and the page cannot say
+    "recorded yet" without lying about the rows it is holding back."""
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_mcp_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            box = app.screen.query_one("#mcp-search", Input)
+            box.value = "zzzz-no-such-tool"
+            await pilot.press("slash")
+            await pilot.pause()
+            app.screen.query_one("#mcp-table", DataTable)
+            assert app.screen.query_one("#mcp-table", DataTable).row_count == 0
+            note = static_text(app.screen.query_one("#mcp-label", Static))
+            assert "hidden" in note and "matches the search" in note, note
+            assert "recorded yet" not in note, note
+
+    _run(_run_it())
+
+
+# --- S8b: one status block, one style ---------------------------------------
+# On the Plugins page the sort line is `[dim]`, the inventory entries under it are
+# bright, and each entry carries a `[dim]` age tail — so a single block reads as two
+# kinds of information without saying which is which. The Data panel is exempt: there
+# bright values under dim labels are the design, not a leftover.
+def _undimmed_words(text: str) -> str:
+    """What is left when every `[dim]…[/dim]` span and emphasis marker is removed.
+
+    Deliberately dumb: it expects one flat `[dim]…[/dim]` per line. A line that
+    nests a second dim span inside the first (an age tail, say) cannot be checked
+    by a regex at all, and the nesting is itself the thing this test is against —
+    one block with two kinds of faint is what the page looked like before.
+    """
+    import re
+    out = re.sub(r"\[dim\].*?\[/dim\]", " ", text, flags=re.S)
+    out = re.sub(r"\[/?(?:b|u|italic)\]", " ", out)
+    return " ".join(out.split())
+
+
+def test_every_table_page_status_line_is_dimmed_throughout(seeded_plugin_db):
+    """The status block under a table is one kind of information, and must read as one.
+
+    Compared against each page's *base*, not the painted widget: the widget carries
+    the freshness suffix on top, and that suffix starts with a bare bright `  ·  `
+    separator, so checking it would fail on all eight pages for a reason that has
+    nothing to do with this invariant.
+    """
+    pages = ("tab-dash", "tab-skills", "tab-mcp", "tab-plugins",
+             "tab-recent", "tab-cats", "tab-agents")
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            tabs = screen.query_one("TabbedContent")
+            for page in pages:
+                tabs.active = page
+                await pilot.pause()
+                base = screen._page_status_base.get(page, "")
+                assert base, f"{page} never set a status base"
+                for line in base.splitlines():
+                    left = _undimmed_words(line)
+                    assert not left, (
+                        f"{page} prints bright text in its status block: "
+                        f"{left!r} in {line!r}"
+                    )
+
+    _run(_run_it())
+
+
+# --- S8c: the key list cannot go stale --------------------------------------
+# The Footer shows the bindings with `show=True` and hides the other eight without
+# a trace. The hand-written Data-page help documented b/v/e and never mentioned d,
+# j or k — so the fix had to be a list *derived* from BINDINGS, and the proof that
+# it is derived is that adding a binding adds a line.
+def test_the_data_page_key_help_is_generated_from_the_bindings(seeded_db):
+    from rich.text import Text
+
+    async def _run_it():
+        app = SkillTUI(db_path=seeded_db, no_sync=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = type(app.screen)
+            # `Static.content` hands back the markup it was given, so both sides
+            # have to be resolved to plain text before they are compared.
+            painted = Text.from_markup(
+                static_text(app.screen.query_one("#data-help", Static))).plain
+            assert painted == Text.from_markup(screen.key_help()).plain, painted
+
+            hidden = [b for b in screen.BINDINGS if not b.show]
+            assert len(hidden) == 8, f"the footer hides {len(hidden)} keys: {hidden}"
+            for b in hidden:
+                assert screen._key_name(b) in painted, (
+                    f"{b.key} is bound but never documented: {painted}"
+                )
+            documented = [l for l in painted.splitlines() if l.startswith("  ")]
+            assert len(documented) == len(hidden), (
+                f"the help lists {len(documented)} keys for {len(hidden)} bindings: "
+                f"{documented}"
+            )
+
+    _run(_run_it())
+
+
+def test_a_new_binding_documents_itself_in_the_help(monkeypatch):
+    """A binding nobody wrote into the help text must still reach the help text.
+
+    `w` is deliberately absent from the note map: an undocumented key falls back to
+    its own `Binding` description instead of dropping off the list, which is what
+    keeps this generation from needing a second edit for every new key.
+    """
+    from textual.binding import Binding
+
+    screen = st._tui_classes()["MainScreen"]
+    added = Binding("w", "backup", "Backup", show=False)
+    monkeypatch.setattr(screen, "BINDINGS", list(screen.BINDINGS) + [added])
+    help_text = screen.key_help()
+    assert "  w " in help_text, help_text
+    assert "Backup" in help_text, help_text

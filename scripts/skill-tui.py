@@ -1730,6 +1730,41 @@ def _tui_classes() -> dict:
             Binding("e", "export", "Export", show=False),
         ]
 
+        # What the eight `show=False` keys do. The Footer drops them with no trace,
+        # and this block is the only place a user can find out they exist — the
+        # hand-written text it replaces named b/v/e and never mentioned d or j/k.
+        # A key missing here falls back to its own Binding description, so adding a
+        # binding cannot produce a key that is bound but undocumented.
+        _KEY_DISPLAY = {"slash": "/"}
+        _KEY_HELP = {
+            "ctrl+r": "refresh while the search box has focus",
+            "ctrl+s": "cycle the sort while the search box has focus",
+            "j": "move the row cursor down",
+            "k": "move the row cursor up",
+            "d": "delete the skill on the cursor (asks first)",
+            "b": "back up the database (VACUUM INTO, 0600)",
+            "v": "vacuum the database (VACUUM)",
+            "e": "export the database as JSON (0600)",
+        }
+
+        @classmethod
+        def _key_name(cls, binding) -> str:
+            """A key as it is typed: `slash` is the binding's name, `/` the press."""
+            return cls._KEY_DISPLAY.get(binding.key, binding.key)
+
+        @classmethod
+        def key_help(cls) -> str:
+            """The keys the footer does not show, one line each, in binding order."""
+            hidden = [b for b in cls.BINDINGS if not b.show]
+            if not hidden:
+                return "[dim]every key this screen binds is in the footer below[/dim]"
+            pad = max(len(cls._key_name(b)) for b in hidden) + 2
+            lines = ["[b]Keys the footer at the bottom does not show[/b]"]
+            for b in hidden:
+                note = cls._KEY_HELP.get(b.key) or (b.description or b.action)
+                lines.append(f"  {cls._key_name(b):<{pad}} {note}")
+            return "\n".join(lines)
+
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
             with TabbedContent(initial="tab-dash"):
@@ -1818,13 +1853,7 @@ def _tui_classes() -> dict:
                     yield t
                 with TabPane("Data", id="tab-data"):
                     yield Static(
-                        "[b]Data management[/b]\n"
-                        "  b   Backup database (VACUUM INTO, 0600)\n"
-                        "  v   Vacuum database (VACUUM)\n"
-                        "  e   Export JSON (0600)\n"
-                        "  r   Refresh\n\n"
-                        "Deleting a skill is done from the Skills tab: select a row, press d.\n"
-                        "Dangerous actions always ask for confirmation.",
+                        self.key_help(),
                         id="data-help",
                     )
                     yield Static(id="data-info")
@@ -1896,6 +1925,26 @@ def _tui_classes() -> dict:
             if not ts:
                 return ""
             return f"  ·  [dim]data as of {datetime.fromtimestamp(ts).strftime('%H:%M:%S')}[/dim]"
+
+        def _empty_note(self, noun: str, total: int = 0, filtered: bool = False,
+                        where: str | None = None) -> str:
+            """One line naming why a table has no rows.
+
+            A header with no rows underneath it is three states wearing one face:
+            nothing has been recorded, a search is hiding everything, or the source
+            directory has no skills in it. All three read on screen as "this tool is
+            broken", and two of them are not even a problem. The note goes on the
+            page's own status line because that is where the freshness suffix already
+            lives, so a page never carries two competing claims about its data.
+            """
+            if filtered:
+                return (f"[dim]nothing matches the search   ·   {total:,} {noun} "
+                        f"hidden   ·   clear the box to see them[/dim]")
+            if noun == "skills" and where:
+                return (f"[dim]no skills recorded yet   ·   press r to re-read   ·   "
+                        f"the scan reads {where} and `skillt sync` refreshes it[/dim]")
+            return (f"[dim]no {noun} recorded yet   ·   press r to re-read   ·   "
+                    "the writer adds a row on the next call[/dim]")
 
         def _paint_status(self, page: str) -> None:
             """Write `base_text + freshness` to the page's status widget.
@@ -2311,6 +2360,9 @@ def _tui_classes() -> dict:
                 f"[dim]Sort: {SORT_LABELS[self.app.sort_mode]}   ·   "
                 f"showing {len(rows)} / {len(self.app.all_rows)}   ·   "
                 f"Enter opens detail  ·  d deletes{hint}[/dim]"
+                + ("" if rows else "\n" + self._empty_note(
+                    "skills", total=len(self.app.all_rows), filtered=bool(needle),
+                    where=db.SKILLS_DIR))
             )
             self._paint_status("tab-skills")
             # Columns are static, so a row-level clear is enough (and keeps the
@@ -2373,12 +2425,14 @@ def _tui_classes() -> dict:
             self._page_status_base["tab-recent"] = (
                 "[dim]Skills + MCP + plugins in one timeline  ·  "
                 "Enter opens the row's detail page[/dim]"
+                + ("" if rows else "\n" + self._empty_note("events"))
             )
             self._paint_status("tab-recent")
 
         def render_mcp(self, rows=None) -> None:
             if rows is None:
                 rows = db.mcp_stats_rows(self.app.conn)
+            unfiltered = len(rows)
             try:
                 needle = self.query_one("#mcp-search", Input).value.strip().lower()
             except Exception:  # noqa: BLE001 - before mount in tests
@@ -2402,6 +2456,8 @@ def _tui_classes() -> dict:
             self._page_status_base["tab-mcp"] = (
                 f"[dim]Sort: {SORT_LABELS[self.app.mcp_sort_mode]}   ·   "
                 f"showing {len(rows)} tool(s)  ·  Enter opens detail[/dim]"
+                + ("" if rows else "\n" + self._empty_note(
+                    "MCP tools", total=unfiltered, filtered=bool(needle)))
             )
             self._paint_status("tab-mcp")
             if not table.columns:
@@ -2477,6 +2533,7 @@ def _tui_classes() -> dict:
                 needle = self.query_one("#plugins-search", Input).value.strip().lower()
             except Exception:  # noqa: BLE001 - before mount in tests
                 needle = ""
+            plugin_unfiltered = len(rows)
             if needle:
                 rows = [
                     r for r in rows
@@ -2512,7 +2569,10 @@ def _tui_classes() -> dict:
                 if counts:
                     entry += f" ({', '.join(counts)})"
                 # MM-DD HH:MM only: this is one of several entries on a line.
-                entry += f" [dim]{db.fmt_time(r['last_seen'])[5:]}[/dim]"
+                # No markup of its own: the whole status block is dimmed, and a
+                # `[dim]` age tail inside a `[dim]` line is what made this one
+                # block read as two kinds of information.
+                entry += f" {db.fmt_time(r['last_seen'])[5:]}"
                 if r["skipped"]:
                     excluded.append(entry)
                 elif r.get("scope") == "project":
@@ -2525,7 +2585,7 @@ def _tui_classes() -> dict:
                 f"showing {len(rows)} item(s)  ·  Enter opens detail[/dim]"
             ]
             if current or project or excluded:
-                lines.append("[b]Inventory[/b]  " + "   ·   ".join(current))
+                lines.append("[dim][b]Inventory[/b]  " + "   ·   ".join(current) + "[/dim]")
                 lines.append(
                     "[dim]what OpenCode loaded at its last start, with the age of"
                     " that sighting. Rows for plugins the global config no longer"
@@ -2554,6 +2614,9 @@ def _tui_classes() -> dict:
             activity_line = self._claude_mem_activity_line()
             if activity_line:
                 lines.append(activity_line)
+            if not rows:
+                lines.append(self._empty_note(
+                    "plugin surfaces", total=plugin_unfiltered, filtered=bool(needle)))
             self._page_status_base["tab-plugins"] = "\n".join(lines)
             self._paint_status("tab-plugins")
 
