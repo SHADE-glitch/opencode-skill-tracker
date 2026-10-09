@@ -157,7 +157,12 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
                    "opencode_compat", "CONTRACT",
                    # The neighbour modules split out of skill_db: if a checklist
                    # still says `skill_db.agentos_*`, the door it names is gone.
-                   "skill_db_agentos"):
+                   "skill_db_agentos",
+                   # The S8 UI round: four derived surfaces, each of which was
+                   # hand-written and measurably wrong before. A checklist that
+                   # stops naming them has lost the reason they are computed.
+                   "key_help", "CARD_LABELS", "_empty_note", "_offscreen_note",
+                   "call_after_refresh", "$success", "$error"):
         assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
 
     assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"
@@ -266,6 +271,58 @@ def test_readmes_say_the_tracker_cannot_record_the_advisor():
 def test_readme_documents_top_limit_alias():
     text = _text()
     assert "--limit 3" in text or "`--limit" in text
+
+
+# --- S8 doc gates -----------------------------------------------------------
+def test_the_documented_limitation_range_is_the_range_the_gate_pins():
+    """Every `M1–M23` is a claim about how many limitations there are.
+
+    Four documents make that claim in two languages and none of them is the list
+    itself, so each one quietly froze at whatever the newest id was when it was
+    written. Reading the number out of `LIMITATIONS` — the tuple that decides which
+    ids both READMEs must carry — turns all four into a copy of one fact.
+    """
+    first, last = LIMITATIONS[0], LIMITATIONS[-1]
+    pattern = re.compile(first + r"(?:–|-| through )(M\d+)")
+    seen = 0
+    for name in ("README.md", "README.zh-CN.md", "MAINTENANCE.md",
+                 "MAINTENANCE.zh-CN.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            seen += 1
+            assert match.group(1) == last, (
+                f"{name} says {match.group(0)!r} but the gate pins {first}–{last}")
+    assert seen >= 3, f"only {seen} range claims found — the wording changed"
+
+
+def test_readmes_document_every_key_the_screen_binds():
+    """The in-screen help is generated; the README tables are the other copy of the promise.
+
+    A key that reaches neither is a key nobody finds: the footer hides eight of the
+    thirteen bindings, and the pre-S8 help named three of them. Read out of the
+    source, so this runs on an interpreter with no textual, like the tab-page gate.
+    """
+    src = (ROOT / "scripts" / "skill-tui.py").read_text(encoding="utf-8")
+    screen = src.split("class MainScreen(Screen):", 1)[1]
+    bindings = screen.split("class SkillTUI(App):", 1)[0]
+    keys = re.findall(r'Binding\("([^"]+)"', bindings)
+    assert len(keys) >= 13, f"the binding list shrank to {keys}"
+    display = dict(re.findall(r'"([^"]+)": "([^"]+)"',
+                              re.search(r"_KEY_DISPLAY = \{([^}]*)\}", src).group(1)))
+    shown = sorted({display.get(k, k) for k in keys})
+
+    for name, marker in (("README.md", "| Key"), ("README.zh-CN.md", "| 按键")):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        rows = []
+        for line in text[text.index(marker):].splitlines():
+            if not line.strip().startswith("|"):
+                break
+            rows.append(line)
+        table = " ".join(rows).lower()
+        for key in shown:
+            assert f"`{key.lower()}`" in table, (
+                f"{name}'s key table does not document `{key}` "
+                f"(bound in MainScreen.BINDINGS)")
 
 
 def test_readme_does_not_claim_message_text_is_stored():

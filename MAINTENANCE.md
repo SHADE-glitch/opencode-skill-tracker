@@ -464,6 +464,42 @@ state.
   contain zero measured calls — folding it in would let one column mean "calls"
   or "calls plus events" depending on whether a session delegated. Held by
   `test_agent_rows_gain_a_spawned_count_and_total_stays_the_three_streams`.
+- **The TUI's own help and geometry are derived, not typed out.** Four places where
+  a hand-written version was measurably wrong, and each is now computed:
+  `MainScreen.key_help()` builds the Data page's key list from `BINDINGS` (the old
+  text named `b`/`e`/`v` and never mentioned `d` or `j`/`k`, which the footer hides as
+  `show=False`); `MainScreen.CARD_LABELS` is the single source of the six card labels,
+  because `_card_columns()` needs the longest one to pick a grid that cannot wrap;
+  `_empty_note()` writes the reason a table is empty into the page's own status line,
+  which is where the freshness suffix already lives, so a page never carries two
+  competing claims about its data; and the status block is **one flat `[dim]` span per
+  line** — a nested `[dim]` age tail inside a dimmed line is what made the Plugins
+  block read as two kinds of information, and it is also what made the rule checkable
+  by a regex at all. Guards: `test_a_new_binding_documents_itself_in_the_help`,
+  `test_the_data_page_key_help_is_generated_from_the_bindings`,
+  `test_every_table_page_status_line_is_dimmed_throughout`,
+  `test_the_card_grid_switches_where_the_layout_actually_fits`.
+- **Narrow-terminal numbers are measured, so do not "correct" them from the CSS.**
+  The card grid is 4 columns narrower than the screen and Textual splits the remainder
+  unevenly, so the narrowest card decides: six across needs 111 columns, three needs
+  57, two is the floor (the longest label wraps below 40 — deliberately, rather than
+  doubling the height of a page that already scrolls). A first version of
+  `_card_columns()` counted that inset as 2 and so picked three across at 55 and six
+  at 109, widths where the narrowest card is 16 and a 13-column label wraps. The
+  confirm dialog is `width: 100%; max-width: 60`: at `width: 60` a 48-column terminal
+  got a 60-column box pinned at `x=0` with `Confirm (y)` ending at `x=56`.
+- **Nothing in the TUI sets a colour imperatively.** `#data-result.ok` / `.bad`
+  resolve to `$success` / `$error`, so a theme reaches them; the literal assignment
+  this replaced could not. `test_the_result_colour_is_a_theme_token_and_not_a_literal`
+  scans the source for it as well as checking the class and the CSS rule.
+- **The status line is painted after the layout pass, not during it.** An
+  un-laid-out `DataTable` reports `region.width == 0`, and the column-overflow note
+  would then claim every column is off-screen — a statement about the instrument, so
+  `_offscreen_note` skips a zero-width table and `_refresh_pages` repaints through
+  `call_after_refresh`. Same reason `fit_columns` exists. The note is about
+  discoverability only: `right` already scrolls the trailing columns (measured at 48
+  columns — `virtual_size.width` 96 against `region.width` 44, `max_scroll_x` 52),
+  which is why no `min_width` was added to the tables.
 - **Both write paths are wired, because which one the host fires for a builtin is
   not known and not assumed.** The hook pair and `message.part.updated` each call
   the writer, and `UNIQUE(parent_session_id, call_id)` with a fill-only rule turns
@@ -483,7 +519,7 @@ state.
 
 ## 7. Known limitations
 
-M1–M23, with reproduction notes:
+M1–M24, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
 [README.md](README.md#-known-limitations).
 The ones most likely to bite during maintenance: **M14** (historical prompt text

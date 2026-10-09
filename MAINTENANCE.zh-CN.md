@@ -284,12 +284,38 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 - **Agents 页没有排序是有意做的。** `action_cycle_sort` 对 `tab-agents` 直接 return；落到 `else` 会在用户站在 Agents 页时悄悄改掉 *Skills* 的排序，而屏幕上看不出任何变化。它那一行 `(unknown)` 照实显示，并在页脚解释（M23）。
 - **Plugins 页用的是并集，`plugin_stats_rows` 不是。** 那一页和 `skillt plugins` 读的是 `plugin_surface_rows`（清单 ∪ 用量）：一个注册了却从没人调过的工具原本**一行都不产生**——11 个界面只画出 1 行，owner 因此判定「采集坏了」。dashboard 的 Top Plugins 仍然用只含用量的那个视图：一排 0 不叫排行。被排除的插件不给它造 0 行，它本来就没有界面。`registered` 与 `ever_called` 保持两个字段，消费方没法把它们合成一个含义不明的 0。
 - **子 agent 记成「事件」，绝不当第四种流。** `Spawned` 排在 `Total` 旁边而不是塞进去：`task` 是内置工具，它那一轮里可能一次被测调用都没有——并进去会让同一列一会儿是「调用」、一会儿是「调用加事件」，全看那次会不会 delegate。由 `test_agent_rows_gain_a_spawned_count_and_total_stays_the_three_streams` 钉住。
+- **TUI 的自述与几何都是算出来的，不是抄出来的。** 四处手写版本被实测证明确实错过，现在全部由代码生成：
+  `MainScreen.key_help()` 从 `BINDINGS` 生成 Data 页的按键清单（旧文案只写了 `b`/`e`/`v`，
+  而 Footer 用 `show=False` 藏起来的 `d`、`j`/`k` 一个字都没提）；`MainScreen.CARD_LABELS`
+  是六张卡片标签的唯一来源，因为 `_card_columns()` 需要其中最长的那条才能选出不会折行的网格；
+  `_empty_note()` 把「表格为什么是空的」写进这一页自己的状态行——新鲜度后缀本来就住在那里，
+  于是同一页不会同时挂出两句互相打架的数据声明；状态块**每行只有一个平铺的 `[dim]` 区间**，
+  被 `[dim]` 包着的行里再嵌一个 `[dim]` 时刻尾，正是 Plugins 那块读起来像两种信息的起因，
+  也正是这条规则能被正则检查的前提。守卡：`test_a_new_binding_documents_itself_in_the_help`、
+  `test_the_data_page_key_help_is_generated_from_the_bindings`、
+  `test_every_table_page_status_line_is_dimmed_throughout`、
+  `test_the_card_grid_switches_where_the_layout_actually_fits`。
+- **窄终端的数字是量出来的，别拿 CSS 去「修正」它。** 卡片网格比屏幕窄 4 列，而 Textual 分余数时不平均分，
+  所以由**最窄那张卡**决定：六列并排要 111 列，三列要 57 列，两列是底线（低于 40 列最长标签就会折行——
+  这是主动选择，代价不让一个本来就在滚动的仪表板再长高一倍）。`_card_columns()` 第一版把这个内缩量算成 2，
+  于是在 55 列选了 3 列、在 109 列选了 6 列，而这两档上最窄的卡片只有 16 列，13 列的标签必然折行。
+  确认框现在是 `width: 100%; max-width: 60`：原来是 `width: 60`，48 列的终端会拿到一个钉在 `x=0` 的 60 列框，
+  `Confirm (y)` 一直延伸到 `x=56`。
+- **TUI 里不再有任何命令式颜色。** `#data-result.ok` / `.bad` 解析到 `$success` / `$error`，
+  所以换主题能跟着走；被它替掉的命令式赋值做不到。`test_the_result_colour_is_a_theme_token_and_not_a_literal`
+  既查类名、也查 CSS 规则，还扫源码里有没有命令式赋值回来了。
+- **状态行是在布局之后画的，不是在布局之中。** 还没布局的 `DataTable` 报的是 `region.width == 0`，
+  此时那句「有几列在屏幕外」会说成整张表都在屏幕外——那是对仪器下结论，不是对页面下结论，
+  所以 `_offscreen_note` 跳过宽度为 0 的表，而 `_refresh_pages` 用 `call_after_refresh` 补一次重画。
+  `fit_columns` 存在的理由也是这个。这条提示只解决「看不看得见」：`right` 本来就能把剩下的列滚进来
+  （48 列实测 `virtual_size.width` 96 对 `region.width` 44、`max_scroll_x` 52），
+  所以表格**没有**加 `min_width`——那是给一个不存在的缺陷开药。
 - **两条写路径都接上，因为宿主对内置工具到底触发哪一条并不知道、也不赌。** hook 一对和 `message.part.updated` 各自调用写入端，`UNIQUE(parent_session_id, call_id)` 配「只补空、不覆盖」的规则把两次观测收成一行：事件补上 hook 拿不到的子会话 id，也不会盖掉已有名字。`__selftest` 两条都驱动并断言只有一行。**真实宿主走哪一条仍未验证**——要重启后跑一次真会话才行；而答案不会改这段代码。
 - **`subagent_type` 是按形状准入，不是按含义。** `SUBAGENT_LABEL_RE` 要求不含空格、不含路径、至多 40 字符；不合格就计成 `(unnamed)`。这是一条**上界**，不是散文探测器——一个 39 字符、连字符拼的 token 是能过的，这一轮我自己的哨兵值就是这样混过去的，直到把用例的值改成一句带空格的话才暴露。载荷里的散文字段（`prompt`、`description`、`title`、`output`、`error`）在写入端一个都不点名；`test_the_subagent_writer_never_names_a_text_field` 就是去读那三个函数体来保证这一点——而一个会连自己注释一起误伤的扫描，是没人改得动的扫描。
 
 ## 7. 已知限制
 
-M1–M23 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英文摘要在 [README.md](README.md#-known-limitations)）。
+M1–M24 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英文摘要在 [README.md](README.md#-known-limitations)）。
 维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志会长；现在读写两侧都上了界——读取端是 `TRACKER_LOG_BYTES_CAP`，文件本身由 `skillt rotate-log` 改名）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）以及 **M23**（同一个 `COALESCE` 会把 `agent` 冻住，所以 Agents 页统计的是一行的 session **首次**报出的 agent，而 `(unknown)` 量的是采集顺序，不是「无主的调用」）。
 
 ## 8. 暂缓（P2）——按性价比排序，并写明为什么不修

@@ -544,3 +544,21 @@ Cost     `test_installing_the_timer_is_still_opt_in` checks the installer by the
          of that assertion failed on the variable definition and would have taught nobody
          anything
 Commit   ecc2d5f
+
+### D-046 · 2026-10-09 · fix
+Symptom  The new card breakpoints picked three across at 55 columns and six at 109, where the
+         layout gives the narrowest card 16 columns and a 13-column label wraps — so the fix for
+         "labels wrap on a narrow terminal" reintroduced it at two widths nobody tested
+Change   `_CARD_PAGE_PADDING` was the 2 the CSS seems to say; measured, the grid is 4 columns
+         narrower than the terminal at every width tried (36 → 32, 48 → 44, 110 → 106), because
+         the page padding and the scroll container's own column both come off it. The thresholds
+         are now 111 / 57 / floor, and the test pins the chosen column count *and* the wrap at
+         both sides of each (40/48/56/57/60/110/111/120) instead of three widths that all
+         happened to sit on the safe side of the bug
+Evidence L0 2026-10-09: 648 passed on `python3`, on `.venv/bin/python`, and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`; with the old padding the
+         boundary cases return 3 at 56 and 6 at 110, which is what makes them boundary cases
+Cost     The arithmetic assumes Textual's own remainder split. An upgrade that distributes the
+         grid evenly moves the two thresholds, and only the laid-out test will notice — the CSS
+         will still read 2
+Commit   44372b7

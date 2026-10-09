@@ -256,6 +256,36 @@ that opens that store — no page of the TUI reads it, which is pinned by
 The Data page also has buttons for backup, vacuum, export, **Health**, and
 clearing usage. Deleting a skill is possible **only** from the Skills page.
 
+The key table above is the human-facing copy; the **Data page prints the same
+promise from the code**. `MainScreen.key_help()` lists every binding the footer
+hides (`show=False` — `j` `k` `d` `b` `v` `e` `ctrl+r` `ctrl+s`), generated from
+`BINDINGS`, so a new binding documents itself and a removed one cannot keep a line
+in the help. `test_a_new_binding_documents_itself_in_the_help` adds a binding and
+requires it to appear.
+
+Three things a page now says about itself, because each of them previously read as
+a broken tool:
+
+- **An empty table names its cause.** Nothing recorded yet (`press r to re-read`,
+  the writer adds a row on the next call), a search hiding every row (`N skills
+  hidden`, clear the box), or a skills directory that has nothing in it — and the
+  directory's path, since "no skills" and "I looked in the wrong place" otherwise
+  look identical.
+- **A page's status block is one colour.** Every line under a table is a single
+  dimmed span, so nothing in it reads as two kinds of information at once.
+- **A table wider than the terminal says so.** `→` scrolls the trailing columns
+  into view; what was missing was the admission that they exist, so the status line
+  prints how many columns sit past the right edge.
+
+**Terminal widths.** Measured at the sizes named, not read off the CSS. The card
+grid comes out 4 columns narrower than the screen and Textual splits the remainder
+unevenly, so the *narrowest* card is what a label must fit: six cards across needs
+**111** columns, three needs **57**, and two is the floor — below **40** the longest
+label (`Skill success`, 13 columns) wraps, and it does so deliberately rather than
+the page doubling in height. The confirm dialog is `width: 100%, max-width: 60`,
+which keeps it inside the screen at every width; at 36 columns its two buttons still
+fit, and that is as narrow as this was tested.
+
 ### Headless subcommands (no Textual needed)
 
 ```bash
