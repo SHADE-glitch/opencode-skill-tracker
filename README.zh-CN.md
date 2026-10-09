@@ -414,6 +414,8 @@ rm -rf ~/.local/share/opencode/backups
 ### 本轮审计新增（M14–M18）
 
 - **M14 历史行里可能仍有用户提示词原文（写入与导出已封住；库里数据已清理，备份文件仍有）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`）。2026-10-01 已用 `skillt scrub-metadata --yes` 清掉生产库里命中的 **40 行**（skill 17 / mcp 10 / plugin 13，用量行保留、`error` 文本 46 条保留）。**但清理之前形成的备份文件里仍是原文**——包括本次 `--yes` 之前自动写的那份回滚备份。2026-10-01 已把 3 个仍含原文的散落备份删除，并对生产库做了 VACUUM；`grep` 你的原话在 tracker 的所有文件里已经搜不到。任何时候都可以重跑 `skillt scrub-metadata` 验证：应当报告 0 行命中。
+  scrubber 知道的另一个自由文本键——权限 `title`——**现在根本不再被读取**：2026-10-09 起写入端一个都不写，
+  新发生的拒绝事件不可能再带回来，名单里留着 `title` 只为处理历史行。
   另一个容易漏掉的事实：**删掉值不等于删掉字节**。WAL 模式下被替换的旧内容会留在 `-wal` 文件里直到 checkpoint，所以 `--yes` 结束时执行 `wal_checkpoint(TRUNCATE)`；库正忙时会明确告知，此时关掉 OpenCode 再跑一次 `skillt vacuum`。检查方法见 MAINTENANCE §3。
 - **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
 - **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。

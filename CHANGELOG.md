@@ -270,3 +270,17 @@ Evidence L0 2026-10-08 re-run: `scripts/tests` 531 passed（含 `test_tui_disabl
 Cost     `"basic"` does **not** remove the underline slide; only `"none"` does. Measured numbers are
          that day's and need re-measuring on another machine
 Commit   1e6342c
+
+### D-034 · 2026-10-09 · fix
+Symptom  `buildMetadata` admitted `metadata.title` from the `permission.ask` payload while
+         `METADATA_SCRUB_KEYS` declared that key must not remain in the database. The promise was held
+         by an operator remembering to run `skillt scrub-metadata`, and README already asserted the
+         title "is never read" — the documentation was right and the code was not
+Change   All three `permission.ask` branches stopped naming `title`, `buildMetadata` stopped admitting
+         the key, `error` is untouched. `title` stays in the scrub list, for rows older builds wrote
+Evidence L0 2026-10-09: `scripts/tests` 539 passed on all three documented commands; both new guards
+         were red first (the sentinel really did land in `mcp_usage.metadata`); `__selftest` 63/63; the
+         live database held 0 `title` keys before the change, so this closed a latent path, not a leak
+Cost     A denial's title text can no longer be read back. Nothing ever read it, and `source` still
+         names the path that wrote the row
+Commit   ce3c525

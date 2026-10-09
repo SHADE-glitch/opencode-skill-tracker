@@ -51,6 +51,7 @@
 | 状态单调：观测到的 `error` 可覆盖乐观写入的 `success`，反向永不允许 | 三条 `UPSERT_*_SQL` 的 CASE |
 | MCP 只记**参数名**。`mcpArgNames()` 只用 `Object.keys()`，绝不读值 | `test_plugin.py` |
 | 绝不读取消息正文，因此也不会存储 | `test_readme.py`、`__selftest` 断言 |
+| 权限事件的 `title` 写入端同样**从不读取**——不是靠事后 scrub 才没落库。`skillt scrub-metadata` 名单里留着 `title`，只为处理老版本已经写下的行 | `test_the_writer_never_names_a_permission_title`、`test_a_denied_call_stores_no_title_but_still_stores_the_denial`、`__selftest` |
 | schema 有两份副本：插件 `TABLES_SQL`/`VIEWS_SQL` 与 Python `SCHEMA_SQL`，必须同一提交里一起改 | `test_plugin_and_python_schema_do_not_drift` |
 | 改视图必须升 `SCHEMA_VERSION`，否则老库继续用旧视图（`CREATE VIEW IF NOT EXISTS` 不更新） | `test_migration.py`、`test_schema_sync.py` |
 | 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`，也不得读真实插件日志 | `temp_skills` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch |

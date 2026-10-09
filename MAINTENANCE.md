@@ -64,6 +64,7 @@ not the test, is what changed.
 | Status is monotonic: an observed `error` may override an optimistic `success`, never the reverse. | `UPSERT_*_SQL` CASE branches |
 | MCP records argument **names** only. `mcpArgNames()` calls `Object.keys()` and must never read a value. | `test_plugin.py` |
 | Message bodies are never read, so never stored. | `test_readme.py`, `__selftest` assertion |
+| A permission `title` is never read by the writer either — no scrubbing run is what keeps it out. `skillt scrub-metadata` still lists `title` for rows older builds wrote. | `test_the_writer_never_names_a_permission_title`, `test_a_denied_call_stores_no_title_but_still_stores_the_denial`, `__selftest` |
 | The schema lives in two copies: `TABLES_SQL`/`VIEWS_SQL` (plugin) and `SCHEMA_SQL` (Python). Change both in the same commit. | `test_plugin_and_python_schema_do_not_drift` |
 | A view change requires a `SCHEMA_VERSION` bump, or existing databases keep the old view (`CREATE VIEW IF NOT EXISTS` never updates). | `test_migration.py`, `test_schema_sync.py` |
 | Capture tests are hermetic: nothing may read the real `~/.config/opencode/skills` or the real plugin log. | `temp_skills` fixture, `_isolated()` env, `test_doctor.py` monkeypatches |

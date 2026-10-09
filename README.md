@@ -611,7 +611,11 @@ The full audit — M1 through M24, with reproduction notes — lives in
   `--yes` to strip the keys. Measured 40 such rows in a real 8-day database;
   they were stripped with `scrub-metadata --yes` on 2026-10-01, and the three
   loose backups that still held it were deleted. Re-check with
-  `skillt scrub-metadata` (it must report 0) and see M19. Note that removing the
+  `skillt scrub-metadata` (it must report 0) and see M19. **The other free-text
+  key the scrubber knows about — a permission `title` — is no longer read at
+  all**: since 2026-10-09 the writer stores none, so a fresh denial cannot
+  reintroduce one, and `title` stays in the scrub list only for rows older builds
+  wrote. Note that removing the
   value is not the same as removing the bytes: under WAL the replaced text keeps
   living in the `-wal` file until a checkpoint, so `--yes` ends with
   `wal_checkpoint(TRUNCATE)` and reports when the database is too busy to
