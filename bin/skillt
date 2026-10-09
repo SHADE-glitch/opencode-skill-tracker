@@ -4,8 +4,10 @@
 #   skillt                      launch the interactive TUI
 #   skillt stats|top|show|recent|delete|clear|backup|vacuum
 #                               delegate to the legacy CLI (skill-stats.py)
-#   skillt insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor|config
+#   skillt insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor|config|prune-usage
 #                               headless mode of skill-tui.py (no textual needed)
+#                               `prune-usage` deletes rows: dry-run by default, and
+#                               --yes writes a backup before it removes anything
 #   skillt help                 show the legacy CLI help
 #
 # Written in bash on purpose: it must still run and print a useful error when
@@ -51,8 +53,10 @@ SYS_PY="$(command -v python3 || true)"
 # may appear before OR after the subcommand: `skillt --json top` == `skillt top --json`.
 #
 # NOTE: the value-taking flag list below must stay in sync with the parsers in
-# skill-tui.py (--db --days --min-uses --limit --out --freshness-days --recent-rows) and
-# skill-stats.py (--db --limit).
+# skill-tui.py (--db --days --min-uses --limit --out --freshness-days --recent-rows
+# --keep-days --keep-versions) and skill-stats.py (--db --limit).
+# `test_settings_documented.py` compares that list against the settings registry, so
+# this comment is no longer the only thing keeping it honest.
 cmd=""
 skip=0
 cli=0
@@ -62,7 +66,7 @@ for t in "$@"; do
     rest+=("$t"); skip=0; continue
   fi
   case "$t" in
-    --db|--days|--min-uses|--limit|--out|--freshness-days|--recent-rows) rest+=("$t"); skip=1 ;;
+    --db|--days|--min-uses|--limit|--out|--freshness-days|--recent-rows|--keep-days|--keep-versions) rest+=("$t"); skip=1 ;;
     --cli) cli=1 ;;
     -h|--help) cmd="help" ;;
     --*) rest+=("$t") ;;
@@ -76,7 +80,7 @@ done
 # subcommands below always pass --cli through to skill-tui.py.
 if [ "$cli" -eq 1 ] && [ -z "$cmd" ]; then
   echo "skillt: --cli requires a subcommand" >&2
-  echo "  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor|config" >&2
+  echo "  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor|config|prune-usage" >&2
   exit 2
 fi
 
@@ -103,7 +107,7 @@ case "$cmd" in
     exec "$SYS_PY" "$SCRIPTS/skill-stats.py" "$cmd" "${rest[@]+"${rest[@]}"}"
     ;;
 
-  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor|config)
+  insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|plugins|agentos|claude-mem|auto-backup|doctor|config|prune-usage)
     py="$SYS_PY"
     [ -x "$VENV_PY" ] && py="$VENV_PY"
     exec "$py" "$SCRIPTS/skill-tui.py" --cli "$cmd" "${rest[@]+"${rest[@]}"}"

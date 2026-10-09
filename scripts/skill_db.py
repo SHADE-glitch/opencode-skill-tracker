@@ -1869,6 +1869,175 @@ def scrub_metadata(conn, keys=METADATA_SCRUB_KEYS, dry_run: bool = True) -> dict
 
 
 # ---------------------------------------------------------------------------
+# Row-level retention — the same dry-run shape as scrub_metadata, the same
+# "plan is a pure SELECT" rule as plan_retention above.
+# ---------------------------------------------------------------------------
+
+# The three streams `skillt doctor` calls usage, and the three this deletes.
+USAGE_STREAMS = ("skill_usage", "mcp_usage", "plugin_usage")
+
+# `subagent_usage` is deliberately **not** in that list. Its rows are events, not
+# calls — the spawn record is the only witness that a subagent ran at all (README
+# M24) — and they grow by task spawns rather than by tool calls, so the volume that
+# makes row retention necessary elsewhere does not exist here. Saying which table is
+# excluded is also the point: a silent omission reads like a bug in the next audit.
+RETENTION_EXCLUDED = ("subagent_usage",)
+
+# A timestamp this tool wrote is `YYYY-MM-DD…`; anything else is a row nobody can
+# date. Comparing strings that are not dates against a cutoff is not a no-op — an
+# empty string sorts before every real timestamp, so `WHERE timestamp < cutoff`
+# deletes it as "ancient". The shape test is the guard, and a row that fails it is
+# counted (`undated`) and kept.
+_DATED_GLOB = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*"
+
+# Newest-first per skill, so "keep at most N" is a filter on the row number rather
+# than a Python-side grouping of the whole table. `id DESC` breaks ties because two
+# versions recorded in the same millisecond would otherwise order arbitrarily.
+_OVER_N_VERSIONS_SQL = """
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+           PARTITION BY skill_name
+           ORDER BY recorded_at DESC, id DESC
+         ) AS rn
+  FROM skill_versions
+  WHERE recorded_at GLOB :dated
+)
+SELECT id FROM ranked WHERE rn > :keep
+"""
+
+
+def _check_retention_number(name: str, value) -> int:
+    """0 means off, a negative means "delete the table" — so refuse it here."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an int (0 = off), got {value!r}")
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0 (0 = off); a negative would match "
+                         f"every row, got {value}")
+    return value
+
+
+def _retention_cutoff(conn, days: int) -> str:
+    """The ISO string `days` ago, produced by SQLite so the format is not restated."""
+    return conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)",
+                        (f"-{int(days)} days",)).fetchone()[0]
+
+
+def _retention_targets(conn, usage_days: int, max_versions: int) -> dict:
+    """The ids that would go, per table, plus what could not be dated.
+
+    One function behind both the plan and the delete: if `--dry-run` ran a different
+    query than `--yes`, the count it printed would be a prediction rather than a
+    measurement.
+    """
+    ids: dict[str, list[int]] = {}
+    undated = 0
+    if usage_days > 0:
+        cutoff = _retention_cutoff(conn, usage_days)
+        for table in USAGE_STREAMS:
+            if not _table_exists(conn, table):
+                continue
+            ids[table] = [r[0] for r in conn.execute(
+                f"SELECT id FROM {table} WHERE timestamp GLOB ? AND timestamp < ?",
+                (_DATED_GLOB, cutoff),
+            )]
+            undated += conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE timestamp NOT GLOB ?",
+                (_DATED_GLOB,),
+            ).fetchone()[0]
+    if _table_exists(conn, "skill_versions"):
+        undated += conn.execute(
+            "SELECT COUNT(*) FROM skill_versions WHERE recorded_at NOT GLOB ?",
+            (_DATED_GLOB,),
+        ).fetchone()[0]
+    if max_versions > 0 and _table_exists(conn, "skill_versions"):
+        ids["skill_versions"] = [r[0] for r in conn.execute(
+            _OVER_N_VERSIONS_SQL, {"dated": _DATED_GLOB, "keep": max_versions})]
+    return {"ids": ids, "undated": undated}
+
+
+def _retention_shape(conn, usage_days, max_versions) -> dict:
+    """The shared report: counts by table, totals, and which tables were considered."""
+    usage_days = _check_retention_number("usage_days", usage_days)
+    max_versions = _check_retention_number("max_versions", max_versions)
+    present = [t for t in USAGE_STREAMS if _table_exists(conn, t)]
+    if _table_exists(conn, "skill_versions"):
+        present.append("skill_versions")
+
+    targets = _retention_targets(conn, usage_days, max_versions)
+    by_table = {t: len(targets["ids"].get(t, [])) for t in present}
+    usage_rows = sum(n for t, n in by_table.items() if t in USAGE_STREAMS)
+    version_rows = by_table.get("skill_versions", 0)
+    return {
+        "usage_days": usage_days,
+        "max_skill_versions": max_versions,
+        "enabled": usage_days > 0 or max_versions > 0,
+        "tables_present": present,
+        "excluded": list(RETENTION_EXCLUDED),
+        "by_table": by_table,
+        "usage_rows": usage_rows,
+        "version_rows": version_rows,
+        "total": usage_rows + version_rows,
+        "undated": targets["undated"],
+        "_targets": targets,
+    }
+
+
+def plan_usage_retention(conn, usage_days: int, max_versions: int) -> dict:
+    """Which rows *would* be deleted, computed by SELECT only. Strictly read-only.
+
+    `usage_days = 0` and `max_versions = 0` are the shipped defaults and mean off:
+    nothing is scheduled, and the caller says so rather than printing a zero-length
+    list that looks like an empty verdict.
+    """
+    shape = _retention_shape(conn, usage_days, max_versions)
+    shape.pop("_targets", None)
+    return shape
+
+
+def prune_usage(conn, usage_days: int, max_versions: int, dry_run: bool = True) -> dict:
+    """Delete rows past the retention window. Read-only unless `dry_run` is False.
+
+    Every guard here exists because this is the one path in the project that removes
+    recorded history: the numbers come from the same SELECT the delete uses, the
+    whole delete is one transaction (`_write_txn`) so a crash cannot leave half a
+    timeline gone, and the rows nobody can date stay. A backup is the caller's job —
+    `skillt prune-usage --yes` takes one first and refuses to continue if it fails.
+    """
+    shape = _retention_shape(conn, usage_days, max_versions)
+    targets = shape.pop("_targets")
+    ids = targets["ids"]
+
+    deleted = {"usage": 0, "versions": 0, "total": 0}
+    checkpointed = None  # None = nothing was written, so nothing needs folding in
+    if not dry_run and ids:
+        with _write_txn(conn):
+            for table, row_ids in ids.items():
+                if not row_ids:
+                    continue
+                # Chunked so a huge plan cannot exceed SQLite's parameter limit.
+                for i in range(0, len(row_ids), 500):
+                    chunk = row_ids[i:i + 500]
+                    marks = ",".join("?" * len(chunk))
+                    cur = conn.execute(
+                        f"DELETE FROM {table} WHERE id IN ({marks})", chunk)
+                    n = cur.rowcount or 0
+                    deleted["total"] += n
+                    if table == "skill_versions":
+                        deleted["versions"] += n
+                    else:
+                        deleted["usage"] += n
+        checkpointed = checkpoint_wal(conn)
+
+    return {
+        "dry_run": dry_run,
+        "deleted": deleted,
+        "by_table": shape["by_table"],
+        "plan": shape,
+        "checkpointed": checkpointed,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Health report (read-only) — active / stale / unused + risk flags
 # ---------------------------------------------------------------------------
 HEALTH_ACTIVE_DAYS = 30

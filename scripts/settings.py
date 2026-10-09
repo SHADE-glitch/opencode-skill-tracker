@@ -78,6 +78,22 @@ REGISTRY = (
         "最新一条记录超过多少天，`doctor` 就提示采集可能停了。一周没动静和采集器坏了，"
         "从库里看是一样的。",
     ),
+    _spec(
+        "retention.usage_days", 0, 0, "--keep-days",
+        "Delete usage rows older than this many days. **0 = off: nothing is ever "
+        "deleted.** `skillt prune-usage` lists the rows it would remove and only "
+        "removes them with `--yes`, which first writes a backup and stops if that "
+        "backup fails.",
+        "删除早于这么多天的用量行。**0=关闭：什么都不删。** `skillt prune-usage` 先列出要删什么，"
+        "只有加了 `--yes` 才动手，而 `--yes` 会先写一份备份，备份失败就停下来。",
+    ),
+    _spec(
+        "retention.max_skill_versions", 0, 0, "--keep-versions",
+        "Keep at most this many `skill_versions` rows per skill (0 = off). The table "
+        "gains one row every time a SKILL.md's content changes and never loses one.",
+        "每个 skill 最多保留多少条 `skill_versions`（0=关闭）。这张表每次 SKILL.md 内容变化就多"
+        "一行，从不减少。",
+    ),
 )
 
 _BY_KEY = {s["key"]: s for s in REGISTRY}

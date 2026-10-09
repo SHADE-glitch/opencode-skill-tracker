@@ -320,6 +320,64 @@ def _cli_scrub_metadata(conn, args) -> int:
     return 0
 
 
+def _cli_prune_usage(conn, args) -> int:
+    """`skillt prune-usage` — delete rows past the retention window, off by default.
+
+    The dry run is the default, and its numbers come from the same SELECT the delete
+    uses: this is the only command in the tool that removes recorded history, so a
+    count that merely looked like the outcome would be the worst kind of report. A
+    backup is taken by the caller before `--yes` reaches this function, and a failed
+    backup means no delete.
+    """
+    res = db.prune_usage(conn, usage_days=args.keep_days,
+                         max_versions=args.keep_versions, dry_run=not args.yes)
+    plan = res["plan"]
+
+    if args.json:
+        doc = dict(plan)
+        doc.update({"dry_run": res["dry_run"], "deleted": res["deleted"],
+                    "checkpointed": res["checkpointed"],
+                    "note": "deleting rows frees pages; the file does not shrink "
+                            "until `skillt vacuum`"})
+        print(json.dumps(doc, ensure_ascii=False, indent=2))
+        return 0
+
+    if not plan["enabled"]:
+        print("Retention is off: both `retention.usage_days` and "
+              "`retention.max_skill_versions` are 0, so nothing is scheduled.")
+        print("Arm one with `skillt config set retention.usage_days 365`, or pass "
+              "--keep-days N here. Either way this command lists the rows first, "
+              "and only --yes deletes them (after a backup).")
+        return 0
+
+    counts = "  ".join(f"{t}={n}" for t, n in plan["by_table"].items())
+    window = (f"older than {plan['usage_days']} day(s)" if plan["usage_days"]
+              else "no age limit")
+    versions = (f"beyond the newest {plan['max_skill_versions']} per skill"
+                if plan["max_skill_versions"] else "every version kept")
+    print(f"Retention: {window}  ·  skill_versions {versions}")
+    print(f"  tables: {', '.join(plan['tables_present'])}")
+    print(f"  never considered: {', '.join(plan['excluded'])}"
+          "  (events, not calls — the spawn record is the only witness)")
+    if plan["undated"]:
+        print(f"  {plan['undated']} row(s) have a timestamp that will not parse; "
+              "they are kept, because \"older than N days\" is a claim about a "
+              "date we do not have")
+
+    if res["dry_run"]:
+        print(f"[dry-run] would delete {plan['total']} row(s): {counts}")
+        print("Nothing was written. Re-run with --yes to apply; a backup is taken "
+              "first and the delete is one transaction.")
+        return 0
+
+    print(f"deleted {res['deleted']['total']} row(s): {counts}")
+    print("  rows are gone; the file does not shrink until `skillt vacuum`.")
+    if res["checkpointed"] is False:
+        print("  warning: the WAL could not be checkpointed (database busy) — "
+              "retry later or run `skillt vacuum` when OpenCode is closed.")
+    return 0
+
+
 def _flat_bits(node, prefix=""):
     """`queueDepth=48 · chroma.connected=yes`, booleans spelled out."""
     bits = []
@@ -1215,7 +1273,8 @@ def cli_main(args) -> int:
         print(f"skillt: cannot open database {args.db}: {e}", file=sys.stderr)
         return 1
     try:
-        if args.command in ("sync", "cleanup-selftest", "scrub-metadata", "doctor"):
+        if args.command in ("sync", "cleanup-selftest", "scrub-metadata", "doctor",
+                            "prune-usage"):
             try:
                 db.ensure_schema(conn)
             except Exception as e:  # noqa: BLE001 - never hard-fail the CLI
@@ -1265,6 +1324,21 @@ def cli_main(args) -> int:
                     print(f"warning: backup failed, aborting: {e}", file=sys.stderr)
                     return 1
             return _cli_scrub_metadata(conn, args)
+        if args.command == "prune-usage":
+            if args.yes:
+                # The discipline `cleanup-selftest` and `scrub-metadata` already keep:
+                # probe first, so a database with nothing to delete never gains a
+                # pointless backup file — and never *needs* one.
+                if not db.plan_usage_retention(
+                        conn, args.keep_days, args.keep_versions)["total"]:
+                    return _cli_prune_usage(conn, args)
+                try:
+                    path = db.backup_db(conn)
+                    print(f"Backup written to {path}")
+                except Exception as e:  # noqa: BLE001
+                    print(f"warning: backup failed, aborting: {e}", file=sys.stderr)
+                    return 1
+            return _cli_prune_usage(conn, args)
         if args.command == "doctor":
             return _cli_doctor(conn, args)
         print(f"unknown --cli command: {args.command}", file=sys.stderr)
@@ -2887,6 +2961,7 @@ class Args:
 CLI_COMMANDS = {
     "insight", "export", "sync", "cleanup-selftest", "scrub-metadata", "health",
     "mcp", "plugins", "agentos", "claude-mem", "auto-backup", "doctor", "config",
+    "prune-usage",
 }
 
 
@@ -2924,6 +2999,11 @@ def parse_args(argv):
     a.dry_run = False
     a.prune_orphans = False
     a.freshness_days = settings["doctor.freshness_days"]
+    # The two delete knobs resolve through the same chain as everything else, so
+    # `skillt config set retention.usage_days 365` arms retention without a flag and
+    # a flag overrides it for one run. Both default to 0, which means off.
+    a.keep_days = settings["retention.usage_days"]
+    a.keep_versions = settings["retention.max_skill_versions"]
     a.yes = False
     a.no_sync = False
     a.positional = []
@@ -2951,7 +3031,8 @@ def parse_args(argv):
         elif t == "--no-sync":
             a.no_sync = True
         elif t in ("--db", "--days", "--min-uses", "--limit", "--out",
-                   "--freshness-days", "--recent-rows"):
+                   "--freshness-days", "--recent-rows", "--keep-days",
+                   "--keep-versions"):
             i += 1
             if i >= len(argv):
                 raise SystemExit(f"{t} requires a value")
@@ -2968,6 +3049,11 @@ def parse_args(argv):
                 a.recent_rows = _int_arg("--recent-rows", val, minimum=1)
             elif t == "--freshness-days":
                 a.freshness_days = _int_arg("--freshness-days", val, minimum=1)
+            elif t == "--keep-days":
+                # 0 is a value here ("off"), so the floor is 0 and not 1.
+                a.keep_days = _int_arg("--keep-days", val, minimum=0)
+            elif t == "--keep-versions":
+                a.keep_versions = _int_arg("--keep-versions", val, minimum=0)
             else:
                 a.out = val
         elif t in ("-h", "--help"):
@@ -3013,7 +3099,7 @@ def main(argv):
             raise SystemExit(
                 "--cli requires a subcommand: "
                 "insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|"
-                "plugins|agentos|claude-mem|auto-backup|doctor|config"
+                "plugins|agentos|claude-mem|auto-backup|doctor|config|prune-usage"
             )
         return cli_main(args)
 

@@ -264,11 +264,15 @@ skillt export  [--out FILE] [--pretty] [--force] [--skills-only]
 skillt sync    [--dry-run] [--prune-orphans] [--json]
 skillt health  [--json] [--limit N]
 skillt mcp     [--json] [--limit N]
+skillt plugins [--json] [--limit N]
 skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
 skillt scrub-metadata [--yes] [--json] [--limit N]
+skillt prune-usage [--keep-days N] [--keep-versions N] [--yes] [--json]
 skillt agentos   [--json] [--limit N]
+skillt claude-mem [--json] [--days N]
+skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
 ```
 
 - `insight` — most used / fastest growing / **never used** / dormant / highest
@@ -328,6 +332,16 @@ skillt agentos   [--json] [--limit N]
   `worker.version` and the free-text `details` are dropped. None of it is written
   into the tracker's tables, and none of it happens inside the TUI: the Plugins
   page prints the same log-file numbers as one dim line and never opens a socket.
+- `prune-usage` — the only command here that **deletes recorded history**. Off by
+  default: `retention.usage_days` and `retention.max_skill_versions` are both `0`, and
+  with either at 0 nothing is scheduled. It lists the rows it would remove and deletes
+  them only with `--yes`, which writes a backup first and aborts if that backup fails;
+  the delete is one transaction. The count in the dry run comes from the same SELECT the
+  delete uses, so it is a measurement and not a prediction. Rows whose timestamp will not
+  parse are **kept** and reported as `undated` — "older than N days" is a claim about a
+  date we do not have. `subagent_usage` is never in the delete set: those rows are events,
+  not calls, and the spawn record is the only witness that a subagent ran (M24). Deleting
+  rows frees pages; the file does not shrink until `skillt vacuum`.
 - `agentos` — the **AgentOS advisor**, aggregated read-only from its own store.
   The advisor registers no tool and no command, so it can never appear in the
   usage tables above: it produces **zero usage rows** there, and
@@ -398,7 +412,8 @@ skillt config list --json
 | `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | how many events the Recent timeline lists. Older events stay in the database; only what the screen holds changes |
 | `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | how few calls make a skill "worth advising about" in `skillt insight` |
 | `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | how old the newest recorded call may get before `doctor` warns that capture looks stalled — and the same clock the claude-mem line is judged by |
-
+| `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0` = off: nothing is ever deleted.** Usage rows older than this many days become the delete set of `skillt prune-usage`, which lists them first and only removes them with `--yes`, after a backup |
+| `retention.max_skill_versions` | `0` | `--keep-versions` | `OPENCODE_SKILL_TRACKER_RETENTION_MAX_SKILL_VERSIONS` | **`0` = off.** Keep at most this many `skill_versions` rows per skill — the newest N, so retention cannot eat the current content. The table gains a row per content change and never loses one |
 The environment name is **derived by rule**: uppercase the key, replace `.` with
 `_`, prefix `OPENCODE_SKILL_TRACKER_`. There is no second list to keep in step, and
 `scripts/tests/test_settings_documented.py` fails the build if a key, its flag or

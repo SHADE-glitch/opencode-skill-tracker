@@ -181,8 +181,10 @@ skillt auto-backup [--dry-run] [--json]
 skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
 skillt scrub-metadata [--yes] [--json] [--limit N]
+skillt prune-usage [--keep-days N] [--keep-versions N] [--yes] [--json]
 skillt agentos    [--json] [--limit N]
 skillt claude-mem [--json] [--days N]
+skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
 ```
 
 - `insight`：最常使用 / 增长最快 / **从未使用** / 长期未使用 / 失败率最高，并附观察样本（session 数与天数）。
@@ -198,6 +200,7 @@ skillt claude-mem [--json] [--days N]
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
 - `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
 
+- `prune-usage`：**本项目里唯一会删掉已记录历史的一条命令**。默认关：`retention.usage_days` 与 `retention.max_skill_versions` 都是 `0`，只要有一个是 0 就没有任何东西被排入删除。它先列出要删的行，只有加 `--yes` 才真删，而 `--yes` 先写一份备份、备份失败就中止；整个删除是**一个事务**。dry-run 报的数与真删的数出自同一条 SELECT，所以那是测量不是预测。时间戳解析不出来的行**保留**并计为 `undated`——"早于 N 天"是对一个我们并没有的日期的断言。`subagent_usage` 永远不在删除集合里：那些行是事件而非调用，启动记录是子 agent 跑过的唯一见证（M24）。删行只是释放页，文件要等 `skillt vacuum` 才变小。
 - `agentos`：**只读**聚合 AgentOS 顾问插件**它自己的库**。顾问**不注册任何工具**、也**不注册任何命令**，所以 `skill_usage` / `mcp_usage` / `plugin_usage` 里指名它的记录是 **0 行**，`plugin_inventory` 只有 1 行且工具列表与命令列表都是空的；这一项改读它的 `store/aos.db` 与 `store/loops/*.json`，而且现在是唯一读它的入口（TUI 已无 Advisor 页）。需要 `AGENT_OS_ROOT`（或 `OPENCODE_SKILL_TRACKER_AGENTOS_DB`），没配就明说"未聚合"。每个 loop 给出逐段状态与耗时、最慢段相对顾问单次预算是否超支、同一会话在 tracker 里到底产生过多少可度量的工具调用（这一列最有用），以及召回的记忆**是否真的进了提示**——显示成 `searched 3 / recalled 3 / reached the prompt 4 (1234 chars)`。`memory_ids` 与 `injected_memory_ids` 刻意分开：假设(hypothesis)可以单独被注入，合并成一个数就把这件事藏掉了。**从不写那个库**；字段是逐个白名单投影出来的，所以 loop 里的 `task_text`（任务原文）和各阶段 payload 一律读不到。见 M21。
 
 参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
@@ -245,7 +248,8 @@ skillt config list --json
 | `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | Recent 时间线列出多少条事件。更早的事件仍在库里，这里只改屏幕装多少 |
 | `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | 一个 skill 至少被调用多少次才进入 `skillt insight` 的建议范围 |
 | `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | 最新一条记录超过多少天，`doctor` 就提示采集可能停了；claude-mem 那一行用的是同一把尺 |
-
+| `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0`=关闭：什么都不删。** 早于这么多天的用量行进入 `skillt prune-usage` 的删除集合；这条命令先列出来，只有加 `--yes` 才删，而 `--yes` 会先写备份 |
+| `retention.max_skill_versions` | `0` | `--keep-versions` | `OPENCODE_SKILL_TRACKER_RETENTION_MAX_SKILL_VERSIONS` | **`0`=关闭。** 每个 skill 最多保留多少条 `skill_versions`——按**最新**的 N 条留，所以保留策略不会吃掉当前内容。这张表每次内容变化多一行、从不减少 |
 环境变量名是**按规则推导**的：键转大写、`.` 换成 `_`、前缀 `OPENCODE_SKILL_TRACKER_`。
 所以不存在第二份需要人工同步的清单；而只要有键、参数或默认值没写进**任何一份**
 README，`scripts/tests/test_settings_documented.py` 就把构建判红——正是这份缺失的闸门

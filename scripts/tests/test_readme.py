@@ -174,6 +174,10 @@ def test_readme_documents_commands_and_backup_ops():
         "skillt health", "skillt auto-backup", "skillt doctor", "skillt sync",
         "skillt insight", "skillt export", "skillt cleanup-selftest",
         "skillt scrub-metadata", "skillt agentos", "skillt claude-mem",
+        # The two that arrived with the settings layer: `config` is the only way to
+        # edit the file, and `prune-usage` is the only command that deletes history,
+        # so both have to be findable in the language the reader reads.
+        "skillt prune-usage", "skillt config",
     ):
         assert cmd in text, f"command not documented: {cmd}"
     # the new headless surface must be documented where readers look for it
