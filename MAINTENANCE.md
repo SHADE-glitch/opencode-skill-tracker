@@ -116,6 +116,10 @@ skillt agentos                   # advisor loops: over-budget stages, errors, wh
                                  # the recalled memory reached the prompt, and the
                                  # join with measured usage (needs AGENT_OS_ROOT)
 wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
+stat -c %s ~/.config/opencode/logs/skill-tracker.log   # bytes: doctor reads only the
+                                 # first TRACKER_LOG_BYTES_CAP (4 MiB) and then calls
+                                 # its own counts a floor, so this number is about the
+                                 # file, never about how long doctor takes
 ```
 
 A redaction removes the *value*; under WAL the *bytes* stay in the `-wal` file
@@ -485,7 +489,7 @@ same `COALESCE` freezes `agent`, so the Agents page counts the agent a session
 | `branchByDir` negative cache has no TTL (M16) | small | touches the capture path; AGENTS.md requires tests for capture changes, and the dominant cause of nulls here is non-git session dirs |
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
-| No log rotation (M17) | small | needs a policy decision (rotate vs. cap vs. rely on journald) |
+| No log rotation (M17) | small | the read is capped now (`TRACKER_LOG_BYTES_CAP`); the file still only grows, and rotate-vs-journald is still a policy decision |
 | `skillt agentos` re-reads every loop file in `store/loops/` on each call (`--limit N` caps how many are projected, not how many are listed) | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns. It was the Advisor tab that made this a per-keystroke cost; the tab is gone, so the cost is now paid only when the command is run |
 | The advisor digest reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one empties those numbers instead of breaking anything, and `_count_only` refuses to count text. A printed count that used to be a number turning into `-` is the signal |
 | The Plugins page re-reads claude-mem's whole worker log on every repaint — measured 8.2–15.8 ms for all three files | small | Bounded by `CLAUDE_MEM_LOG_BYTES_CAP` (4 MiB), and the page repaints on a tab change or a keypress at most once per `REFRESH_STALE_AFTER_S`. An mtime/size cache would make the line stale in exactly the case it exists for — noticing the syncer *started* failing — and milliseconds are not the freeze that banned HTTP from this path |

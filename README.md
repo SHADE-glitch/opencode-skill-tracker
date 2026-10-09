@@ -632,7 +632,10 @@ The full audit — M1 through M24, with reproduction notes — lives in
 - **M17** The plugin log is never rotated: `~/.config/opencode/logs/skill-tracker.log`
   only grows (measured ~69 lines/day, one per init and one per dispose). It is
   also the only place capture errors appear, which is what
-  `doctor log.errors` reads — clearing it erases that history.
+  `doctor log.errors` reads — clearing it erases that history. The **read** side is
+  now bounded: doctor counts only the first `TRACKER_LOG_BYTES_CAP` (4 MiB, the same
+  bound the claude-mem reader uses) from the start of the file, and says so in the
+  line it prints ("a floor, not a total") — the growth side is still open.
 - **M18** All three upserts keep `metadata = COALESCE(existing, incoming)`. If
   the hook path wrote a row first and the event path arrives later carrying the
   actual error text, `status` is corrected to `error` (the monotonic rule) but

@@ -284,3 +284,18 @@ Evidence L0 2026-10-09: `scripts/tests` 539 passed on all three documented comma
 Cost     A denial's title text can no longer be read back. Nothing ever read it, and `source` still
          names the path that wrote the row
 Commit   ce3c525
+
+### D-035 · 2026-10-09 · perf
+Symptom  `doctor log.errors` read the whole plugin log with a plain `open()` and a per-line loop. That
+         log has no rotation (M17) and grows one line per recorded error forever, so the cheapest
+         diagnostic in the tool slowed down with the file's age — while the claude-mem reader beside it
+         already stopped at `CLAUDE_MEM_LOG_BYTES_CAP`
+Change   Read it through `_read_bounded_text` under a named `TRACKER_LOG_BYTES_CAP`, from the start;
+         when the cap bites, the printed line says how many bytes it covered and calls its own counts
+         a floor. An unreported bound would read as a clean bill of health
+Evidence L0 2026-10-09: `scripts/tests` 541 passed; both new `test_doctor.py` checks were red first
+         (the second failed because no cap existed to aim it at); the live 117,698 B log still reports
+         the same 4 error lines and the same last line
+Cost     Errors past 4 MiB of an unrotated log are no longer counted — bounded, stated, and still
+         reachable by reading the file directly. The growth side stays open until rotation is decided
+Commit   e9086f3

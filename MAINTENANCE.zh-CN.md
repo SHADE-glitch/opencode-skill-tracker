@@ -88,6 +88,9 @@ skillt claude-mem                # claude-mem 自己的账本：它后台采集�
 skillt agentos                   # 顾问 loop：超预算阶段、错误、召回是否真的进了提示、
                                  # 与可度量用量的连接（需要环境里有 AGENT_OS_ROOT）
 wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
+stat -c %s ~/.config/opencode/logs/skill-tracker.log   # 字节数：doctor 只读前 TRACKER_LOG_BYTES_CAP
+                                 # （4 MiB），超出就会自称"下限"。这个数字说明的是文件多大，
+                                 # 不再是 doctor 要跑多久
 ```
 
 清理删掉的是**值**；WAL 模式下旧字节会留在 `-wal` 里直到 checkpoint。这就是
@@ -287,7 +290,7 @@ M1–M23 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英�
 | `branchByDir` 负缓存无 TTL（M16） | 小 | 动采集路径；AGENTS.md 要求改采集必须带测试，且当前 null 的主因是会话目录本身不是 git 仓库 |
 | `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
-| 日志不轮转（M17） | 小 | 需要先定策略（轮转 / 截断 / 交给 journald） |
+| 日志不轮转（M17） | 小 | 读的一侧已封顶（`TRACKER_LOG_BYTES_CAP`），文件本身仍只增不减；轮转 / 截断 / 交给 journald 仍是待定的策略决定 |
 | 每次调用 `skillt agentos` 都会重读 `store/loops/` 下的 loop 文件（`--limit N` 限制的是投影多少条，不是列多少条） | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态。以前让这件事变成“每次按键都要付”的是 Advisor 页，页没了，现在只有跑命令时才付 |
 | 顾问聚合层读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那几个数变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的地方变成 `-` 就是信号 |
 | Plugins 页每次重画都整份重读 claude-mem 的 worker 日志——实测 8.2–15.8 ms | 小 | 上限由 `CLAUDE_MEM_LOG_BYTES_CAP` 兜住，而这一页只在切页、或按键且已过 `REFRESH_STALE_AFTER_S` 时才重画。按 mtime/size 缓存会让这行文本正好在它存在的那个场景上变陈——「发现后台同步开始失败」；这点开销也没到冻住界面的程度 |
