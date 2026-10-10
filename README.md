@@ -1,4 +1,6 @@
-# OpenCode Skill + MCP + Plugin Tracker (`skillt`)
+<p align="right"><a href="README.md"><b>English</b></a> | <a href="README.zh-CN.md">简体中文</a></p>
+
+# 🎯 OpenCode Skill + MCP + Plugin Tracker (`skillt`)
 
 ![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -10,8 +12,6 @@ Record and query how every skill, **every MCP tool** and **every plugin tool /
 command** in [OpenCode](https://opencode.ai) is actually used: what ran, when,
 whether it succeeded, how long it took, and in which project. Everything lands in
 a single local SQLite file — no network, no upload, no conversation content.
-
-**English** · [简体中文](README.zh-CN.md)
 
 ---
 
