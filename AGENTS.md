@@ -138,7 +138,14 @@ shallow clone cannot resolve.
 - **A new verification tier** (e.g. a live/TUI layer) — decide explicitly whether CI runs it; do not
   add it silently.
 - If what CI runs changes, update this section too. CI is a signal, not a gate, until branch protection
-  is enabled — read the result after every push.
+  is enabled — read the result after every push. `gh run watch <id> --exit-status` gives the verdict as
+  an exit code (0 = success), which is how these runs were read; `gh run view <id> --json headSha,conclusion`
+  says **which commit** it judged.
+- **A dated one: `ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19**, read off the runner's own warning
+  on 2026-10-10. If CI turns red around that date with nothing local changed, suspect the image before the
+  code; pinning `runs-on: ubuntu-24.04` is the fallback, and it is a workflow change this section must
+  then record. The same run also warns that `actions/checkout@v4` / `actions/setup-python@v5` are being
+  forced onto Node 24 — harmless today, and the reason a future CI edit may bump those two.
 
 ## Release / version
 
