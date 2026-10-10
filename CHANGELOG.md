@@ -619,3 +619,68 @@ Cost     `doctor` now starts a process on a headless CLI path — the reason it 
          says "cannot ask", not "broken". MAINTENANCE §0 now records two readings
          (3.0 d fresh / no schedule) where it used to record one
 Commit   b56dcc4
+
+### D-049 · 2026-10-10 · fix
+Symptom  `_backup_timer_state()` (added the same round, D-048) read the unit's state
+         from stdout and **fell back to stderr**. Measured with
+         `XDG_RUNTIME_DIR=/nonexistent`: `systemctl --user is-enabled` prints
+         `Failed to connect to user scope bus via local transport: No such file or
+         directory` to stderr, prints **nothing** to stdout and exits 1 — so the
+         fallback returned that sentence as a state. `doctor` then printed a bus error
+         where a unit state belongs, and classified an unreachable manager as
+         "not scheduled", which is a different claim about a different fact
+Change   Only stdout is a state; an empty stdout is unknown whatever the exit code is.
+         `not-found` still arrives on stdout with exit 4, so the case that motivated
+         D-048 is unaffected — the docstring now says which stream is authoritative
+         and why
+Evidence Red first: the new test asserts `_backup_timer_state() is None` against a
+         captured real result object and fails with the bus sentence in the assertion.
+         Then green on both real states of this host: reachable →
+         `skillt-auto-backup.timer: not-found — …`, unreachable → `cannot ask systemd
+         about skillt-auto-backup.timer (no user `systemctl`?) — unknown is not healthy`,
+         `17 PASS / 4 WARN / 0 FAIL` in both. L0 661 passed on `python3` and on the
+         hermetic run
+Cost     A machine whose user manager is down now says so instead of recommending
+         `--with-timer` — which is the right message but a longer one, and a reader
+         who only scans the check name loses that distinction
+Commit   65b57b3
+
+### D-050 · 2026-10-10 · guard
+Symptom  Counting the suite's own subprocess calls found **11 real**
+         `systemctl --user is-enabled skillt-auto-backup.timer` runs leaving three
+         `_doctor_checks` callers — `test_claude_mem._doctor`, the two calls in
+         `test_doctor_reads_a_rotated_log_without_crying_wolf`, and
+         `test_doctor_fails_on_corrupt_database`. None of them stubs the schedule
+         helper, so they passed by reporting whatever this machine happened to be
+         running: green here, a different green on a machine with the timer
+         installed, and AGENTS.md was claiming the capture tests are hermetic
+Change   `conftest.never_query_the_hosts_service_manager` (autouse) guards
+         `subprocess.Popen` — not `run`, because `run`/`call`/`check_output` all
+         build a `Popen` through the module global, so a check added later is caught
+         whichever door it uses. The three callers now stub
+         `_backup_timer_state`, the same way `_healthy_setup` already stubs
+         `_opencode_version`. The guard's scope limit is written down: it cannot see
+         inside the child processes `test_dispatcher.py` spawns
+Evidence Red first, twice. (1) The guard alone, before the stubs: **661 passed, 8
+         errors**, the 8 being exactly the 11 attributed calls. (2) A raising-only
+         guard is not enough, measured rather than argued — with the call-time raise
+         and no teardown record, the same un-stubbed code gave `6 passed`; adding the
+         teardown record gave `6 passed, 6 errors`, because every host question in
+         `doctor` sits inside `except Exception` ("a version check must never break
+         doctor") and turns a thrown guard into a plausible WARN. Both halves are now
+         pinned by `test_the_systemd_tripwire_bites_even_when_a_check_swallows_it`,
+         which provokes the needle (mutating it to `systemctlZZZ` fails it: DID NOT
+         RAISE), replays that swallow, and keeps a `git --version` control so the
+         guard has not become "no subprocess ever". After: 662 passed on `python3`,
+         on `.venv/bin/python`, and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`; the same spy now
+         counts **0** calls. Real-host `skillt doctor` is unchanged —
+         `backups.latest` PASS (3.5 d) beside `backups.scheduled` WARN (`not-found`) —
+         because no production file was touched
+Cost     One more line in every test's teardown, and a stub a future `_doctor_checks`
+         caller must remember — the guard exists so forgetting it is loud. A test that
+         *legitimately* wants to check systemd behaviour must ask for the hits list and
+         clear it, as the tripwire's own test does. MAINTENANCE.md was also carrying
+         two schedule invariant rows saying the same thing (mine, from two sittings);
+         merged, and both checklists' hermeticity rows now name `systemctl`
+Commit   da4ad5f
