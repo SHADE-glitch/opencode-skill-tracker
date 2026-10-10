@@ -558,6 +558,14 @@ python3 -m pytest scripts/tests/test_dispatcher.py -q --collect-only
 664-test suite with exactly those two classes switched off, nothing else skipped, and no
 test that passes on the runner is one that cannot run here.
 
+**Both CI readings line up with the local collection at their own commit.** The run
+before this one (`37722605159`) reports `headSha` **`b57d6b0`** — this round's *starting*
+commit — and its `489 passed / 48 skipped` sums to **537**, which is exactly the local
+L0 baseline recorded at `b57d6b0`. So the 38 commits of this round had **no CI coverage at
+all** until `5c6fa1f` was pushed, and the two totals agree across the two machines at both
+ends of the range. `gh run view <id> --json headSha,conclusion,createdAt` is how that was
+read, not inferred from the run list.
+
 **Do not write this count into a document.** It is the third kind of number (§0 rule
 3): a run, with a Python version, a plugin set and a `bun` binary behind it. AGENTS.md
 bans copying aggregate counts for exactly this reason; the sentence above is allowed
