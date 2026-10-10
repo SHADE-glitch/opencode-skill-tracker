@@ -5,25 +5,33 @@
 
 ## 0. 最后一次实测的机器事实
 
-测量时间 2026-10-01。使用前请重新测量，不要相信这里的数字。
+机器身份（OpenCode、Bun、解释器、textual）在
+[`docs/maintenance/compat-matrix.md`](docs/maintenance/compat-matrix.md) §1；本项目按名字
+依赖的宿主接口在
+[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)；下面这些
+体积、速率、时长全部是**一次运行的结果**，所以搬到了带命令的
+[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md)，不再留在这张表里。
+搬家的理由：清单里的数字会被永久读成「现在」，而这张表原先的两个数字搬家时**已经错了**
+（「约 69 行/天」实测 74.4；「8.2–15.8 ms」实测 12.2–14.0）。
 
 | 项 | 值 |
 |---|---|
-| OpenCode | 1.18.34（`opencode --version`）；内置白名单 2026-10-03 已从宿主端重读，那十四个 id 没变 |
-| 插件 SDK | `@opencode-ai/plugin` 1.18.4 |
+| OpenCode | **跑的是哪个版本是一条读数，不是这份文件能替它固定的东西**——compat-matrix §1 记那四个 pin 和主机当前版本，`skillt doctor` 的 `env.opencode_version` 拿运行版本去比对内置白名单的 pin（`PIN_TOOL_IDS`）。内置白名单 2026-10-03 已从宿主端重读，那十四个 id 没变 |
+| 插件 SDK | `@opencode-ai/plugin` 1.18.4 —— 即 `PIN_SDK_TYPES`，记下来是**因为它和运行的宿主不一致**（M20），不是因为谁 import 它 |
 | 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
 | TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
-| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL；2026-10-04 实测 606,208 字节（2026-10-01 是 592 KiB） |
-| 行数（2026-10-04 19:36 重数，活的） | 44 skills · 2 skill_usage · 2 mcp_usage · 26 plugin_usage · 81 skill_versions · 5 plugin_inventory · **1 subagent_usage**（`auditor` ×1，18:00）——owner 在 16:31 重启了 OpenCode，所以那之后的启动会记，之前的全都没有（M24）。
+| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL——体积、`-wal` 与各表行数：measurements §2 |
+| 行数 | 各表计数与 `metadata` 键普查：measurements §2、§3。这张表里**稳定**的是形状——七张表，`skills` 加四条用量流——以及 `title` 普查读到 **0 个键**这件事（那是 S1 的承诺，由 `test_the_writer_never_names_a_permission_title` 守着）。至于「12 个 surface 里 10 个从没被调用」那条库存读数，最后一次是 2026-10-09 用 `skillt plugins` 读的；要重读就去那条命令，别在这里抄 |
 | Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2`。2026-10-04 加 `subagent_usage` 时**没有** bump：这个计数器是为视图存在的（`CREATE VIEW IF NOT EXISTS` 改不了已有视图），而这次加的是表，`ensure_schema()` 每次都会幂等建表 |
 | 导出文档 | `schema_version = 6`（4 = metadata 走白名单，5 = 多了 `plugin_inventory.scope`，6 = 新增 `subagent_usage` 这个键）。`PRAGMA user_version` / `SCHEMA_VERSION` 仍是 **2**：这个计数器存在，是因为 `CREATE VIEW IF NOT EXISTS` 改不了已有的视图，而这一轮加的是**表**、不是视图——`ensure_schema()` 每次都会跑建表 DDL，所以不该 bump |
-| 测试 | 530 passed / 0 failed（2026-10-04 重数，在覆盖补测这一轮之后：新增 `test_skill_stats.py` 与 `test_skill_db_helpers.py`，TUI 写操作/按钮用例，以及补齐的 `skill_db` 叶子助手、迁移竞态、备份与健康分支）；shipped `__selftest()` 是 62/62 条断言，`test_selftest_is_green_end_to_end` 低于 62 就判失败—— `python3 -m pytest scripts/tests -q` **和** `.venv/bin/python -m pytest scripts/tests -q` 两条路径都要绿；再用 `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` 跑一遍以证明测试是封闭的 |
-| AgentOS 顾问存储（2026-10-03 实测；那是另一个进程的状态，会变） | `/home/shade/Public/AgentOS/store/aos.db`——22 条 telemetry、51 条召回（覆盖 8 条记忆）、14 条记忆、**83 个 loop 文件**。阶段耗时已经不是小数：最新的 loop 里 `validate` 跑到 31–37 秒，是 1200ms 预算的约 30 倍。**TUI 里已经没有 Advisor 页**（2026-10-03 按 owner 的要求移除）；`skillt agentos` 现在是唯一打开那个库的入口，`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它。`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`；2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。某个 loop 是 live 测试样本还是真实用量，不由本项目代答；这里对那个库只读，最新的 loop 自己带着 `model` 标签。 |
-| claude-mem 邻居（2026-10-04 15:56 重测；那是另一个进程的状态，会变） | `~/.claude-mem/`——它的账本：403 条 observation，最新一行距今 0.0 天。它自己的文件：`inject-trace.log` 157 行 → **103 次注入**（59 行裸的 + 44 行带 `source=`）、40 loaded、`unrecognized` 0；worker 日志**已经翻到 `logs/claude-mem-2026-10-04.log`**（374,014 字节 / 2,463 行）→ INFO 2,290 · WARN 168 · **ERROR 5**，`unparsed` 0——读取端按 mtime 挑了最新那个带日期的文件，把 2026-10-03 那份 609,860 字节的日志（连同它的 57 条 ERROR）留在了原地，这就是 `test_only_the_dated_worker_log_is_read` 在真机上的样子；`worker.pid` → 进程活着、端口 37700、`startToken` 从不读。读这三样实测 **8.2–15.8 ms**（跑五次）——那就是 Plugins 页那一行 dim 文本每次重画要付的钱，也是为什么 `claude_mem_http` 绝不在这条路上被调用 |
-| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`，11.3 天 1138 行（首行 2026-09-23）。里面有 **4 行 `[err]`，全是 `selftest FAIL: …`，是本项目的自测在 2026-10-04 07:32Z 写进去的**——那时子 agent 的断言还是红的。`doctor` 的 `log.errors` 会因此 WARN，而它们是测试残留、不是采集故障。**它们暴露的缺口已经修掉**（2026-10-04）：`__selftest()` 现在会把自己的日志改写到临时库旁边的 `skill-tracker-selftest.log`，除非用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定别的路径——所以文档里那条手工配方再也碰不到这个文件。验证方式是照原配方跑一次并对比这份日志的 sha256（前后一致），再**故意跑一次失败的自测**，它的 `[err]` 行落在隔离文件里。那 4 行历史残留仍在，它们早于本次修复，不是采集故障；别手工去删活日志里的行。 |
-| 备份定时器 | **已启用** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `enabled`，下次 00:09 CST 每日触发，`Linger=yes`。当初手工整跑 service 时，它只有 `auto-backup` 一条命令（exit 0、生成备份、删除 0）。现在这个单元多了第二条 `ExecStart`：`rotate-log --yes`——**改完之后没有再用 systemd 起过这个两条命令的单元**：`systemd-analyze verify --user` 通过，命令行本身用已安装的启动器手工跑过一遍（`below the cap; nothing to rotate`，日志 sha256 未变）。手工起 service 还会按保留策略真的清理备份，所以那是主人该做的事，不是例检 |
-| 散落备份（M19） | `~/.local/share/opencode/` 里有 5 个**在 `BACKUP_DIR` 之外**的文件，保留策略永不到达；其中 2026-10-01 之前的 4 个仍含 M14 原文 |
-| 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份），这个删除会在下一次夜间任务发生 |
+| 测试 | 三条命令、按这个顺序、各自证明什么：measurements §10。通过数是一次**运行**的结果（系统解释器、venv、CI 三个数不一样，而 AGENTS.md 禁止把这种总数抄进文档），所以这里不再写它——这张行写下时是 530，现在早就不是 530。稳定的部分：shipped `__selftest()` 的下限由 `test_selftest_is_green_end_to_end` 钉住，配方在 measurements §5，而第三条命令（`OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`）才是证明这轮绿没有拿本机真实文件换来的那一条 |
+| AgentOS 顾问存储（那是另一个进程的状态，会变） | `/home/shade/Public/AgentOS/store/aos.db` 加 `store/loops/*.json`，只经 `skill_db_agentos` 打开、只读 URI、绝不上重画路径——规则与理由在 compat-matrix §4 和 `test_module_boundaries.py`。它的事件数/行数/loop 数、各阶段耗时都是读数，所以不存这里，要就用 `skillt agentos` 重读。**稳定的是**：TUI 里已经没有 Advisor 页（2026-10-03 按 owner 的要求移除），`test_tui_never_reads_the_advisor_store` 钉住没有任何页签会去读它；`skillt agentos` 需要运行环境里有 `AGENT_OS_ROOT`，2026-10-01 起它已经 `export` 在 `~/.zshrc` 里，所以交互式 shell 有，非交互环境（cron、systemd、`env -i`）得自己设。某个 loop 是 live 测试样本还是真实用量，不由本项目代答；最新的 loop 自己带着 `model` 标签 |
+| claude-mem 邻居（那是另一个进程的状态，会变） | `~/.claude-mem/`——它账本的计数、`inject-trace.log` 的行数、worker 日志的分级计数都是**对别人正在追加的文件做一次读数**，所以跟着命令走：读取代价在 measurements §6，读数本身在 `skillt claude-mem`。稳定的是：读取端按 mtime 挑**最新那个带日期**的 worker 日志、其余不动（`test_only_the_dated_worker_log_is_read`）、外来日志行只数不读、`~/.claude-mem/settings.json` 永不打开、`startToken` 永不读。读这三样的代价就是 Plugins 页那一行 dim 文本每次重画要付的钱，也是为什么 `claude_mem_http` 绝不在这条路上被调用——这个数随邻居日志的大小移动，所以要重测而不是引用。它的库存行与活动行说的是两件事：`claude-mem-inject.js` 注册的那些工具可以一直是 0 次调用，而注入行仍然反映当前状态 |
+| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`。体积、行数、行/天、错误行数——都是增长读数，配方在 measurements §4。这里留它**内容的形状**。里面有 **4 行 `[err]`，全是 `selftest FAIL: …`，是本项目的自测在 2026-10-04 07:32Z 写进去的**——那时子 agent 的断言还是红的。`doctor` 的 `log.errors` 会因此 WARN，而它们是测试残留、不是采集故障，这就是它们还在、也仍然被报出来的原因。**它们暴露的缺口已经修掉**（2026-10-04）：`__selftest()` 现在会把自己的日志改写到临时库旁边的 `skill-tracker-selftest.log`，除非用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定别的路径——所以文档里那条手工配方再也碰不到这个文件；2026-10-09 照 measurements §5 重跑过一次并对比这份日志的 sha256，前后一致。别手工去删活日志里的行 |
+| 备份定时器 | **截至 2026-10-10 00:07 是「没装」** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`，`~/.config/systemd`、`/etc/systemd`、`~/.local/share/systemd` 下都搜不到任何 `skillt*` 单元文件，而 `journalctl --user -u skillt-auto-backup.timer` 停在 `Stopped … 2026-10-07 21:48:34`。service 最后一次成功运行是 **2026-10-07 00:18**，所以 `backups.latest` 现在是 3.0 天，并在 **2026-10-14** 前后越过它的 7 天 WARN 线。`Linger=yes` 仍然开着，也就是说会话这边没有任何东西阻止这个单元——它就是没了。**这一轮没人删它，这一轮也没人把它装回去**：装 systemd 单元是本项目之外的改动，而 S7 主人拍板的是 `install.sh` 把它藏在 `--with-timer` 后面。要重新上弦就 `./install.sh --with-timer`，然后看 `systemctl --user status skillt-auto-backup.timer` 和 `skillt doctor` 的 `backups.latest`。关于这个单元本身**已验证**的是：`systemd-analyze verify --user` 接受这两个文件，两条 `ExecStart` 的完整命令行用已安装的启动器手工跑过（`below the cap; nothing to rotate`，日志 sha256 未变）。另外，手工起 service 还会按保留策略真的清理备份，所以那不是例检 |
+| `doctor` 以前看不见、现在能看见的东西 | 直到 2026-10-10，**没有任何检查在问「定时器装了吗」**，这一行就是证据：连续三天 `backups.latest` 报 PASS——而且报得没错，备份确实才 3.0 天、阈值是 7 天——而那个负责产生备份的东西已经被移除了。**计划不等于文件。** 现在 `backups.scheduled` 会去问 `systemctl --user is-enabled skillt-auto-backup.timer`，只要不是 `enabled` 就 WARN，**包括「问不到 systemd」**（没有用户 systemd 的机器是「未知」，不是「健康」）。它永不 FAIL，因为「不装这个单元」本来就是主人做的合法选择。这两条检查**就是要能不一致**：本机今天的读数正是 `backups.latest` PASS 而 `backups.scheduled` WARN，这一对不一致本身就是那条发现 |
+| 散落备份（M19） | **这一行原先描述的那部分已经了结**——2026-10-10 重读：`ls ~/.local/share/opencode/` 里 `BACKUP_DIR` **之外**已经没有任何 `skill-usage-backup-*.db`，六份备份全在里面，也就是保留策略能扫到的地方。还剩下的一个散落文件不是备份：`skill-usage-export-20260923-100620.json`，`schema_version = 1`，40,390 字节。对它做一次完整键遍历（32 个不同键、每个列表的每一个元素）后**找不到** `summary`、`title`、`error`、`text`、`prompt`、`body` 任一键，所以它不带 M14 那些 metadata 原文——但它确实带着 skill 的 `description`、`path` 和导出那台机器的 `db_path`，而一份 skill 库存导出本来就该带这些。`BACKUP_DIR` 里每一份备份也用同样方式查过 `metadata` 含 `summary`/`title` 的行：**六份全是 0** |
+| 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份）。**这个删除并没有发生**，因为 2026-10-07 起停掉的就是那个会跑它的定时器；两份备份今天都还在，这正是上面「计划不等于文件」那一行的证据 |
 | metadata 清理 | 2026-10-01 已执行 `scrub-metadata --yes`，剥掉 40 行（skill 17 / mcp 10 / plugin 13），用量行与 46 条 `error` 文本全部保留；另外删除 3 个仍含原文的散落备份，并对生产库做了 VACUUM。此后 `skillt scrub-metadata` 必须报 0 行，且 `grep -l '<一段已知原文>' ~/.local/share/opencode/skill-usage.db*` 必须什么都搜不到 |
 
 安装布局——四个位置都是**指回本仓库的符号链接**，所以改仓库即生效、无需重装；但改插件必须**重启 OpenCode**：
@@ -56,6 +64,7 @@
 | 改视图必须升 `SCHEMA_VERSION`，否则老库继续用旧视图（`CREATE VIEW IF NOT EXISTS` 不更新） | `test_migration.py`、`test_schema_sync.py` |
 | 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`，也不得读真实插件日志 | `temp_skills` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch |
 | 表格列宽由 `fit_columns()` 在渲染时算定；Textual 自己的自动列宽跑在 `_on_idle`，永远晚一帧，第一帧每列都只有表头那么宽 | `test_tui_dashboard_tables_fit_their_content_before_idle`、`test_tui_page_tables_cover_every_tab` |
+| **排班要按排班查**。`backups.latest` 很新**不能**证明下一次备份会来；「问不到 systemd」是未知，永远不算健康 | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`、`test_the_timer_check_never_fails_and_never_shells_out_uninvited` |
 | 推送前测试全绿，**两条文档里的命令都要跑** | `AGENTS.md` |
 
 ## 2. 每日（在相信任何数字之前）
@@ -72,6 +81,10 @@ skillt doctor            # 期望：0 FAIL
 - `log.errors` → `0 error line(s)`；非 0 说明有钩子抛过异常，详情就是最后那条 `[err]`
 - `env.opencode_version` → 只有安装版本与 allowlist 对齐版本相同才 PASS
 - 启用 §4 的定时器后，`backups.latest` → 约 1 天内
+- `backups.scheduled` → `skillt-auto-backup.timer enabled`。**这一条和上面那条说的是两件
+  不同的事**：`not-found` 配上 `backups.latest` 的 PASS，正是一台「定时器已被移除、而最后
+  一份备份看上去还很新」的机器的状态。如果它说「问不到 systemd」，那是**未知**、不是健康——
+  没有用户 systemd 的机器上，请自己决定 `auto-backup` 与 `rotate-log` 由谁来跑，别把沉默当成通过
 
 ## 3. 每周
 
@@ -94,7 +107,8 @@ stat -c %s ~/.config/opencode/logs/skill-tracker.log   # 字节数：doctor 只�
 skillt rotate-log                # 同一个上界落到写的一侧：长到 4 MiB 就把日志**改名**挪走，
                                  # 保留 log.keep_files（默认 5）代。是改名、绝不是截断——
                                  # doctor 要数的那些 `[err]` 行因此一直都在盘上。加 `--yes`
-                                 # 才动手；备份 timer 每天替你做这件事
+                                 # 才动手；装了备份 timer 时每天由它替你做这件事
+                                 # （本机现在没装——见 §0「备份定时器」那一行）
 ```
 
 清理删掉的是**值**；WAL 模式下旧字节会留在 `-wal` 里直到 checkpoint。这就是
@@ -139,6 +153,8 @@ sqlite3 -readonly "file:$HOME/.local/share/opencode/opencode.db?mode=ro" \
 
 ```bash
 systemctl --user is-enabled skillt-auto-backup.timer   # 必须输出：enabled
+                                 # 输出 `not-found` 就是「没有任何东西在排班」：本机
+                                 # §0 的「备份定时器」那一行正是这个情况的活样本
 sqlite3 -readonly ~/.local/share/opencode/skill-usage.db "PRAGMA integrity_check;"
 python3 -m pytest scripts/tests -q                     # 不需要 venv
 .venv/bin/python -m pytest scripts/tests -q            # 含 TUI 全量
@@ -186,7 +202,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 6. 刻意为之的偏离（别"顺手修回去"）
 
-- **TUI 里没有后台定时器。** 刷新是按页、事件驱动的：按键（5 秒节流）和切页只重读当前页，`r` 与首次绘制重读所有页；每页各自显示自己的 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会把整个 TUI 文件一次带走——今天 62 个用例，最初实测时是 47 个。`test_tui_creates_no_app_timers` 把这条钉住。
+- **TUI 里没有后台定时器。** 刷新是按页、事件驱动的：按键（5 秒节流）和切页只重读当前页，`r` 与首次绘制重读所有页；每页各自显示自己的 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会把整个 TUI 文件一次带走——**一个** app 定时器就足以让 `test_tui.py` 里所有用例同时失败，因为收尾属于 app，不属于添加定时器的那条用例。`test_tui_creates_no_app_timers` 把这条钉住。
 - **TUI 关闭了 Textual 的动画。** `SkillTUI.animation_level` 是 `"none"`，tab 栏下划线是瞬间到位而不是滑动。Textual 的 `Tabs` 会对它做 0.3 秒动画，级别是 `"basic"`（`_tabs.py` 的 `_highlight_active`），所以全局设成 `"basic"` **挡不住**它——只有 `"none"` 能。实测（44 个 skill 的数据库）：Dashboard→Skills 一次切换带动画约 500 ms、关掉约 190 ms，其中动画占 ~305 ms，而页面自身重读只有 ~70 ms、Textual 布局/渲染地板 ~125 ms。`test_tui_disables_textual_animations` 把这条钉住。不要以「只是外观」为由把它打开——它是切页最大的单项开销。
 - **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** Dashboard 排名柱那版把每根渲染出来的柱都和 `rank_bar_width(...)` 的返回值比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫不是守卫。那一列后来按他的要求撤掉了，但这条教训留下：`test_tui_trend_rows_are_a_fixed_width` 在同一句里把绝对行宽（20）也写死了，不只是断言各行彼此相等。
 - **TUI 的任何一页都不许打开顾问那个库。** Advisor 页在 2026-10-03 按 owner 的要求移除了；`skill_db_agentos.agentos_*`（独立模块）和 `skillt agentos` 留着，所以那个库仍然能无头读，只是不能从页面上读。`test_tui_never_reads_the_advisor_store` 给唯一的入口装了探针，把 mount、`refresh_all` 和每一个页签都走一遍，调用数必须是 0。
@@ -277,7 +293,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 - **`unified_recent_rows` 额外返回详情页需要的列**（`skill_name`、`server_name`+`tool_name`、`plugin_name`+`item_kind`+`item_name`），显示用的 `name` 不是主键。
 - **导出对 metadata 走白名单**（`EXPORT_METADATA_KEYS`）而不是整列倒出，文档形状因此升到 `schema_version = 4`；后来给 `plugin_inventory` 加 `scope` 又把它推到 5，新增 `subagent_usage` 这个键把它推到 6。再改形状要升版本并同步 `test_export.py` / `test_plugin_db.py`——形状用例现在把**整个键集合**钉死了，新键没法悄悄混进来。
 - **`scrub-metadata` 原地改行而不是删行**，且 `--yes` 之前必先备份。
-- **邻居的日志从文件开头扫，不读尾部。** 它的 worker 日志里有 **57 行 ERROR**，全都排在文件**前半段**；只读尾部 64 KB 会报成 0。所以 `CLAUDE_MEM_LOG_BYTES_CAP` 切的是文件**结尾**，切到了结果里就写 `truncated`，此时计数是**下界**不是总量。计划里那句「整份读也就 1–2 ms」是**没测就写进去的**，实测三个文件要 **8.2–15.8 ms**——这正是 HTTP 探针不许上重画路径的原因。
+- **邻居的日志从文件开头扫，不读尾部。** 它的 worker 日志里有 **57 行 ERROR**，全都排在文件**前半段**；只读尾部 64 KB 会报成 0。所以 `CLAUDE_MEM_LOG_BYTES_CAP` 切的是文件**结尾**，切到了结果里就写 `truncated`，此时计数是**下界**不是总量。计划里那句「整份读也就 1–2 ms」是**没测就写进去的**，实测三个文件要 **8.2–15.8 ms**（2026-10-04）——2026-10-09 用同一条命令重测是 **12.2–14.0 ms**（measurements §6），而这两个读数之间的差**恰恰就是重点**：这笔开销是邻居日志的大小，不是我们的代码。无论哪个数，都是 HTTP 探针不许上重画路径的原因。
 - **级别在第 2 个方括号，类别在第 3 个。** `[时间] [级别] [类别] 正文`：把 ERROR 当类别数，一条也数不到；反过来只数类别，也会把「一天全在失败」说成「一天很干净」。`_LOG_LINE_RE` 就是按这个位置写的，匹配不上的行进 `unparsed` 计数，不静默丢掉。
 - **文件在前、HTTP 在最后，而 HTTP 绝不进 TUI。** `claude_mem_worker()` 读 `worker.pid` 再 `os.kill(pid, 0)`——那是个 syscall，所以存活与端口只花微秒，而且 worker 没起来时照样能回答。三个端点只在 `skillt claude-mem` 里问，共用**一个**总截止时间（`clock` 是注入进来的，所以这段算术不靠睡觉就能测），投影同时按字段名**和**类型：`database.path`、`worker.version` 和 chroma 的自由文本 `details` 被丢掉，理由是它们不是整数也不是布尔，而不是某条规则点了它们的名。守卫是 `test_the_http_probe_shares_one_deadline`、`test_no_path_or_free_text_crosses_the_http_whitelist`、`test_no_http_is_reachable_from_the_tui_refresh_path`。
 - **doctor 保持离线，worker 不在也不算警告。** worker 是按需启动的进程，它不在是一种**状态**不是**故障**，所以 `claude_mem.capture` 只会写 `worker down` 然后继续 PASS。真正触发警告的是日志里的 ERROR 计数——那是账本给不了的唯一信号，因为同步器可以每次都失败，而它最新一行的时间戳照样好看。
@@ -327,7 +343,7 @@ M1–M24 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英�
 | init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
 | 每次调用 `skillt agentos` 都会重读 `store/loops/` 下的 loop 文件（`--limit N` 限制的是投影多少条，不是列多少条） | 小 | 那个库里目前只有 5 个 loop；文件名与 loop_id 之间没有可用约定，做缓存等于替别人持有第二份状态。以前让这件事变成“每次按键都要付”的是 Advisor 页，页没了，现在只有跑命令时才付 |
 | 顾问聚合层读的是 AgentOS 的阶段字段名 | 小 | `retrieved` / `injection_chars` 属于引擎内部约定；改名只会让那几个数变空，不会连累别处，而且 `_count_only` 拒绝把文本当计数。原本有数字的地方变成 `-` 就是信号 |
-| Plugins 页每次重画都整份重读 claude-mem 的 worker 日志——实测 8.2–15.8 ms | 小 | 上限由 `CLAUDE_MEM_LOG_BYTES_CAP` 兜住，而这一页只在切页、或按键且已过 `REFRESH_STALE_AFTER_S` 时才重画。按 mtime/size 缓存会让这行文本正好在它存在的那个场景上变陈——「发现后台同步开始失败」；这点开销也没到冻住界面的程度 |
+| Plugins 页每次重画都整份重读 claude-mem 的 worker 日志——实测 8.2–15.8 ms（2026-10-04）、12.2–14.0 ms（2026-10-09），命令在 measurements §6 | 小 | 上限由 `CLAUDE_MEM_LOG_BYTES_CAP` 兜住，而这一页只在切页、或按键且已过 `REFRESH_STALE_AFTER_S` 时才重画。按 mtime/size 缓存会让这行文本正好在它存在的那个场景上变陈——「发现后台同步开始失败」；这点开销也没到冻住界面的程度。相隔五天两次读数差了 4 ms，动的是邻居的日志，不是读取端 |
 | `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
 | 行级保留只用手跑（M17 已结；`retention.usage_days` 默认 0） | 小 | 把它装上就等于让已记录的历史按一个主人没选过的时间表被删，所以默认关；`skillt prune-usage --yes` 才是那个决定点。`skill_versions` 由 `retention.max_skill_versions` 管，同样默认关 |
 | 从 OpenCode 自己的 `part` 表回填 `subagent_usage`（重启前那 84 次：`explore` 61、`general` 13、`auditor` 5、`researcher` 3、`reviewer` 2、`verifier` 1） | 小——一次只读扫描、8 条白名单 json 路径、按 `(parent_session_id, call_id)` 幂等 | **owner 在 2026-10-04 明确不做**：为一个不是天天问的历史问题，要把一个正在被写的库（OpenCode 自己的，WAL，会话跑着的时候也在写）加进本项目的读集合。于是 `Ran as` 说的是「自上次启动以来」，M24 也在页面上这么讲。等真有需要那些旧数字的问题时再提。 |

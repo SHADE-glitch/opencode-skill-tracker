@@ -328,8 +328,11 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
   never recorded a row is reported as `no rows` and is not treated as stalled, and
   `OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` excludes a stream from the verdict
   while still printing its age), `log.errors` (count of `[err]` lines in the plugin's own log, with
-  the last one quoted) and `env.opencode_version` (installed version versus the
-  one the builtin-tool allowlist is pinned to, see M13). Those three **WARN,
+  the last one quoted), `env.opencode_version` (installed version versus the
+  one the builtin-tool allowlist is pinned to, see M13) and `backups.scheduled`
+  (whether `skillt-auto-backup.timer` is actually enabled in the user's systemd —
+  a fresh backup file says nothing about whether the next one is coming, and the
+  two facts came apart on a real host). Those four **WARN,
   never FAIL** — a quiet week is not a fault.
 - `cleanup-selftest` — remove synthetic rows left by `__selftest()`
   (`project_path = /tmp/selftest-proj`). Dry-run by default; `--yes` deletes for
@@ -686,7 +689,8 @@ skillt doctor
 | `doctor` reports `db.wal` FAIL | The file is corrupt or not SQLite. Confirm with `sqlite3 ... "PRAGMA integrity_check;"`, then restore from a backup. |
 | Timestamps look shifted | Day buckets follow the local calendar. Older rows written before that fix are still stored in UTC. |
 | Mojibake / `UnicodeEncodeError` | Non-UTF-8 locale. Set `LANG=C.UTF-8` or `LC_ALL=C.UTF-8`. |
-| `backups.latest` WARN | `auto-backup` has never run, or has not run in 7 days. Run `skillt auto-backup`. |
+| `backups.latest` WARN | `auto-backup` has never run, or has not run in 7 days. Run `skillt auto-backup --dry-run` to see what it would do, or `skillt auto-backup` to make one now. |
+| `backups.scheduled` WARN (`not-found` / `disabled`) | Nothing is *scheduled* to take the next backup or rotate the log — the timer unit is not installed, or someone turned it off. A `backups.latest` PASS beside this line only means an old file is still on disk. Arm it with `./install.sh --with-timer` (installing a user systemd unit is opt-in by design), or accept that both are manual and run them yourself. |
 
 The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
 
@@ -792,7 +796,9 @@ The full audit — M1 through M24, with reproduction notes — lives in
   process restart. A 500 ms timeout on a healthy repo therefore silences branch
   for the rest of that OpenCode process.
 - **M17** The plugin log grows: `~/.config/opencode/logs/skill-tracker.log` gains one
-  line per init and one per dispose (measured ~69 lines/day), and it is the only place
+  line per init and one per dispose (measured 2026-10-09: 74.4 lines/day — re-take it
+  with [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §4, which
+  is also where the "is the cap near?" arithmetic lives), and it is the only place
   capture errors appear, which is what `doctor log.errors` reads — so clearing it erases
   that history. **Both sides are now bounded.** The reader counts only the first
   `log.max_bytes` (default 4 MiB, the same bound the claude-mem reader uses) from the
@@ -955,27 +961,40 @@ opencode-skill-tracker/
 ├── scripts/skill-tui.py          # TUI + --cli headless subcommands
 ├── scripts/skill-stats.py        # legacy CLI (backwards compatible)
 ├── scripts/tests/                # pytest suite
+├── docs/maintenance/             # compat matrix · host interface list · measurement recipes
 └── skill-tracker/systemd/        # optional auto-backup timer + service
 ```
 
 ### Development
 
 ```bash
-python3 -m pytest scripts/tests -q                       # standard library only
-                                                         # (TUI tests are skipped)
+python3 -m pytest scripts/tests -q                       # standard library only; the TUI
+#                                                         tests skip only where textual is
+#                                                         not installed — CI has it
 
 uv pip install --python .venv/bin/python -r requirements-dev.txt   # once
 .venv/bin/python -m pytest scripts/tests -q              # full suite, incl. TUI tests
 ```
 
 Tests resolve their own paths with `Path(__file__).resolve()`, so the suite
-passes both from this repo and through the symlinked install locations.
+passes both from this repo and through the symlinked install locations. The third
+command in `docs/maintenance/measurements.md` §10 points the skills directory at a
+path that does not exist, which is what proves the suite never read this machine's
+real files.
 
 **Before operating this on a machine you care about**, read
 [MAINTENANCE.md](MAINTENANCE.md) (Chinese: `MAINTENANCE.zh-CN.md`): the
 daily / weekly / monthly checks, the procedure that reconciles recorded rows
 against OpenCode's own `part` table, the invariants with the test guarding each
-one, and the deviations that must not be "fixed" back.
+one, and the deviations that must not be "fixed" back. Behind it sit three
+references, and they are the parts that outlive a single edit:
+[`docs/maintenance/compat-matrix.md`](docs/maintenance/compat-matrix.md) says which
+OpenCode release each claim was measured on,
+[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)
+lists every host name this project reads, and
+[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) holds the
+command behind every size, rate and duration quoted anywhere in this repository —
+including the numbers this README used to state as facts.
 
 ---
 

@@ -101,8 +101,10 @@ TUI files too** — they are not a local-only tier. What CI does not run is ever
 gated on a binary or an install it does not have: the `requires_bun` tests (the
 runner has no bun) and `test_dispatcher.py` (it skips unless `~/.local/bin/skillt`
 exists). That is the whole difference between a CI count and a local one — the last
-run recorded 489 passed / 48 skipped while this machine recorded the same suite with
-nothing skipped — so compare the two logs rather than assuming a tier is missing.
+run ends with a pile of skips while this machine records the same suite with none —
+so compare the two logs rather than assuming a tier is missing, and never copy either
+total into a document (a CI count and a local count differ by the host's binaries, not
+by what the suite contains).
 The suite must stay green: a red build is a stop, not a warning, and it is
 the same check you run locally. Read the result after every push:
 `gh run view <id> --log`.
@@ -227,7 +229,13 @@ the code; the schema versions track the data. Never conflate them.
   The systemd timer stays
   opt-in: `install.sh --with-timer`, and every systemd write sits inside that guard
   (`test_installing_the_timer_is_still_opt_in`, checked by the mutating *actions*, not
-  by words).
+  by words). Because it is opt-in, its *absence* has to be visible rather than assumed
+  healthy: `doctor`'s `backups.scheduled` asks `systemctl --user is-enabled` and WARNs
+  on anything but `enabled` — including "cannot ask" — since a fresh backup **file**
+  and a live **schedule** are two different facts and only the second one produces the
+  next backup (`test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`
+  asserts they may disagree; the unit name is pinned to what `install.sh` copies by
+  `test_the_timer_check_asks_about_the_unit_install_sh_installs`).
 - **The privacy promise is enforced at the writer, not at the reader.** No message
   body, no prompt text, and no session `title` — the host derives a title from the
   user's first message, so storing it would store the message. `metadata.title` is
@@ -366,6 +374,7 @@ machine's real files.
 | Every OpenCode name lives in one place per language | a handler that spells a host string again, a pin that no longer matches the writer | `test_compat.py` in full — value-compared against the `CONTRACT` block | `python3 -m pytest scripts/tests/test_compat.py -q` |
 | Views and schema roll forward instead of silently keeping the old definition | a `CREATE VIEW` edit without a `SCHEMA_VERSION` bump | `test_migration.py` | `python3 -m pytest scripts/tests/test_migration.py -q` |
 | Deleting rows or moving logs is opt-in, counted first, and backed up before it happens | a default that becomes "helpful", a dry-run that is a different query from the delete, a rotation that truncates | `test_row_retention.py` + `test_rotate_log.py` | `python3 -m pytest scripts/tests/test_row_retention.py scripts/tests/test_rotate_log.py -q` |
+| A schedule is reported as a schedule, never inferred from the file it produces | a `backups.latest` PASS masking a removed timer unit, a check that FAILs a machine for choosing not to install, a check that shells out on the repaint path, "cannot ask systemd" read as healthy | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`, `test_a_disabled_timer_is_named_as_disabled_not_as_missing`, `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`, `test_the_timer_check_never_fails_and_never_shells_out_uninvited`, `test_the_timer_check_asks_about_the_unit_install_sh_installs` | `python3 -m pytest scripts/tests/test_doctor.py -q -k "timer or scheduled"` |
 | The plugin log's reader and its rotator stop at the **same number** | a setting resolved by one side and defaulted by the other, which is how `doctor` starts reporting a floor as a total | `test_the_rotation_cap_is_the_number_the_reader_reads` (both commands, at the default *and* under an override), `test_the_reader_bound_moves_with_the_writer_bound` (spies on the actual read), `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill` | `python3 -m pytest scripts/tests -q -k "bound or rotation_cap or truncated or bounded"` |
 | A knob exists in one registry, documented in both languages, and zero-config still works | a setting that only reads the environment, a key added without an explanation, a writer under `~/.config/opencode` | `test_settings.py` + `test_settings_documented.py` | `python3 -m pytest scripts/tests/test_settings.py scripts/tests/test_settings_documented.py -q` |
 | A foreign store is read-only, field-whitelisted, and never reached from a repaint | a neighbour importing the TUI, a `open_db()` on someone else's file, a prose column named | `test_module_boundaries.py`, `test_claude_mem.py`, `test_agentos.py` | `python3 -m pytest scripts/tests/test_claude_mem.py scripts/tests/test_agentos.py scripts/tests/test_module_boundaries.py -q` |

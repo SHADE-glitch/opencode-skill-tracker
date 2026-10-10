@@ -585,3 +585,37 @@ Cost     A raised cap now costs `doctor` proportionally more reading — that is
          it from being a trap. Any doc that said "`log.max_bytes` *is* `TRACKER_LOG_BYTES_CAP`"
          was describing the accident and had to be corrected (six passages, both languages)
 Commit   26f5473
+
+### D-048 · 2026-10-10 · fix
+Symptom  `skillt doctor` reported `backups.latest` PASS at 3.0 days on a host where
+         the backup timer had been removed on 2026-10-07 21:48 (`systemctl --user
+         is-enabled skillt-auto-backup.timer` → `not-found`, no `skillt*` unit file in
+         `~/.config/systemd`, `/etc/systemd` or `~/.local/share/systemd`, and
+         `journalctl` shows no service run after 2026-10-07 00:18). The check measured
+         **the age of an artifact** and printed that as evidence the next backup was
+         coming. Nothing in the suite or in `doctor` could see the difference, and the
+         row in MAINTENANCE §0 that asserted the timer was `enabled` had been false for
+         three days
+Change   `backups.scheduled` asks `systemctl --user is-enabled BACKUP_TIMER_UNIT` with a
+         2 s deadline and WARNs on any state but `enabled` — including `None`, because a
+         machine it cannot ask is *unknown*, not healthy. Advisory only: not installing a
+         user unit is a legitimate choice, so the check can never turn `doctor` red. The
+         subprocess lives in `_backup_timer_state()` (the same shape as
+         `_opencode_version()`) so no test ever shells out, and the unit name is pinned to
+         the files in `skill-tracker/systemd/` and to what `install.sh` copies
+Evidence Red first: the 8 new tests fail with `AttributeError: module 'skill_tui' has no
+         attribute '_backup_timer_state'` (6 surfaced under `-k "timer or scheduled"`, the
+         selector not matching `…unreachable_systemd…`; the 8th, the unit-name pin, is the
+         one that needs no subprocess at all). Then green — and `backups.latest` PASS
+         beside `backups.scheduled` WARN is asserted as the *expected* disagreement, not
+         as a coincidence. Live 2026-10-10: `skillt doctor` → 17 PASS / 4 WARN /
+         0 FAIL with the new line naming `not-found` and `./install.sh --with-timer`;
+         `--json` carries it. L0: 660 passed on `python3`, on `.venv/bin/python`, and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`; `__selftest` 63/63
+         (writer untouched)
+Cost     `doctor` now starts a process on a headless CLI path — the reason it is confined
+         to one helper with a deadline, and why the repaint path is asserted not to reach
+         it. Hosts without user systemd gain a WARN they may not care about; the message
+         says "cannot ask", not "broken". MAINTENANCE §0 now records two readings
+         (3.0 d fresh / no schedule) where it used to record one
+Commit   b56dcc4

@@ -351,6 +351,79 @@ def test_docs_cross_link_so_no_file_is_an_orphan():
         )
 
 
+# The three files that answer "what does this depend on, and how do I re-check it".
+# They have no Chinese twin — the parity gates above cover README ×2 and
+# MAINTENANCE ×2 — so instead of a translation they owe two things: a link from
+# both checklists, and a command beside every reading they state.
+MAINT_DOCS = ROOT / "docs" / "maintenance"
+TRIO = ("compat-matrix.md", "opencode-interface.md", "measurements.md")
+
+
+def test_the_maintenance_docs_are_linked_from_both_checklists():
+    """A reference nobody links to is a reference nobody finds at the right moment.
+
+    The failure this prevents is the ordinary one: the trio exists, gets written,
+    and then a maintainer edits MAINTENANCE.md for a month without ever being told
+    there is a file that says which release each claim belongs to.
+    """
+    for name in TRIO:
+        assert (MAINT_DOCS / name).is_file(), f"missing docs/maintenance/{name}"
+    for path in MAINTENANCE:
+        text = path.read_text(encoding="utf-8")
+        for name in TRIO:
+            assert name in text, f"{path.name} never points at docs/maintenance/{name}"
+    # Back the other way, so none of the three is a leaf that strands a reader.
+    for name in TRIO:
+        text = (MAINT_DOCS / name).read_text(encoding="utf-8")
+        assert "MAINTENANCE" in text, f"{name} never names the checklist to return to"
+
+
+def test_every_dated_reading_in_measurements_sits_under_a_command():
+    """The whole reason `measurements.md` exists: a number with no command is a claim.
+
+    Scoped to a line that *starts* with a date, because prose legitimately says
+    "run on 2026-10-09" while describing the file. A reading line is the one that
+    reports output, and output must be re-takable from the same section.
+    """
+    text = (MAINT_DOCS / "measurements.md").read_text(encoding="utf-8")
+    sections = re.split(r"\n(?=## )", text)
+    silent = []
+    for section in sections:
+        heading = section.splitlines()[0]
+        if not re.search(r"^20\d\d-\d\d-\d\d:", section, re.M):
+            continue
+        if "```bash" not in section:
+            silent.append(heading)
+    assert not silent, (
+        f"sections state a dated reading with no command to re-take it: {silent}"
+    )
+
+
+def test_measurements_quotes_the_cap_the_code_actually_resolves():
+    """`4 MiB` in prose is a claim about a default; the default is a number in code.
+
+    The cheap version of this file's job is to restate the cap. The version worth a
+    test is to restate *the resolved value*: if `log.max_bytes` moves and this
+    document still says 4,194,304, every reading derived from it — the ~600-day
+    figure, when `truncated=` flips — is described by a number that no longer exists.
+
+    Nothing here hard-codes 4 MiB. If it did, the test would go red for the wrong
+    reason when the cap moves *and the doc follows it*, which is the case the check
+    is supposed to allow through.
+    """
+    import settings as cfg
+
+    cap = cfg.spec("log.max_bytes")["default"]
+    text = (MAINT_DOCS / "measurements.md").read_text(encoding="utf-8")
+    assert f"{cap:,}" in text, (
+        f"measurements.md must print the resolved log cap ({cap:,} B) where it "
+        f"reports a truncation reading"
+    )
+    assert f"{cap // (1024 * 1024)} MiB" in text, (
+        "and the human spelling of the same number, derived from the same value"
+    )
+
+
 def test_systemd_units_exist_and_use_absolute_execstart():
     service = SYSTEMD / "skillt-auto-backup.service"
     timer = SYSTEMD / "skillt-auto-backup.timer"

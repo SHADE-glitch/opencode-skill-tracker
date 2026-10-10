@@ -80,10 +80,11 @@ OpenCode 运行
 | `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
 | `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |
 | `~/.config/opencode/scripts/tests/` | pytest 测试 |
+| `docs/maintenance/`（只在仓库里，不安装） | 三份参考：`compat-matrix.md`（每条说法属于哪个 OpenCode 版本）、`opencode-interface.md`（本项目按名字读取的每一个宿主名词）、`measurements.md`（本仓库里任何一体积 / 速率 / 时长背后的那条命令） |
 
 > **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：
 > 每日 / 每周 / 每月该查什么、把 tracker 与 `opencode.db` 对账的方法、每条不变量对应哪个测试、
-> 以及哪些缺陷是**刻意不修**的（别顺手改回去）。
+> 以及哪些缺陷是**刻意不修**的（别顺手改回去）。它后面那三份参考是活得比一次编辑更久的部分。
 | `~/.config/opencode/skill-tracker/` | **本目录**：文档 + systemd 单元 |
 | `~/.local/bin/skillt` | 统一入口（bash 分发器；`skill-tracker` 是它的软链接） |
 | `~/.local/share/opencode/skill-usage.db` | 主数据库（WAL 模式，0600） |
@@ -219,7 +220,7 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 - `claude-mem`：**只读** claude-mem 插件自己的账本——它记了多少 observation / 提示 / 会话、最新一行距今多久、discovery token 合计，以及它后台观察器的连续失败计数；同一时间窗里本 tracker 测到了多少也一并列在旁边。只有计数与时间：那个库里的文本列、以及存着它 API key 的 `settings.json`，一律不读（见 M22）。装在默认位置时不需要配置，否则设 `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` 或 `CLAUDE_MEM_DIR`；库不存在时 `skillt doctor` 对此一句不提。
   它还会按这个顺序读 claude-mem 为自己写的另外三个文件：`inject-trace.log`（它的 hook 注入了什么——`q=` 后面是用户提示词原文，**只数、不读**；计数还会按 `project=` 与按**本地日**分组，归不进组的只计数、绝不少掉）、`logs/claude-mem-<日期>.log`（按级别计行，一天里有多少 ERROR 就是从这儿来的）、`worker.pid`（存活与端口，所以这里不硬编码 `37700`）。文件之后，只有这一条命令会向正在运行的 worker 问三个 HTTP 问题（`/api/stats`、`/api/processing-status`、`/api/chroma/status`），而且**三个端点共用一个总截止时间**（不是各超时一次），答案里只留整数与布尔——`database.path`、`worker.version` 和自由文本 `details` 一律丢掉。这些数字一个都不写进 tracker 的表；TUI 里也不做这些：Plugins 页只把同样的日志文件数字印成一行 dim 文本，从不打开 socket。
 - `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
-- `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（**三张表分别**报最新一条距今多少天，例如 `skill_usage 0.0d · mcp_usage 2.2d · plugin_usage 0.0d`，阈值 `--freshness-days`，默认 7；从没记过行的流报 `no rows`，不算停滞；`OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` 可以把某条流排除在判定之外，但它仍会被打印并标注 `(excluded)`）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）。这三项**只 WARN、不 FAIL**——安静一周不是故障。
+- `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（**三张表分别**报最新一条距今多少天，例如 `skill_usage 0.0d · mcp_usage 2.2d · plugin_usage 0.0d`，阈值 `--freshness-days`，默认 7；从没记过行的流报 `no rows`，不算停滞；`OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` 可以把某条流排除在判定之外，但它仍会被打印并标注 `(excluded)`）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）、`backups.scheduled`（`skillt-auto-backup.timer` 在用户 systemd 里到底有没有启用——**一份很新的备份文件说明不了下一份会不会来**，而这两件事曾在真机上真的分开过）。这四项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
 - `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
 
@@ -464,7 +465,8 @@ skillt doctor
 | `doctor` 报 `db.wal` FAIL | 库文件损坏或不是 SQLite。用 `sqlite3 ... "PRAGMA integrity_check;"` 确认，必要时从备份恢复。 |
 | 时间对不上（差几小时） | 已修复（M1）：按天分桶现用**本地日历天**。修复前写入的旧记录仍按当时的时间戳存储。 |
 | 输出乱码 / `UnicodeEncodeError` | 见 M6：非 UTF-8 locale。设 `LANG=C.UTF-8` 或 `LC_ALL=C.UTF-8`。 |
-| `backups.latest` WARN | 还没跑过 `auto-backup`，或最近 7 天没备份。跑一次 `skillt auto-backup`。 |
+| `backups.latest` WARN | 还没跑过 `auto-backup`，或最近 7 天没备份。先用 `skillt auto-backup --dry-run` 看它打算做什么，或直接 `skillt auto-backup` 存一份。 |
+| `backups.scheduled` WARN（`not-found` / `disabled`） | **没有任何排班在准备下一次备份或下一次日志轮转**——定时器单元没装，或者被谁关掉了。这一行和 `backups.latest` 的 PASS 同时出现时，那个 PASS 只说明磁盘上还留着一个旧文件。要上弦就 `./install.sh --with-timer`（装用户 systemd 单元是**刻意做成 opt-in** 的），要么就接受这两件事都是手动的、自己定期跑。 |
 
 日志：插件把错误写到 `~/.config/opencode/logs/`（由 OpenCode 管理）。
 
@@ -543,7 +545,7 @@ rm -rf ~/.local/share/opencode/backups
   另一个容易漏掉的事实：**删掉值不等于删掉字节**。WAL 模式下被替换的旧内容会留在 `-wal` 文件里直到 checkpoint，所以 `--yes` 结束时执行 `wal_checkpoint(TRUNCATE)`；库正忙时会明确告知，此时关掉 OpenCode 再跑一次 `skillt vacuum`。检查方法见 MAINTENANCE §3。
 - **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
 - **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
-- **M17 插件日志会一直长。** `~/.config/opencode/logs/skill-tracker.log` 每次 init/dispose 各加一行（实测约 69 行/天），而它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**。**两侧现在都上了界。** 读取端只从文件**开头**数前 `log.max_bytes`（默认 4 MiB，与 claude-mem 读取器同一个上界），并在结论里写明"只覆盖前 N 字节，是下限不是总数"；写入端由 `skillt rotate-log` 在**同一个数**（一个设置，两边各自解析后再用，不是两处约定）处改名，保留 `log.keep_files` 份轮转。仍要说清的是历史的形状：除非装了备份 timer（`./install.sh --with-timer`），轮转是手动动作——而没人轮转的日志，一旦被上界截断，就不再是证据了。
+- **M17 插件日志会一直长。** `~/.config/opencode/logs/skill-tracker.log` 每次 init/dispose 各加一行（2026-10-09 实测 74.4 行/天；重测的命令在 [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §4，「离上界还有多远」的算术也在那里），而它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**。**两侧现在都上了界。** 读取端只从文件**开头**数前 `log.max_bytes`（默认 4 MiB，与 claude-mem 读取器同一个上界），并在结论里写明"只覆盖前 N 字节，是下限不是总数"；写入端由 `skillt rotate-log` 在**同一个数**（一个设置，两边各自解析后再用，不是两处约定）处改名，保留 `log.keep_files` 份轮转。仍要说清的是历史的形状：除非装了备份 timer（`./install.sh --with-timer`），轮转是手动动作——而没人轮转的日志，一旦被上界截断，就不再是证据了。
 - **M22 claude-mem 的数字来自别人的 schema，而且只是数字。** `skillt claude-mem` 以只读方式打开另一个插件的 SQLite 库：只取计数、时间戳和很短的分类标签，绝不取它们旁边的文本列（`prompt_text`、`text`、`narrative`、`tool_input` 等），也绝不打开它的 `settings.json`。上游改字段名只会让某个数字变空，不牵连别处（又是 M21 那个形状）；一张表都读不到的库会被报成「读不懂」，而不是「装了但是空的」。claude-mem **做了什么**（它自己的 hook、它自己的总结进程）从这里根本观测不到——这里读的是它写下了什么，不是它干了什么。它的两个日志文件守同一条约定：按行的**形状**解析（格式变了的行计入 `unrecognized`，不会被悄悄丢掉；任何一行原文都不回显），并且从文件**开头**整份扫描、带字节上限——尾部读取看不见文件前半段，而真机上那 57 条 ERROR **全在开头**。上限生效时结果里写着 `truncated`，此时数字是下界不是总量。HTTP 的投影同时按字段名**和**类型过滤，所以某个字段被改名去装文本时，结果是啥也没有，而不是漏出去。
 - **M23 Agents 页统计的是某一行的 session **首次**上报的 agent，不是跑掉这次调用的那个 agent。** 三张用量表的 upsert 都写成 `metadata = COALESCE(existing, excluded)`，谁先写进这一行的 JSON 就永远冻在这儿；而 `agent` 只在更晚的 `chat.message` 里才到。于是在它的 session 报出 agent 之前落库的调用会**永远**是 `(unknown)`——`(unknown)` 量的是**采集顺序**，不是「无主的调用」。它连同自己的计数一起显示，为的就是这张表不能被读成「这些 agent 干了这些」。2026-10-03 的两份备份实测：619 行与 664 行里，没有 agent 的是 0 行，所以正常机器上这个桶是空的；写下来是因为它**从页面上推导不出来**。
 - **M24 子 agent 里没用到「被测工具」时，它的工作是看不见的。** `task` 是内置工具，而内置是刻意不测的（M13），所以一条启动记录就是「它跑过」的唯一证据：宿主被要求用哪个名字、它拿到哪个子会话、有没有跑完、跑了多久。由此有两件事要钉住。其一，Agents 页的 `Spawned` 数的是**启动次数**，绝不并入 `Total`——否则同一列今天叫「调用」、明天叫「调用加事件」。其二，名字来自宿主的 `subagent_type` 参数，只有**长得像一个标签**才准入（`SUBAGENT_LABEL_RE`：不含空格、不含路径、至多 40 字符）；这是**形状**判定，不是「散文探测器」，不合格的值会被计成 `(unnamed)` 而不是打印出来。同一段载荷里的任务原文、一句话描述、title、子 agent 的回报与报错字符串，一行都不进表——写入端除了这几个标识符字段外不点任何字段名。这条流在旧库上起点是空的：表要等下一个会迁移的入口（`skillt`、`sync`、`doctor`）跑过才出现，而正在运行的 OpenCode 要**重启**才会加载新的写入端，所以在这些之前开始的会话里 `Spawned` 会显示 0。想关掉就设 `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1`；至于宿主对内置工具究竟会触发 hook 还是事件——这里**不赌**，两条路都写，由 `(parent_session_id, call_id)` 决定只留一行。同一条边界也让一行可以是「缺席」而不是「错」：`Ran as` 说不含写入端存在之前跑过的子 agent。要恢复那段历史技术上很干净——OpenCode 自己的 `opencode.db`里每条 `task` 都带着 `subagent_type` 和两个会话 id——但这里**刻意不做**，因为它会给本项目加一个正在被写的外来库；这个取舍记在 §8 暂缓表里，让「没实现」和「没决定」以后还看得出来。
