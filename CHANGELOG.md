@@ -715,6 +715,7 @@ Evidence Instrument faults first, because both were wrong before the answer was:
          by `test_an_invariant_row_that_names_a_missing_check_is_caught`, which injects
          a check that does not exist and a needle that cannot match, asserts each is
          reported, and restores AGENTS.md byte-for-byte in a `finally`
+         **(superseded by D-052 — a test must not write a tracked file; provoked on a string now)**
          (`_invariant_rows` reads through `ROOT`, so patching the module name would
          have tested nothing — that is why it edits the file). After: 664 passed on
          `python3`, on `.venv/bin/python`, and with
@@ -724,3 +725,31 @@ Cost     A row's `-k` expression is now constrained to a plain or-list unless so
          also teaches the gate a richer grammar — deliberate, because the failure mode
          being prevented is a check nobody notices is missing
 Commit   6a244c1
+
+### D-052 · 2026-10-10 · chore
+Symptom  D-051's provocation test provoked the gate by **writing into AGENTS.md** and
+         restoring it in a `finally`. A tracked document therefore sits modified for
+         the length of every pytest run: an interrupted run leaves it mutilated, and a
+         second agent editing the invariants table fights the test for that file.
+         Nothing about the evidence needed a write — the checker only ever takes text
+Change   `_invariant_rows()` and the gate's loop split into
+         `_invariant_rows(text)` / `_invariant_row_mismatches(text)`. The gate reads
+         AGENTS.md and hands the checker its contents; the provocation hands the same
+         checker a mutated **string**. Both shapes are still provoked (a named-but-
+         absent check, a needle that cannot match), a control now asserts the real
+         table is clean, and no file is touched at all
+Evidence neutering `_invariant_row_mismatches` to `return []` turns the provocation red
+         at `assert any(n == "test_a_check_nobody_wrote" …)`, so the test is still
+         load-bearing after the refactor instead of merely passing. Restored
+         byte-identically (asserted in the script), with `__pycache__` purged first so
+         a same-second edit cannot be served from a stale `.pyc` — the trap this
+         project hit in D-048/D-051's own red-checks. During the run `git status
+         --short` shows only the source edit: **no test modifies a tracked file any
+         more**. 664 passed on `python3`, on `.venv/bin/python`, and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`
+Cost     Two more module-level functions in `test_readme.py` instead of one test that
+         reaches for its own repo root. The old version's `monkeypatch.setattr(tr,
+         "ROOT", tmp_path)` form would have been worse than useless here: `ROOT`
+         already equalled that value, so the injection would not have entered the
+         branch it claimed to exercise
+Commit   b9eb105
