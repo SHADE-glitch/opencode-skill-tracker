@@ -14,6 +14,25 @@ SYSTEMD = ROOT / "skill-tracker" / "systemd"
 # out of the claude-mem neighbour and the Agents page.
 LIMITATIONS = tuple(f"M{i}" for i in range(1, 25))
 
+# --- HTTP status-code parity across a bilingual pair -------------------------
+# A status code named in one language alone is a fact that silently contradicts the
+# other language. A code counts only in an HTTP context (or quoted in backticks), so
+# `500 ms` or `200 rows` is never mistaken for one.
+_STATUS = (
+    "200|201|202|204|206|301|302|303|304|307|308|400|401|402|403|404|405|406|"
+    "407|408|409|410|411|412|413|414|415|416|417|418|421|422|423|424|425|426|"
+    "428|429|431|451|499|500|501|502|503|504|505|506|507|508|510|511"
+)
+_STATUS_RE = re.compile(
+    r"(?:HTTP|status|状态码|返回|returns?|responds?|replies?)[^\n]{0,30}?\b(" + _STATUS + r")\b"
+    r"|`(" + _STATUS + r")`"
+    r"|`(" + _STATUS + r")\s*\+", re.I)
+
+
+def status_codes(path: Path) -> set[str]:
+    return {m.group(1) or m.group(2) or m.group(3)
+            for m in _STATUS_RE.finditer(path.read_text(encoding="utf-8"))}
+
 
 def _text():
     assert README.is_file(), f"missing README at {README}"
@@ -45,6 +64,18 @@ def test_readme_section_counts_match():
     assert h2(en) == h2(zh), (
         f"section count drift: README.md has {h2(en)} '##' sections, "
         f"README.zh-CN.md has {h2(zh)} — add the missing section to the other side")
+
+
+def test_bilingual_pairs_name_the_same_status_codes():
+    """A status code named in one language alone contradicts the other language."""
+    for zh in sorted(ROOT.glob("*.zh-CN.md")):
+        en = ROOT / zh.name.replace(".zh-CN.md", ".md")
+        if not en.is_file():
+            continue
+        ce, cz = status_codes(en), status_codes(zh)
+        assert ce == cz, (
+            f"{en.name} and {zh.name} disagree on an HTTP status code: only "
+            f"{en.name} -> {sorted(ce - cz) or None}; only {zh.name} -> {sorted(cz - ce) or None}")
 
 
 def test_readme_documents_every_known_limitation():
