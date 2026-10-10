@@ -62,9 +62,9 @@
 | 权限事件的 `title` 写入端同样**从不读取**——不是靠事后 scrub 才没落库。`skillt scrub-metadata` 名单里留着 `title`，只为处理老版本已经写下的行 | `test_the_writer_never_names_a_permission_title`、`test_a_denied_call_stores_no_title_but_still_stores_the_denial`、`__selftest` |
 | schema 有两份副本：插件 `TABLES_SQL`/`VIEWS_SQL` 与 Python `SCHEMA_SQL`，必须同一提交里一起改 | `test_plugin_and_python_schema_do_not_drift` |
 | 改视图必须升 `SCHEMA_VERSION`，否则老库继续用旧视图（`CREATE VIEW IF NOT EXISTS` 不更新） | `test_migration.py`、`test_schema_sync.py` |
-| 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`，也不得读真实插件日志 | `temp_skills` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch |
+| 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`、真实插件日志，也**不得问本机的 `systemctl`** | `temp_skills` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch，加上 conftest 的 `never_query_the_hosts_service_manager`——它**既抛异常也记账**，因为 `doctor` 里每一个问宿主的分支都包在 `except Exception` 里，只会抛的绊线被吞掉后就变回一次绿 |
 | 表格列宽由 `fit_columns()` 在渲染时算定；Textual 自己的自动列宽跑在 `_on_idle`，永远晚一帧，第一帧每列都只有表头那么宽 | `test_tui_dashboard_tables_fit_their_content_before_idle`、`test_tui_page_tables_cover_every_tab` |
-| **排班要按排班查**。`backups.latest` 很新**不能**证明下一次备份会来；「问不到 systemd」是未知，永远不算健康 | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`、`test_the_timer_check_never_fails_and_never_shells_out_uninvited` |
+| **排班要按排班查**，不能拿它产出的文件反推。`backups.latest` 很新**不能**证明下一次备份会来；「问不到 systemd」是未知，永远不算健康；`disabled` 与 `not-found` 指向两条不同的命令 | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`、`test_a_disabled_timer_is_named_as_disabled_not_as_missing`、`test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`、`test_the_timer_check_never_fails_and_never_shells_out_uninvited`、`test_the_timer_check_asks_about_the_unit_install_sh_installs` |
 | 推送前测试全绿，**两条文档里的命令都要跑** | `AGENTS.md` |
 
 ## 2. 每日（在相信任何数字之前）

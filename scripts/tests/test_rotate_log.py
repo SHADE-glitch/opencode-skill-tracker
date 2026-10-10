@@ -278,6 +278,9 @@ def test_doctor_reads_a_rotated_log_without_crying_wolf(logdir, monkeypatch):
     conn = db.open_db(str(logdir.parent / "unused.db"))
     args = st.parse_args(["--cli", "doctor", "--db", str(logdir.parent / "unused.db")])
     monkeypatch.setattr(st, "TRACKER_LOG_PATH", str(logdir))
+    # This file's subject is the log, not the schedule: without the stub the two
+    # `_doctor_checks` calls below would ask this machine's systemd (see conftest).
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: "enabled")
     name, status, detail = {c[0]: c for c in st._doctor_checks(conn, args)}["log.errors"]
     assert status == "WARN" and "1 error line(s)" in detail, detail
 

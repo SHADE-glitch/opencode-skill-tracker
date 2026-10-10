@@ -76,13 +76,12 @@ not the test, is what changed.
 | A permission `title` is never read by the writer either — no scrubbing run is what keeps it out. `skillt scrub-metadata` still lists `title` for rows older builds wrote. | `test_the_writer_never_names_a_permission_title`, `test_a_denied_call_stores_no_title_but_still_stores_the_denial`, `__selftest` |
 | The schema lives in two copies: `TABLES_SQL`/`VIEWS_SQL` (plugin) and `SCHEMA_SQL` (Python). Change both in the same commit. | `test_plugin_and_python_schema_do_not_drift` |
 | A view change requires a `SCHEMA_VERSION` bump, or existing databases keep the old view (`CREATE VIEW IF NOT EXISTS` never updates). | `test_migration.py`, `test_schema_sync.py` |
-| Capture tests are hermetic: nothing may read the real `~/.config/opencode/skills` or the real plugin log. | `temp_skills` fixture, `_isolated()` env, `test_doctor.py` monkeypatches |
+| Capture tests are hermetic: nothing may read the real `~/.config/opencode/skills`, the real plugin log, **or this machine's `systemctl`**. | `temp_skills` fixture, `_isolated()` env, `test_doctor.py` monkeypatches, `never_query_the_hosts_service_manager` (conftest) — it records the call *and* raises it, because every host question in `doctor` sits inside `except Exception`, which turned a raising-only guard back into a green run |
 | Tables are sized by `fit_columns()` at render time; Textual's own auto-width pass
   runs in `_on_idle` and is one frame late, which truncates every column to its
   header width. | `test_tui_dashboard_tables_fit_their_content_before_idle`,
   `test_tui_page_tables_cover_every_tab` |
-| A schedule is reported as a schedule. A fresh backup file never stands in for "something will take the next one", and a machine systemd cannot be asked is *unknown*, not healthy. | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`, `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`, `test_the_timer_check_asks_about_the_unit_install_sh_installs` |
-| A schedule is checked as a schedule. `backups.latest` being fresh does **not** prove the next backup is coming; "cannot ask systemd" is unknown, never healthy. | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`, `test_the_timer_check_never_fails_and_never_shells_out_uninvited` |
+| A schedule is checked as a schedule, never inferred from the file it produces. `backups.latest` being fresh does **not** prove the next backup is coming, "cannot ask systemd" is unknown and never healthy, and `disabled` and `not-found` name different commands. | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`, `test_a_disabled_timer_is_named_as_disabled_not_as_missing`, `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`, `test_the_timer_check_never_fails_and_never_shells_out_uninvited`, `test_the_timer_check_asks_about_the_unit_install_sh_installs` |
 | The suite is green before pushing, on **both** documented commands. | `AGENTS.md` |
 
 ## 2. Daily (before trusting the numbers)

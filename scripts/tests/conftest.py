@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -124,6 +125,73 @@ def write_claude_mem_files(root, *, trace=CM_TRACE_LINES, worker=CM_WORKER_LINES
             "startedAt": "2026-10-03T12:54:49.179Z",
         }), encoding="utf-8")
     return str(root / "claude-mem.db")
+
+
+class HostServiceQuery(RuntimeError):
+    """Raised when a test asks this machine's service manager about something.
+
+    A `RuntimeError` on purpose: `skill-tui.py`'s host checks catch
+    `(OSError, subprocess.SubprocessError)` and each of their own wrappers, so an
+    exception from those families would be swallowed by the very code the tripwire
+    exists to audit. It cannot be swallowed anyway — see the fixture.
+    """
+
+
+@pytest.fixture(autouse=True)
+def never_query_the_hosts_service_manager(monkeypatch):
+    """No test may ask `systemctl` about this machine.
+
+    `doctor`'s `backups.scheduled` check runs `systemctl --user is-enabled`. A test
+    that reaches `_doctor_checks()` without stubbing that helper still *passes* — it
+    just reports whatever this machine happens to be running, and would flip between
+    green and red depending on whether the owner installed the timer. That is the
+    definition of a non-hermetic suite, and `test_doctor._healthy_setup` already
+    sets the precedent of stubbing the host-dependent helpers around it. This
+    fixture turns that mistake into a failure instead of a quiet reading.
+
+    Two surfaces, because one is not enough:
+
+    * the call raises, so the host is never actually asked, and the developer sees
+      the exact line that asked;
+    * the call is also **recorded and reported at teardown**, because every host
+      question in `doctor` sits inside `except Exception` ("a version check must
+      never break doctor"). A tripwire that only raises gets caught there, becomes a
+      plausible-looking WARN, and the suite goes green while reading the machine —
+      which is precisely how this defect hid the first time it was measured.
+
+    The guard wraps `subprocess.Popen` rather than `subprocess.run` because `run`,
+    `call` and `check_output` all construct a `Popen` through the module global, so
+    a check added later is caught whichever entry point it uses.
+
+    Scope, stated honestly: this catches **in-process** calls only. A child process
+    spawned by `test_dispatcher.py` has its own `subprocess` module and cannot be
+    reached from here; those tests assert an exit code and the absence of a
+    traceback, never the timer line, so a real read there cannot flip an assertion.
+
+    Yields the list of offending command lines so the test that *deliberately*
+    provokes the guard can assert it fired and then clear its own hits.
+    """
+    hits: list[str] = []
+    real_popen = subprocess.Popen
+
+    def guarded(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        line = (" ".join(str(part) for part in argv)
+                if isinstance(argv, (list, tuple)) else str(argv))
+        if "systemctl" in line:
+            hits.append(line)
+            raise HostServiceQuery(
+                f"a test asked the host's service manager: {line!r}. Stub "
+                "`skill_tui._backup_timer_state` (house precedent: "
+                "`test_doctor._healthy_setup`) instead of reading this machine.")
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", guarded)
+    yield hits
+    if hits:
+        raise HostServiceQuery(
+            f"{len(hits)} systemd call(s) escaped this test's exception handlers: "
+            + "; ".join(hits))
 
 
 @pytest.fixture(autouse=True)

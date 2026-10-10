@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import load_module
+from conftest import HostServiceQuery, load_module
 
 import skill_db as db
 import skill_db_claude_mem as cm
@@ -121,10 +122,14 @@ def test_doctor_json_is_structured(tmp_path, monkeypatch, capsys):
     conn.close()
 
 
-def test_doctor_fails_on_corrupt_database(tmp_path, capsys):
+def test_doctor_fails_on_corrupt_database(tmp_path, monkeypatch, capsys):
     bad = tmp_path / "bad.db"
     bad.write_text("this is definitely not a sqlite database\n", encoding="utf-8")
     conn = db.open_db(str(bad), readonly=False)   # lazy connect: no error yet
+    # Deliberately not `_healthy_setup`, so the schedule stub has to be made here:
+    # every `_doctor_checks` run asks systemd, and this machine's answer is not a
+    # fact about the code under test.
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: "enabled")
     rc = st._cli_doctor(conn, Args(str(bad)))
     out = capsys.readouterr().out
     assert rc == 1, "a FAIL must produce exit code 1"
@@ -459,6 +464,36 @@ def test_the_timer_check_never_fails_and_never_shells_out_uninvited(tmp_path, mo
     for name in ("backups.scheduled",):
         assert found[name][0] != "FAIL", found[name]
     conn.close()
+
+
+def test_the_systemd_tripwire_bites_even_when_a_check_swallows_it(
+        never_query_the_hosts_service_manager):
+    """The guard that makes these host reads impossible has to work itself.
+
+    Two ways it could be quietly useless: the needle never matches (a typo in the
+    string), or it raises and `doctor`'s own `except Exception` turns it into a
+    plausible-looking WARN. The second is not hypothetical — it is exactly what
+    happened when this defect was first counted: the systemd reads were real, every
+    test still passed, and nothing said so. So provoke both halves, and keep a
+    control proving the guard has not become "no subprocess ever".
+    """
+    hits = never_query_the_hosts_service_manager
+    asked = ["systemctl", "--user", "is-enabled", "skillt-auto-backup.timer"]
+
+    with pytest.raises(HostServiceQuery):
+        subprocess.run(asked, capture_output=True, text=True)
+    assert hits == [" ".join(asked)], hits
+
+    # The swallow `doctor` performs around every host question, replayed on purpose.
+    try:
+        subprocess.run(asked, capture_output=True, text=True)
+    except Exception:  # noqa: BLE001 - catching it is the point of this branch
+        pass
+    assert len(hits) == 2, "a caught tripwire must still be recorded at teardown"
+
+    control = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    assert control.returncode == 0, "the guard must not stop the suite's own subprocesses"
+    hits.clear()  # these calls are the test, not a violation of one
 
 
 def test_the_timer_check_has_a_deadline(tmp_path, monkeypatch):

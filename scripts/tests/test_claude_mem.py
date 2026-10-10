@@ -913,6 +913,10 @@ class Args(st.Args):
 def _doctor(tmp_path, tracker_db, monkeypatch, store=None):
     monkeypatch.setattr(db, "SKILLS_DIR", str(tmp_path / "skills"))
     monkeypatch.setattr(st, "_opencode_version", lambda: "1.18.34\n")
+    # Not this file's subject, but every `_doctor_checks` call reaches it: the
+    # schedule question asks this machine's systemd, and conftest's tripwire fails
+    # the test that lets it. Same reason the line above is patched.
+    monkeypatch.setattr(st, "_backup_timer_state", lambda: "enabled")
     if store is None:
         monkeypatch.delenv(cm.CLAUDE_MEM_DB_ENV, raising=False)
         monkeypatch.delenv(cm.CLAUDE_MEM_DIR_ENV, raising=False)
