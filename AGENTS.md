@@ -497,8 +497,8 @@ run and believed.
   is gone but rows in real databases are not (`skillt scrub-metadata`). The
   export document is `schema_version = 6` (5 = `plugin_inventory.scope`,
   6 = the `subagent_usage` key) — bump it with any shape change.
-- Commit messages follow Conventional Commits (`feat:`, `docs:`, `chore:`,
-  `fix:`), code before docs.
+- Commit messages are **English** and follow Conventional Commits (`feat:`, `docs:`,
+  `chore:`, `fix:`), code before docs.
 - The test suite must be green before pushing. Tests locate files via
   `Path(__file__).resolve()`, so they pass both from the repo and through the
   symlinked install locations — do not replace those with hardcoded paths.
