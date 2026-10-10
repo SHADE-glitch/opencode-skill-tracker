@@ -684,3 +684,43 @@ Cost     One more line in every test's teardown, and a stub a future `_doctor_ch
          two schedule invariant rows saying the same thing (mine, from two sittings);
          merged, and both checklists' hermeticity rows now name `systemctl`
 Commit   da4ad5f
+
+### D-051 · 2026-10-10 · guard
+Symptom  Auditing AGENTS.md's invariants table the way the last entry audited the
+         suite (count what the command actually does, don't read the prose) found
+         **two rows whose documented command does not run a check the same row
+         names**. `-k "timer or scheduled"` collects 7 of test_doctor.py's cases and
+         *not* `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`;
+         a `key_help` needle does not match the id
+         `test_a_new_binding_documents_itself_in_the_help`. Neither row looked wrong —
+         each names a real guard and a real command, which is why the mismatch is the
+         dangerous shape: the reader runs it, sees green, and believes the guard ran
+Change   Both rows' selectors widened to cover what they claim (schedule +=
+         `systemd`; interface `key_help` → `help`, still a substring of every name it
+         is meant to reach). The pairing is then made machine-checked by
+         `test_every_invariant_rows_command_selects_the_checks_it_names`, which parses
+         the table, and for each row either matches every named id against the row's
+         own `-k` needles or looks the name up in the paths the row runs. It is static
+         on purpose — a nested `--collect-only` per row would cost minutes for no
+         extra truth, since `-k` *is* substring matching — and it refuses any selector
+         that stops being a plain or-list rather than quietly reasoning about a
+         grammar it no longer understands
+Evidence Instrument faults first, because both were wrong before the answer was:
+         splitting the command with `str.split()` shredded the quoted selector (every
+         row "failed", 0 collected), and appending `-q` to a row command that already
+         carries `-q` collapsed pytest 9's listing to a one-line summary, so a
+         `::name` regex found nothing and reported seven guilty rows. `shlex.split()`
+         plus one `-q` and parsing both node-ids and `<Function x>` gave the real
+         answer: **1 row of 7 mismatched**, then 0 after the fix. The gate is provoked
+         by `test_an_invariant_row_that_names_a_missing_check_is_caught`, which injects
+         a check that does not exist and a needle that cannot match, asserts each is
+         reported, and restores AGENTS.md byte-for-byte in a `finally`
+         (`_invariant_rows` reads through `ROOT`, so patching the module name would
+         have tested nothing — that is why it edits the file). After: 664 passed on
+         `python3`, on `.venv/bin/python`, and with
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`; the doc gates cost
+         0.15 s. No production file touched
+Cost     A row's `-k` expression is now constrained to a plain or-list unless someone
+         also teaches the gate a richer grammar — deliberate, because the failure mode
+         being prevented is a check nobody notices is missing
+Commit   6a244c1
