@@ -567,9 +567,11 @@ ends of the range. `gh run view <id> --json headSha,conclusion,createdAt` is how
 read, not inferred from the run list.
 
 The three commits pushed after that were read the same way and all came back `success`:
-`4c9a347` (run `38027613702`, 1m33s) and `0cd8d47` (run `38028033401`,
-`gh run watch <id> --exit-status` → `0`). So as of 2026-10-10 the pushed tip is green on CI at
-Python 3.12, and the whole 40-commit round has coverage for the first time.
+`4c9a347` (run `38027613702`, 1m33s), `0cd8d47` (run `38028033401`,
+`gh run watch <id> --exit-status` → `0`) and `b14b288` (run `38028330163`,
+`614 passed / 50 skipped in 68.63s`). So as of 2026-10-10 the pushed tip is green on CI at
+Python 3.12 with the same 614/50 split, and the whole 44-commit round has coverage for the
+first time.
 
 **Do not write this count into a document.** It is the third kind of number (§0 rule
 3): a run, with a Python version, a plugin set and a `bun` binary behind it. AGENTS.md
