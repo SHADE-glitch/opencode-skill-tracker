@@ -100,10 +100,9 @@ skillt claude-mem                # claude-mem 自己的账本：它后台采集�
                                  # 「账本看着挺新鲜、但后台同步一直在失败」的信号。
 skillt agentos                   # 顾问 loop：超预算阶段、错误、召回是否真的进了提示、
                                  # 与可度量用量的连接（需要环境里有 AGENT_OS_ROOT）
-wc -l ~/.config/opencode/logs/skill-tracker.log    # 增长观察（M17）
-stat -c %s ~/.config/opencode/logs/skill-tracker.log   # 字节数：doctor 只读前 log.max_bytes（解析后的值）
-                                 # （4 MiB），超出就会自称"下限"。这个数字说明的是文件多大，
-                                 # 不再是 doctor 要跑多久
+# 增长观察（M17）：体积、行数、行/天、错误行数、有没有被上界截断——一份配方、一个地方：
+# docs/maintenance/measurements.md §4。别在这里用一条裸的 `wc -l` 重新推导：
+# 没有与上界对照的行数分不清"总数"和"下限"，而那正是 M17 唯一要紧的差别。
 skillt rotate-log                # 同一个上界落到写的一侧：长到 4 MiB 就把日志**改名**挪走，
                                  # 保留 log.keep_files（默认 5）代。是改名、绝不是截断——
                                  # doctor 要数的那些 `[err]` 行因此一直都在盘上。加 `--yes`
@@ -176,7 +175,7 @@ loginctl enable-linger "$USER"       # 没登录会话也照跑
 
 ## 5. 升级 OpenCode 之后
 
-内置工具 allowlist 钉在某个版本（M13），MCP/插件清单只在 init 解析（M11/M12）。所以：
+先看 [`docs/maintenance/compat-matrix.md`](docs/maintenance/compat-matrix.md) §2——它列出本项目每条说法属于哪个 OpenCode 版本、以及我们已经背下的后果；再看 [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md),那是本项目读取的全部宿主名词、载荷字段路径与目录清单。声明处有两处：`scripts/opencode_compat.py`（Python 侧）与写入端的 `CONTRACT` 块。内置工具 allowlist 钉在某个版本（M13），MCP/插件清单只在 init 解析（M11/M12）。所以：
 
 1. `opencode --version`，记下版本号。
 2. `skillt doctor` → `env.opencode_version` 必须因为漂移而 WARN。

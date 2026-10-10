@@ -131,11 +131,10 @@ skillt claude-mem                # the memory plugin's own ledger: how fresh its
 skillt agentos                   # advisor loops: over-budget stages, errors, whether
                                  # the recalled memory reached the prompt, and the
                                  # join with measured usage (needs AGENT_OS_ROOT)
-wc -l ~/.config/opencode/logs/skill-tracker.log    # growth watch (M17)
-stat -c %s ~/.config/opencode/logs/skill-tracker.log   # bytes: doctor reads only the
-                                 # first `log.max_bytes` (4 MiB by default) and then calls
-                                 # its own counts a floor, so this number is about the
-                                 # file, never about how long doctor takes
+# growth watch (M17): size, lines, lines/day, error count and whether the read is
+# truncated — one recipe, one place: docs/maintenance/measurements.md §4. Do not
+# re-derive it with a bare `wc -l` here: a line count without the cap comparison
+# cannot tell a total from a floor, which is the only thing that matters for M17.
 skillt rotate-log                # the same cap, applied: renames the log aside at
                                  # 4 MiB and keeps log.keep_files (5) generations.
                                  # Renames — never truncates — so the `[err]` lines
@@ -219,8 +218,13 @@ never touch a file younger than 120 s or one whose name doesn't match
 
 ## 5. After upgrading OpenCode
 
-The builtin-tool allowlist is pinned to one release (M13), and MCP/plugin
-inventories resolve only at init (M11/M12). So:
+Start with [`docs/maintenance/compat-matrix.md`](docs/maintenance/compat-matrix.md) §2 —
+it lists which release each claim in this project belongs to, and which consequences we
+already carry — and with [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md),
+which is the full list of host names, payload paths and directories this project reads.
+`scripts/opencode_compat.py` is where they are declared (Python side); the writer's
+`CONTRACT` block is the other copy. The builtin-tool allowlist is pinned to one release
+(M13), and MCP/plugin inventories resolve only at init (M11/M12). So:
 
 1. `opencode --version` — note the number.
 2. `skillt doctor` → `env.opencode_version` must WARN with the drift.
