@@ -11,7 +11,13 @@ counts are printed by the check, never copied into this file.
 
 > **Scope.** Commits whose subject starts with `feat` are deliberately **not** covered: a feature is
 > the product, not a droppable deviation, and the READMEs already document them. The exclusion is by
-> commit *class*, declared in the check's source — not a per-commit skip flag.
+> commit *class*, declared in the check's source — not a per-commit skip flag. The check also only
+> looks at commits that touch the **shipped code paths** (`plugin/`, `scripts/`, `bin/`), so a commit
+> changing documentation alone is not demanded here; when such a commit carries a decision worth
+> keeping, it is named inside the entry it belongs to. AGENTS.md's invariant row says the same thing
+> now — it used to claim "every non-feature commit", which the gate never enforced, and the eight
+> `docs(...)` commits pushed between `5c6fa1f` and this file's edit passed it while proving the
+> sentence false.
 
 > **How these were written.** `Symptom` / `Change` are compressed from commit subjects plus the state
 > of the touched file at HEAD. `Evidence` names a test only where that suite was re-run while writing
