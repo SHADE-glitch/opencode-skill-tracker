@@ -867,8 +867,11 @@ def _backup_timer_state():
     `_opencode_version`: the check below must never be the thing that shells out in
     a test, and a host without user systemd must read as "unknown", never as healthy.
 
-    The answer comes from stdout even on a non-zero exit, because `is-enabled` exits
-    4 for `not-found` while still naming the state it found.
+    **Only stdout is a state.** `is-enabled` names the state there even when it exits
+    non-zero (`not-found` exits 4), while a failure to reach the user manager writes
+    `Failed to connect to user scope bus …` to *stderr* with an empty stdout and
+    exit 1. Falling back to stderr would print a bus error as the unit's state and
+    turn "cannot ask" into "not scheduled" — a wrong answer either way.
     """
     try:
         proc = subprocess.run(
@@ -877,8 +880,7 @@ def _backup_timer_state():
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    answer = (proc.stdout or "").strip() or (proc.stderr or "").strip()
-    return answer or None
+    return (proc.stdout or "").strip() or None
 
 
 def _doctor_checks(conn, args) -> list:

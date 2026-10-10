@@ -407,6 +407,38 @@ def test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy(tmp_path
     conn.close()
 
 
+def test_a_bus_error_is_unknown_not_a_state(tmp_path, monkeypatch, capsys):
+    """The real shape of "no user session", measured 2026-10-10.
+
+    With `XDG_RUNTIME_DIR=/nonexistent`, `systemctl --user is-enabled` writes
+    `Failed to connect to user scope bus via local transport: No such file or
+    directory` to **stderr**, prints **nothing** to stdout and exits 1. Taking the
+    state from stderr made `doctor` print that bus error as if it were the unit's
+    state, and — worse — read as "not scheduled" on a machine where the answer is
+    simply unavailable. So: only stdout is a state, and an empty stdout is unknown
+    whatever the exit code says.
+    """
+    class R:
+        stdout = ""
+        stderr = ("Failed to connect to user scope bus via local transport: "
+                  "No such file or directory")
+        returncode = 1
+
+    monkeypatch.setattr(st.subprocess, "run", lambda *a, **kw: R())
+    assert st._backup_timer_state() is None, "a bus error must not become a state"
+
+    # `_healthy_setup` replaces the helper with a stub, so the doctor call below has
+    # to be handed the real function back — otherwise this test proves nothing about it.
+    real_state = st._backup_timer_state
+    conn, db_path = _healthy_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(st, "_backup_timer_state", real_state)
+    status, detail = checks_by_name(conn, Args(db_path))["backups.scheduled"]
+    assert status == "WARN", detail
+    assert "Failed to connect" not in detail, f"the bus error leaked into the line: {detail}"
+    assert "not-found" not in detail, "unreachable systemd is not evidence of an uninstalled unit"
+    conn.close()
+
+
 def test_the_timer_check_never_fails_and_never_shells_out_uninvited(tmp_path, monkeypatch):
     """Two rules at once: advisory only, and one helper owns the subprocess.
 
