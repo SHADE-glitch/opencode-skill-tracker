@@ -532,9 +532,31 @@ OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist \
 
 2026-10-09: **649 passed** on each of the three, **0 skipped**, with textual 8.2.8
 installed in *both* interpreters. On CI the same suite reported **489 passed /
-48 skipped** at the last green run (`37722605159`, 2026-10-08T03:26Z; `gh run view
-37722605159 --log` is how that was read today, and 26 local commits have landed since) — the skips are `requires_bun` and the dispatcher test, and the pin there
-is Python 3.12; see [`compat-matrix.md`](compat-matrix.md) §1.
+48 skipped** at that run (`37722605159`, 2026-10-08T03:26Z) — the skips were `requires_bun`
+and the dispatcher test, and the pin there is Python 3.12; see
+[`compat-matrix.md`](compat-matrix.md) §1.
+
+measured 2026-10-10 on python3 3.14.4 (+ `.venv` 3.13.14), textual 8.2.8, the three
+commands above, one per run so the seconds mean something — **664 passed, 0 skipped**
+on each (105.91s / 117.18s / 108.47s at `9fb3648`, then 111.19s / 120.42s / 107.24s at
+`5c6fa1f`) — the totals are equal, which is the point of the third command.
+
+**CI on the pushed commit `5c6fa1f`: `614 passed / 50 skipped`, conclusion `success`,
+1m34s, Python 3.12** (run `38025361248`; read with
+`gh run view 38025361248 --log | grep "passed"`). The two skip classes were then
+*counted*, not assumed, and they close:
+
+```bash
+env PATH=/usr/bin:/bin python3 -m pytest scripts/tests -q -rs -p no:cacheprovider
+#  637 passed, 27 skipped   — the 27 are `requires_bun`: 25 test_plugin, 1 test_compat,
+#                             1 test_subagent (bun lives at ~/.bun/bin, off the stripped PATH)
+python3 -m pytest scripts/tests/test_dispatcher.py -q --collect-only
+#  23 tests collected       — the file skips whole when ~/.local/bin/skillt is absent
+```
+
+27 + 23 = **50**, and 614 + 50 = **664** = the local total. So CI's green is the same
+664-test suite with exactly those two classes switched off, nothing else skipped, and no
+test that passes on the runner is one that cannot run here.
 
 **Do not write this count into a document.** It is the third kind of number (§0 rule
 3): a run, with a Python version, a plugin set and a `bun` binary behind it. AGENTS.md
