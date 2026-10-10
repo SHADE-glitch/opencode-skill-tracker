@@ -32,6 +32,21 @@ def test_readme_has_all_sections():
         assert section in text, f"README is missing the '{section}' section"
 
 
+def test_readme_section_counts_match():
+    """README.md and README.zh-CN.md are one document in two languages.
+
+    The Chinese file is the full reference and legitimately carries more `###`
+    subsections, but the two must agree on the number of top-level `##` sections —
+    a section added to one side alone is drift no other check here would catch.
+    """
+    en = (ROOT / "README.md").read_text(encoding="utf-8")
+    zh = _text()
+    h2 = lambda text: len(re.findall(r"^## ", text, flags=re.M))
+    assert h2(en) == h2(zh), (
+        f"section count drift: README.md has {h2(en)} '##' sections, "
+        f"README.zh-CN.md has {h2(zh)} — add the missing section to the other side")
+
+
 def test_readme_documents_every_known_limitation():
     text = _text()
     for marker in LIMITATIONS:
