@@ -476,13 +476,46 @@ def test_no_canary_or_scratch_marker_survives_in_tracked_source():
 INV_ROW = re.compile(r"^\| (?P<promise>[^|]+)\| (?P<breaks>[^|]+)\| (?P<checks>[^|]+)\| (?P<run>[^|]+)\|$")
 
 
-def _invariant_rows():
-    """(promise, checks cell, command cell) for each row of AGENTS.md's table."""
-    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+def _invariant_rows(text: str):
+    """(promise, checks cell, command cell) for each pytest row in a table."""
     for line in text.splitlines():
         m = INV_ROW.match(line)
         if m and "python3 -m pytest" in m["run"]:
             yield m["promise"].strip(), m["checks"].strip(), m["run"].strip().strip("`")
+
+
+def _invariant_row_mismatches(text: str) -> list:
+    """Rows whose documented command cannot select a check the same row names.
+
+    Static rather than a nested `--collect-only` for speed, which is legal only while
+    every selector here is a plain `or` list of substrings — `-k` matches a needle
+    against the test id, so "needle in name" *is* "collected". The assertion below
+    refuses any richer expression instead of quietly stop meaning anything, and says
+    what to do about it.
+    """
+    problems = []
+    for promise, checks, cmd in _invariant_rows(text):
+        names = re.findall(r"`(test_[a-z0-9_]+)`", checks)
+        if not names:
+            continue                      # the row names whole files; nothing to match
+        selector = re.search(r'-k\s+"([^"]*)"', cmd)
+        if selector is None:
+            scope = _suite_test_names(cmd)
+            problems.extend(
+                (promise, name, cmd, "not defined in the paths the row runs")
+                for name in names if name not in scope)
+            continue
+        expr = selector.group(1)
+        assert re.fullmatch(r"[A-Za-z0-9_]+(?: or [A-Za-z0-9_]+)*", expr), (
+            f"{promise}: its -k expression is no longer a plain or-list of "
+            "substrings, so this gate can no longer reason about it. Update the "
+            "gate to the new grammar — do not loosen it.")
+        needles = expr.split(" or ")
+        problems.extend(
+            (promise, name, expr, "no -k needle matches this test id")
+            for name in names
+            if not any(needle in name for needle in needles))
+    return problems
 
 
 def test_every_invariant_rows_command_selects_the_checks_it_names():
@@ -494,38 +527,10 @@ def test_every_invariant_rows_command_selects_the_checks_it_names():
     `key_help` needle did not select `…_documents_itself_in_the_help`. Both read
     as documentation, which is exactly why nobody re-ran them: a maintenance
     engineer who runs the row's own command gets a green that omits the guard.
-
-    Static rather than a nested `--collect-only` for speed, which is legal only
-    while every selector here is a plain `or` list of substrings — `-k` matches a
-    needle against the test id, so "needle in name" *is* "collected". The
-    assertion below refuses any richer expression instead of quietly stop
-    meaning anything, and says what to do about it.
     """
-    rows = list(_invariant_rows())
-    assert rows, "AGENTS.md's invariants table no longer has a single pytest row"
-
-    problems = []
-    for promise, checks, cmd in rows:
-        names = re.findall(r"`(test_[a-z0-9_]+)`", checks)
-        if not names:
-            continue                      # the row names whole files; nothing to match
-        selector = re.search(r'-k\s+"([^"]*)"', cmd)
-        if selector is None:
-            scope = _suite_test_names(cmd)
-            for name in names:
-                if name not in scope:
-                    problems.append((promise, name, cmd, "not defined in the paths the row runs"))
-            continue
-        expr = selector.group(1)
-        assert re.fullmatch(r"[A-Za-z0-9_]+(?: or [A-Za-z0-9_]+)*", expr), (
-            f"{promise}: its -k expression is no longer a plain or-list of "
-            "substrings, so this gate can no longer reason about it. Update the "
-            "gate to the new grammar — do not loosen it.")
-        needles = expr.split(" or ")
-        for name in names:
-            if not any(needle in name for needle in needles):
-                problems.append((promise, name, expr, "no -k needle matches this test id"))
-
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert list(_invariant_rows(text)), "AGENTS.md's table has no pytest row to check"
+    problems = _invariant_row_mismatches(text)
     assert not problems, "invariant rows whose command skips a check they name:\n" + "\n".join(
         f"  {p}: {n} — {sel} — {why}" for p, n, sel, why in problems)
 
@@ -534,7 +539,7 @@ def _suite_test_names(cmd: str) -> set:
     """Every test function defined under the paths a row's command points at."""
     names = set()
     for token in cmd.split():
-        if token.startswith("-"):
+        if token.startswith("-") or "=" in token:
             continue
         path = (ROOT / token).resolve()
         if path.is_file():
@@ -552,42 +557,29 @@ def _suite_test_names(cmd: str) -> set:
 def test_an_invariant_row_that_names_a_missing_check_is_caught():
     """The gate above must be capable of failing, on the real shape of the bug.
 
-    Provoked by pointing a row at a check that does not exist, and once at a
-    `-k` needle that cannot match the id it claims — the two ways a row goes
-    stale — then restored, byte-for-byte.
+    Provoked on a **string**, not on the file: editing AGENTS.md in place would leave
+    a tracked document mutilated for the length of a pytest run, which is a bad deal
+    if the run is interrupted and a worse one if another agent is editing the same
+    table. The mutated text goes straight to the checker, so the evidence is the same
+    and nothing is ever written.
     """
-    original = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    rows = list(_invariant_rows())
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert not _invariant_row_mismatches(text), "the control: the real table is clean"
+    rows = list(_invariant_rows(text))
     assert rows, "the table has no pytest rows to provoke"
+
+    # (a) a row that runs files names a check that is not defined anywhere in them
     promise, checks, cmd = rows[-1]
     assert "-k" not in cmd, f"the last row now carries a selector: {cmd}"
+    edited = text.replace(checks, checks + ", `test_a_check_nobody_wrote`")
+    assert edited != text, "could not inject into the row"
+    found = _invariant_row_mismatches(edited)
+    assert any(n == "test_a_check_nobody_wrote" for _, n, _, _ in found), (promise, found)
 
-    try:
-        # (a) the row's command runs a file, and it names a check that is not there
-        edited = original.replace(checks, checks + ", `test_a_check_nobody_wrote`")
-        assert edited != original, "could not inject into the row"
-        (ROOT / "AGENTS.md").write_text(edited, encoding="utf-8")
-        try:
-            test_every_invariant_rows_command_selects_the_checks_it_names()
-            raise AssertionError("a named-but-absent check must be reported")
-        except AssertionError as exc:
-            assert "test_a_check_nobody_wrote" in str(exc), exc
-
-        # (b) a selector whose needle cannot match the id the row claims
-        target = next((r for r in _invariant_rows() if "-k" in r[2]), None)
-        assert target, "no row carries a -k selector to provoke"
-        t_promise, t_checks, t_cmd = target
-        needle = re.search(r'-k\s+"([^"]*)"', t_cmd).group(1).split(" or ")[0]
-        broken = t_cmd.replace(f'"{needle} or', '"zzzcannotmatch or')
-        assert broken != t_cmd, "could not rewrite the selector"
-        (ROOT / "AGENTS.md").write_text(
-            original.replace(t_cmd, broken), encoding="utf-8")
-        try:
-            test_every_invariant_rows_command_selects_the_checks_it_names()
-            raise AssertionError("an unmatched -k needle must be reported")
-        except AssertionError as exc:
-            assert t_promise in str(exc) or "zzzcannotmatch" in str(exc), exc
-    finally:
-        (ROOT / "AGENTS.md").write_text(original, encoding="utf-8")
-        assert (ROOT / "AGENTS.md").read_text(encoding="utf-8") == original, (
-            "AGENTS.md was not restored byte-for-byte")
+    # (b) a selector whose first needle cannot match the ids the row claims
+    t_promise, _, t_cmd = next(r for r in rows if "-k" in r[2])
+    needle = re.search(r'-k\s+"([^"]*)"', t_cmd).group(1).split(" or ")[0]
+    broken_cmd = t_cmd.replace(f'"{needle} or', '"zzzcannotmatch or', 1)
+    assert broken_cmd != t_cmd, "could not rewrite the selector"
+    found = _invariant_row_mismatches(text.replace(t_cmd, broken_cmd))
+    assert any(p == t_promise and "zzzcannotmatch" in sel for p, _, sel, _ in found), found
