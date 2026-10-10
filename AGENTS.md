@@ -259,6 +259,15 @@ the code; the schema versions track the data. Never conflate them.
   width-dependent status through `call_after_refresh`), and a `DataTable` *does* scroll
   its trailing columns, so a narrow table is a discoverability problem, not a data
   problem — measure `virtual_size.width` against `region.width` before "fixing" it.
+- **A guard is provoked with a string, not with the repository.** When a check can be
+  handed mutated input, take that path: editing a tracked file to make a test go red leaves
+  the document broken for the length of every run, survives an interrupted run, and fights
+  any other agent editing the same table. `test_an_invariant_row_that_names_a_missing_check_is_caught`
+  is the shape — `_invariant_row_mismatches(text)` receives the mutated text, nothing is written
+  (this rule was written the other way in `6a244c1` and corrected in `b9eb105`, D-052). Where a
+  file really must be edited, the restore is byte-exact, asserted by re-reading, and the
+  `__pycache__` entry is purged first — a same-second, same-length edit is otherwise served
+  from a stale `.pyc` and the red-check proves nothing.
 - **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
 - **Never commit the working reports.** `/STATE.md`, `/PROFILE.md`, `/AUDIT.md`,
