@@ -22,9 +22,12 @@ def _text():
 
 def test_readme_has_all_sections():
     text = _text()
+    # The zh-CN README now mirrors README.md's 13 top-level sections in the same
+    # order; these names moved with that restructure. The intent is unchanged:
+    # the Chinese documentation must carry the sections it is expected to.
     for section in (
-        "项目介绍", "架构", "目录说明", "命令说明", "数据库说明",
-        "备份与恢复", "故障排查", "删除方法", "已知限制",
+        "为什么", "环境要求", "安装", "使用", "设置", "工作原理",
+        "备份", "故障排查", "已知限制", "仓库结构", "卸载", "参与贡献", "许可证",
     ):
         assert section in text, f"README is missing the '{section}' section"
 
