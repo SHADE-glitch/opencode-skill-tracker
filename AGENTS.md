@@ -109,6 +109,15 @@ The suite must stay green: a red build is a stop, not a warning, and it is
 the same check you run locally. Read the result after every push:
 `gh run view <id> --log`.
 
+**CI covers what has been pushed, and nothing else.** There is no `paths-ignore`, so a commit that
+stays on this machine has never been seen by CI — measured 2026-10-10, the previous green run's
+`headSha` (read with `gh run view <id> --json headSha,conclusion`) was the round's *starting*
+commit, which left 38 commits of work with zero CI coverage until the push. So "the suite is green
+here" and "CI is green" are two claims, never one by proxy. The gap between their numbers is
+*counted*, not assumed: `requires_bun` (27) + the whole of `test_dispatcher.py` (23) are the
+runner's 50 skips, and the runner's passes plus those skips equal this machine's total. Commands
+and dated readings: [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §10.
+
 The checkout must fetch full history (`fetch-depth: 0`): the record-coverage
 test walks `git log <anchor>..HEAD` back to the coverage anchor, which a
 shallow clone cannot resolve.
