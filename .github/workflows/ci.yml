@@ -7,13 +7,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor and declared upper bound. The floor is `requires-python` in
+        # pyproject.toml and the README Requirements table (3.11); the README
+        # lists 3.14 as the highest version the suite was run green on. Both
+        # ends of the declared range are covered.
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: python3 -m pip install -r requirements.txt -r requirements-dev.txt
       - name: Run tests
