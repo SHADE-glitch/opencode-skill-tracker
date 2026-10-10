@@ -561,17 +561,20 @@ test that passes on the runner is one that cannot run here.
 **Both CI readings line up with the local collection at their own commit.** The run
 before this one (`37722605159`) reports `headSha` **`b57d6b0`** — this round's *starting*
 commit — and its `489 passed / 48 skipped` sums to **537**, which is exactly the local
-L0 baseline recorded at `b57d6b0`. So the 38 commits of this round had **no CI coverage at
-all** until `5c6fa1f` was pushed, and the two totals agree across the two machines at both
-ends of the range. `gh run view <id> --json headSha,conclusion,createdAt` is how that was
-read, not inferred from the run list.
+L0 baseline recorded at `b57d6b0`. So **nothing between `b57d6b0` and `5c6fa1f` had any CI
+coverage until `5c6fa1f` was pushed**: the workflow is `on: push` with no `paths-ignore`, so a
+commit that stays local is a commit nobody checks. That is the structural reason this section
+exists, and it is stated as a range rather than a count because the count keeps moving.
+`gh run view <id> --json headSha,conclusion,createdAt` is how that was read, not inferred from
+the run list — and the run id must be read out of `gh run list --json databaseId,headSha` in
+the same sitting; a remembered id that does not exist exits 1 and proves nothing.
 
-The three commits pushed after that were read the same way and all came back `success`:
-`4c9a347` (run `38027613702`, 1m33s), `0cd8d47` (run `38028033401`,
-`gh run watch <id> --exit-status` → `0`) and `b14b288` (run `38028330163`,
-`614 passed / 50 skipped in 68.63s`). So as of 2026-10-10 the pushed tip is green on CI at
-Python 3.12 with the same 614/50 split, and the whole 44-commit round has coverage for the
-first time.
+The later pushes were read the same way and each came back `success`: `4c9a347`
+(run `38027613702`, 1m33s), `0cd8d47` (run `38028033401`), `b14b288` (run `38028330163`,
+`614 passed / 50 skipped in 68.63s`) and `c80ed8b` (run `38028703973`). Each commit's own push
+is verified by reading that push's run — which is also why **no pass total from CI belongs in
+this file's neighbours**: the same suite is 664/0 here and 614/50 there, and only the sum of
+the two CI numbers equals the local one.
 
 **Do not write this count into a document.** It is the third kind of number (§0 rule
 3): a run, with a Python version, a plugin set and a `bun` binary behind it. AGENTS.md
