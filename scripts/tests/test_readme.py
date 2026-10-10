@@ -24,7 +24,7 @@ _STATUS = (
     "428|429|431|451|499|500|501|502|503|504|505|506|507|508|510|511"
 )
 _STATUS_RE = re.compile(
-    r"(?:HTTP|status|状态码|返回|returns?|responds?|replies?)[^\n]{0,30}?\b(" + _STATUS + r")\b"
+    r"(?:HTTP|status|状态码|返回|returns?|responds?|replies?|answers?|gives?)[^\n]{0,30}?\b(" + _STATUS + r")\b"
     r"|`(" + _STATUS + r")`"
     r"|`(" + _STATUS + r")\s*\+", re.I)
 
