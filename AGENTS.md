@@ -4,6 +4,14 @@ Guidance for AI coding agents working in this repository.
 
 This repository is public.
 
+> **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
+> `CHANGELOG` entry format, CI version pinning and entry commands, the test entry command, and
+> the runtime ignore list are defined once in the machine-wide `STANDARD.md` (outside this
+> repository) and are not restated here.
+>
+> **Push over SSH, never HTTPS.** Verify `git remote get-url --push origin` starts with `git@`
+> before pushing; if it starts with `https://`, fix it first — never push over HTTPS.
+
 ## What this is
 
 An OpenCode plugin plus a CLI/TUI that records **skill, MCP tool and plugin
@@ -89,8 +97,9 @@ Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
 ## CI
 
 `.github/workflows/ci.yml` runs on every `push` and `pull_request`, on
-`ubuntu-latest` with Python 3.12. It installs `requirements.txt` and
-`requirements-dev.txt`, then runs the gate:
+`ubuntu-latest` with a Python matrix of **3.11 and 3.14** — the floor
+(`pyproject.toml` `requires-python`) and the README's declared upper bound. It
+installs `requirements.txt` and `requirements-dev.txt`, then runs the gate:
 
 ```bash
 python3 -m pytest scripts/tests -q
@@ -286,14 +295,13 @@ the code; the schema versions track the data. Never conflate them.
   from a stale `.pyc` and the red-check proves nothing.
 - **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
-- **Never commit the working reports.** `/STATE.md`, `/PROFILE.md`, `/AUDIT.md`,
-  `/PLAN.md`, `/VERIFY.md` are ignored **root-anchored** (leading slash) because this
-  repository is public and those files carry real paths, measured row counts and byte
-  sizes of a personal machine. A pattern without the slash would also ignore a
-  same-named file inside a subdirectory, which is how a report ends up in a docs
-  folder and then in a commit. Proof, both directions:
-  `git check-ignore -v STATE.md` (must name the `.gitignore` line) and
-  `git ls-files STATE.md PROFILE.md AUDIT.md PLAN.md VERIFY.md` (must print nothing).
+- **Never commit the working reports.** `STATE.md`, `PROFILE.md`, `AUDIT.md`, `PLAN.md`,
+  `VERIFY.md` live under `docs/reports/` and are ignored by a **non-anchored** `reports/`
+  rule, because this repository is public and those files carry real paths, measured row
+  counts and byte sizes of a personal machine. The pattern has no leading slash, so it
+  matches the directory at any depth — including `docs/reports/`. Proof, both directions:
+  `git check-ignore -v docs/reports/STATE.md` (must name the `.gitignore` line) and
+  `git ls-files docs/reports` (must print nothing).
   `git add -f` on one of them is the only way to break this, so do not use `-f` here.
 - **Never commit secrets.** The plugin sanitizes secrets before storing them;
   its self-test fixtures use synthetic values only. Keep it that way.
@@ -496,9 +504,6 @@ run and believed.
   symlinked install locations — do not replace those with hardcoded paths.
 
 ## Recording conventions
-- Repairs, performance work, drift guards and withdrawals land in
-  [`CHANGELOG.md`](CHANGELOG.md) as `D-###` entries; ids are monotonic and never reused, so a gap
-  means an entry was deleted and the check fails rather than calling it cleanup.
 - **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
   feature is the product, not a droppable deviation — features are documented in the READMEs. The
   exclusion lives in `scripts/tests/test_record_coverage.py` as one regex over the commit subject;
@@ -509,8 +514,6 @@ run and believed.
   cleanup owed nothing either way → `chore`.
 - A pair of entries that cancel out must both stay (`D-018` + `D-019`, `D-021`): the withdrawal is
   the current state, and a record showing only the reverted-to version would misdirect an upgrade.
-- An entry is an assertion **as of its commit**, not current state. Never re-verify an old entry;
-  never hand-copy an aggregate count here — the check and the test suite print them.
 - **Verification tiers** (named by what the claim needs, not by the tool): **L0** =
   `python3 -m pytest scripts/tests` (no host, no live store), **L1** = a controlled fixture or the
   `/tmp` probe recipe in `MAINTENANCE.md` §5 (a throwaway OpenCode/Textual surface), **L2** = a real

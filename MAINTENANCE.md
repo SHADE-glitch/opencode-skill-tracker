@@ -38,7 +38,7 @@ the numbers this table used to hold were already wrong when they were relocated
 | What `doctor` could not see, and now can | Until 2026-10-10 there was **no check asking whether the timer is installed**, and this row is the evidence: for three days `backups.latest` read PASS — truthfully, the backup was 3.0 d old and the threshold is 7 — while the thing that makes backups had been removed. **A schedule is not a file.** `backups.scheduled` now asks `systemctl --user is-enabled skillt-auto-backup.timer` and WARNs on anything but `enabled`, including "cannot ask systemd" (a machine with no user systemd is *unknown*, not healthy). It never FAILs, because not installing the unit is a legitimate choice the owner made. The two checks are meant to be able to disagree: on this host today `backups.latest` is PASS and `backups.scheduled` is WARN, and that pair is the whole finding |
 | Loose backups (M19) | **Closed for the part this row used to describe** — re-read 2026-10-10: `ls ~/.local/share/opencode/` holds no `skill-usage-backup-*.db` outside `BACKUP_DIR` at all; the six backups are all inside it, which is what retention sweeps. One loose artifact remains and it is not a backup: `skill-usage-export-20260923-100620.json`, `schema_version = 1`, 40,390 B. A full key walk of it (all 32 distinct keys, every list element) finds **no** `summary`, `title`, `error`, `text`, `prompt` or `body` key, so it carries none of the M14 metadata text — but it does carry skill `description` and `path` values and the exporting machine's `db_path`, which is what an export of a skill inventory is for. Every backup in `BACKUP_DIR` was checked the same way for rows whose `metadata` carries `summary`/`title`: **0 in all six** |
 | Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots). **That deletion has not happened**, because the timer that would have run it was stopped on 2026-10-07 — with both backups still present today, which is the row above's evidence that a schedule is not a file |
-| Metadata scrub | Applied 2026-10-01: `scrub-metadata --yes` stripped 40 rows (17 skill / 10 mcp / 13 plugin), usage rows and all 46 `error` texts kept; 3 loose backups still holding the text were deleted and the live DB vacuumed. `skillt scrub-metadata` must now report 0, and `grep -l '<一段已知原文>' ~/.local/share/opencode/skill-usage.db*` must find nothing |
+| Metadata scrub | Applied 2026-10-01: `scrub-metadata --yes` stripped 40 rows (17 skill / 10 mcp / 13 plugin), usage rows and all 46 `error` texts kept; 3 loose backups still holding the text were deleted and the live DB vacuumed. `skillt scrub-metadata` must now report 0, and `grep -l '<a known excerpt>' ~/.local/share/opencode/skill-usage.db*` must find nothing |
 
 Install layout — all four are **symlinks back into this repo**, so editing the
 repo is live (no reinstall needed) except that OpenCode must be restarted to
@@ -149,7 +149,7 @@ until a checkpoint, which is why `scrub-metadata --yes` ends with
 marker you know is in an old row:
 
 ```bash
-grep -l '一段你确定写过的原文' ~/.local/share/opencode/skill-usage.db*   # must print nothing
+grep -l 'an excerpt you know you wrote' ~/.local/share/opencode/skill-usage.db*   # must print nothing
 ```
 
 Then confirm nothing is hiding outside the directory retention can reach. There

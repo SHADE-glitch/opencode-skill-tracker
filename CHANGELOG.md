@@ -149,7 +149,7 @@ Symptom  Permission handlers were coded to the SDK's declared event names; OpenC
          emits `permission.asked` / `permission.replied` with different fields, so every real
          rejection wrote nothing
 Change   Read the events the host actually sends; handle both spellings
-Evidence L1（真机事件形状是测出来的，见 MAINTENANCE §5 的 probe recipe）
+Evidence L1 (the real event shape was measured, not assumed — see the probe recipe in MAINTENANCE §5)
 Cost     **Measured, not assumed.** Before changing any permission handler, re-run the probe recipe
 Commit   01350c5
 
@@ -264,7 +264,7 @@ Commit   d1884cd
 Symptom  Documentation did not state what the Agents page's two columns and the injection grouping
          mean, nor why nothing is backfilled
 Change   Document them (M22 amended, M23 added)
-Evidence 不适用（无行为变化）
+Evidence n/a (no behaviour change)
 Cost     The "nothing backfills" statement is the load-bearing half
 Commit   e22994a
 
@@ -272,7 +272,7 @@ Commit   e22994a
 Symptom  Textual slides the tab-bar underline for 0.3 s on every switch, roughly 305 ms of a
          ~500 ms Dashboard→Skills transition
 Change   `SkillTUI.animation_level = "none"` (about 190 ms with it off)
-Evidence L0 2026-10-08 re-run: `scripts/tests` 531 passed（含 `test_tui_disables_textual_animations`）
+Evidence L0 2026-10-08 re-run: `scripts/tests` 531 passed (including `test_tui_disables_textual_animations`)
 Cost     `"basic"` does **not** remove the underline slide; only `"none"` does. Measured numbers are
          that day's and need re-measuring on another machine
 Commit   1e6342c

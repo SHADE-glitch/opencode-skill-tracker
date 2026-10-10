@@ -9,6 +9,8 @@
 记录并查询 OpenCode 里每个 skill、**MCP 工具和插件工具/命令**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
 数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
 
+[English](README.md) · **简体中文**
+
 > **本仓库的安装方式见 [README.md](README.md)（英文）。** 本仓库是唯一来源，
 > `~/.config/opencode/{plugin/skill-tracker.js,scripts,skill-tracker}` 与
 > `~/.local/bin/skillt` 都是**指回本仓库的软链接**，执行 `./install.sh` 一键完成。
@@ -19,7 +21,7 @@
 
 ---
 
-## 🤔 1. 项目介绍
+## 🤔 为什么
 
 OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具调用钩子来间接识别 skill 使用：
 
@@ -46,58 +48,99 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 
 ---
 
-## 🧱 2. 架构
+## 📋 环境要求
 
-```
-OpenCode 运行
-   │  tool.execute.before/after, permission.ask, event   (skill 与 MCP 共用)
-   ▼
-~/.config/opencode/plugin/skill-tracker.js      (Bun 运行时, bun:sqlite)
-   │  写入
-   ▼
-~/.local/share/opencode/skill-usage.db          (SQLite, WAL, 0600)
-   │  读取
-   ├── skillt                → skill-tui.py      (Textual TUI, 需要 venv)
-   ├── skillt stats|top|...  → skill-stats.py    (旧版 CLI, 行为向后兼容)
-   └── skillt insight|health|doctor|mcp|...  → skill-tui.py --cli  (无 textual 也能跑)
-```
-
-- **写入方**：只有插件（OpenCode 运行时）。所有写入都用 `UNIQUE(session_id, call_id)` 去重 + `ON CONFLICT` upsert。
-- **读取方**：`skillt` 的所有命令。`health` / `mcp` / `plugins` 以只读方式打开数据库，绝不修改。
-- **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里。skill、MCP、插件计数（`skill_usage` / `mcp_usage` / `plugin_usage`）是**三张独立的表**，互不影响。
-
----
-
-## 📦 3. 目录说明
-
-| 路径 | 作用 |
+| | |
 |---|---|
-| `~/.config/opencode/plugin/skill-tracker.js` | OpenCode 插件，唯一的写入方（**不要改捕获逻辑**） |
-| `~/.config/opencode/scripts/skill_db.py` | 共享数据层（schema/迁移/查询/导出/备份），**只装 tracker 自己的数据** |
-| `~/.config/opencode/scripts/skill_db_agentos.py` | 只读邻居：AgentOS 顾问自己的库（单向 import 核心，核心永不反向 import 它） |
-| `~/.config/opencode/scripts/skill_db_claude_mem.py` | 只读邻居：claude-mem 自己的账本与日志（同上） |
-| `~/.config/opencode/scripts/opencode_compat.py` | **上游契约（Python 侧唯一副本）**：OpenCode 自己选的名字（hook 名、事件类型、载荷字段路径、它的目录布局、版本 pin）。写入端在 `plugin/skill-tracker.js` 的 `CONTRACT` 块里有对应的另一份，`test_compat.py` 按值比对两者。本工具自己定的数字与策略不放这里 |
-| `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
-| `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |
-| `~/.config/opencode/scripts/tests/` | pytest 测试 |
-| `docs/maintenance/`（只在仓库里，不安装） | 三份参考：`compat-matrix.md`（每条说法属于哪个 OpenCode 版本）、`opencode-interface.md`（本项目按名字读取的每一个宿主名词）、`measurements.md`（本仓库里任何一体积 / 速率 / 时长背后的那条命令） |
+| 操作系统 | Linux——开发与验证环境为 Ubuntu 26.04；其他发行版**未验证** |
+| OpenCode | 1.18.x——内置工具 allowlist 对齐 1.18.34；权限载荷形状在 1.18.33 上实测，此后未再测（M20） |
+| Python | CLI 与 TUI 需要 3.11+（已在 3.11、3.13、3.14 上测试） |
+| Bun | 随 OpenCode 一起提供——用于运行插件；只有插件自测才需要它 |
+| `uv` | 可选，但推荐用来创建 venv；普通的 `python3 -m venv` 同样可行 |
 
-> **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：
-> 每日 / 每周 / 每月该查什么、把 tracker 与 `opencode.db` 对账的方法、每条不变量对应哪个测试、
-> 以及哪些缺陷是**刻意不修**的（别顺手改回去）。它后面那三份参考是活得比一次编辑更久的部分。
-| `~/.config/opencode/skill-tracker/` | **本目录**：文档 + systemd 单元 |
-| `~/.local/bin/skillt` | 统一入口（bash 分发器；`skill-tracker` 是它的软链接） |
-| `~/.local/share/opencode/skill-usage.db` | 主数据库（WAL 模式，0600） |
-| `~/.local/share/opencode/backups/` | 备份专用目录（0700），`auto-backup`、`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份**都写这里**（M19 已修，之前有两条路径写到了库旁边） |
-| `~/.local/share/opencode/skillt-venv/` | 给 TUI 用的 Python 虚拟环境（含 textual） |
+无头子命令（`insight`、`health`、`doctor`、`export`、`sync`、`mcp`、`plugins`、`agentos`、`claude-mem`、`auto-backup`）**只需要 Python 标准库**。交互式 TUI 需要 [Textual](https://textual.textualize.io/)（`textual>=8.2,<9`），由 `install.sh` 装进 venv。
 
 ---
 
-## 💻 4. 命令说明
+## 📥 安装
+
+### 一键安装
+
+```bash
+git clone https://github.com/SHADE-glitch/opencode-skill-tracker.git
+cd opencode-skill-tracker
+./install.sh
+```
+
+然后**重启 OpenCode** 让它加载插件，并验证：
+
+```bash
+skillt doctor      # PASS / WARN / FAIL 报告；有 FAIL 时退出码为 1
+skillt insight     # 用量摘要——不需要 TUI 即可运行
+skillt             # 启动交互式 TUI
+```
+
+`install.sh` 是幂等的。它会：
+
+1. 创建 `./.venv` 并把 `requirements.txt` 装进去；
+2. 把四个安装位置替换成**指回本仓库的软链接**，因此在这里 `git pull` 就能更新线上安装：
+
+   | 安装位置 | 指向 |
+   |---|---|
+   | `~/.config/opencode/plugin/skill-tracker.js` | `plugin/skill-tracker.js` |
+   | `~/.config/opencode/scripts` | `scripts/` |
+   | `~/.config/opencode/skill-tracker` | `skill-tracker/` |
+   | `~/.local/bin/skillt` | `bin/skillt` |
+
+   如果某个位置已经有真实文件或目录，脚本会**拒绝覆盖**并告诉你该把什么挪走。加 `--force` 才会替换。
+
+3. 跑一次 `skillt doctor` 并打印后续步骤。
+
+> 确保 `~/.local/bin` 在 `PATH` 里。若不在，把 `export PATH="$HOME/.local/bin:$PATH"` 加进你的 shell 配置。
+
+### 手动安装
+
+同一件事，逐条写出——适合你想把仓库放到别处时：
+
+```bash
+git clone https://github.com/SHADE-glitch/opencode-skill-tracker.git
+cd opencode-skill-tracker
+
+# 1. 给 TUI 的 venv
+uv venv --python 3.13 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+
+# 2. 把安装位置指向本仓库
+#    （目录链接上的 -n：不要在已存在的目录里再建一个链接）
+mkdir -p ~/.config/opencode/plugin ~/.local/bin
+ln -sf  "$PWD/plugin/skill-tracker.js" ~/.config/opencode/plugin/skill-tracker.js
+ln -sfn "$PWD/scripts"                 ~/.config/opencode/scripts
+ln -sfn "$PWD/skill-tracker"           ~/.config/opencode/skill-tracker
+ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
+```
+
+先移除任何已存在的真实 `~/.config/opencode/scripts` 或 `~/.config/opencode/skill-tracker` 目录（先备份），否则 `ln -sfn` 会把链接嵌进它里面。
+
+### 仅无头安装
+
+不需要 Textual、不需要 venv——只要记录器和 CLI：
+
+```bash
+mkdir -p ~/.config/opencode/plugin ~/.local/bin
+ln -sf  "$PWD/plugin/skill-tracker.js" ~/.config/opencode/plugin/skill-tracker.js
+ln -sfn "$PWD/scripts"                 ~/.config/opencode/scripts
+ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
+```
+
+之后直接跑 `skillt` 会打印如何创建 venv；其它子命令都能用。
+
+---
+
+## 🧭 使用
 
 统一入口是 `skillt`。
 
-### 4.1 交互式 TUI
+### 交互式 TUI
 
 ```bash
 skillt
@@ -191,7 +234,7 @@ Data 页另有按钮：备份、压缩（VACUUM）、导出、**健康 Health**�
 
 > 删除类操作**必须**先在 Skills 页用 `j`/`k` 选中一行。在其它页面按 `d` 只会提示「请先切到 Skills 页」，不会弹确认框——这是刻意设计，防止误删隐藏表格里的第一行。
 
-### 4.2 无头子命令（不需要 textual）
+### 无头子命令（不需要 textual）
 
 ```bash
 skillt insight [--days N] [--min-uses N] [--limit N] [--json]
@@ -219,7 +262,7 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 - `plugins`：插件清单（来源、版本、工具/命令面、排除状态、`scope` 与最后被看到的时刻）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
 - `claude-mem`：**只读** claude-mem 插件自己的账本——它记了多少 observation / 提示 / 会话、最新一行距今多久、discovery token 合计，以及它后台观察器的连续失败计数；同一时间窗里本 tracker 测到了多少也一并列在旁边。只有计数与时间：那个库里的文本列、以及存着它 API key 的 `settings.json`，一律不读（见 M22）。装在默认位置时不需要配置，否则设 `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` 或 `CLAUDE_MEM_DIR`；库不存在时 `skillt doctor` 对此一句不提。
   它还会按这个顺序读 claude-mem 为自己写的另外三个文件：`inject-trace.log`（它的 hook 注入了什么——`q=` 后面是用户提示词原文，**只数、不读**；计数还会按 `project=` 与按**本地日**分组，归不进组的只计数、绝不少掉）、`logs/claude-mem-<日期>.log`（按级别计行，一天里有多少 ERROR 就是从这儿来的）、`worker.pid`（存活与端口，所以这里不硬编码 `37700`）。文件之后，只有这一条命令会向正在运行的 worker 问三个 HTTP 问题（`/api/stats`、`/api/processing-status`、`/api/chroma/status`），而且**三个端点共用一个总截止时间**（不是各超时一次），答案里只留整数与布尔——`database.path`、`worker.version` 和自由文本 `details` 一律丢掉。这些数字一个都不写进 tracker 的表；TUI 里也不做这些：Plugins 页只把同样的日志文件数字印成一行 dim 文本，从不打开 socket。
-- `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见 §6）。
+- `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见「备份」章节）。
 - `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（**三张表分别**报最新一条距今多少天，例如 `skill_usage 0.0d · mcp_usage 2.2d · plugin_usage 0.0d`，阈值 `--freshness-days`，默认 7；从没记过行的流报 `no rows`，不算停滞；`OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` 可以把某条流排除在判定之外，但它仍会被打印并标注 `(excluded)`）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）、`backups.scheduled`（`skillt-auto-backup.timer` 在用户 systemd 里到底有没有启用——**一份很新的备份文件说明不了下一份会不会来**，而这两件事曾在真机上真的分开过）。这四项**只 WARN、不 FAIL**——安静一周不是故障。
 - `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
 - `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
@@ -231,7 +274,7 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
 所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。
 
-### 4.3 旧版 CLI（委托给 `skill-stats.py`）
+### 旧版 CLI（委托给 `skill-stats.py`）
 
 ```bash
 skillt stats | top [N] | show <skill> | recent [N] | delete <skill> | clear | backup | vacuum
@@ -246,7 +289,7 @@ skillt help
 
 ---
 
-### 4.4 设置与环境变量
+## ⚙️ 设置
 
 **零配置是一种被支持的配置。** 每个键都有默认值，而默认值**就是**屏幕上现在显示的行为：
 插件、CLI、TUI 都不需要任何配置即可工作；在你自己创建之前，那个文件根本不存在。
@@ -296,7 +339,7 @@ README，`scripts/tests/test_settings_documented.py` 就把构建判红——正
 和代码本身。而隐私不变量（纯本地、无网络、不存消息正文）根本不提供开关：给它一个开关
 就是给它一个被关掉的机会。
 
-### 4.5 环境变量总表
+### 环境变量总表
 
 本项目读的每一个环境变量都在这一张表里，两份文档都要有：
 `scripts/tests/test_settings_documented.py` 会**从源码里枚举**环境读取的写法，再逐个来
@@ -339,9 +382,29 @@ README，`scripts/tests/test_settings_documented.py` 就把构建判红——正
 
 ---
 
-## 💽 5. 数据库说明
+## 🔬 工作原理
 
-### 5.1 表
+```
+OpenCode 运行
+   │  tool.execute.before/after, permission.ask, event   (skill 与 MCP 共用)
+   ▼
+~/.config/opencode/plugin/skill-tracker.js      (Bun 运行时, bun:sqlite)
+   │  写入
+   ▼
+~/.local/share/opencode/skill-usage.db          (SQLite, WAL, 0600)
+   │  读取
+   ├── skillt                → skill-tui.py      (Textual TUI, 需要 venv)
+   ├── skillt stats|top|...  → skill-stats.py    (旧版 CLI, 行为向后兼容)
+   └── skillt insight|health|doctor|mcp|...  → skill-tui.py --cli  (无 textual 也能跑)
+```
+
+- **写入方**：只有插件（OpenCode 运行时）。所有写入都用 `UNIQUE(session_id, call_id)` 去重 + `ON CONFLICT` upsert。
+- **读取方**：`skillt` 的所有命令。`health` / `mcp` / `plugins` 以只读方式打开数据库，绝不修改。
+- **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里。skill、MCP、插件计数（`skill_usage` / `mcp_usage` / `plugin_usage`）是**三张独立的表**，互不影响。
+
+### 数据库
+
+#### 表
 
 - **`skills`**：每个 SKILL.md 一行。`path` 有 `UNIQUE` 约束；`name` **没有**唯一约束。
   迁移时新增 `content_hash` 列（内容哈希，用于版本追踪）。
@@ -357,7 +420,7 @@ README，`scripts/tests/test_settings_documented.py` 就把构建判红——正
 - **`subagent_usage`**：宿主每启动一个子 agent 一行，按 `(parent_session_id, call_id)` 去重。只有标识符与时长：`subagent`、`child_session_id`、`status`、`trigger_type`、`duration_ms`。**不存**任务原文、描述、title、子 agent 的回报与报错（见 M24）。同一次启动可能被 hook 路径和事件路径各看到一次，冲突规则只补第一次没填上的字段、不覆盖已有值，所以还是一行。
 - **`skill_versions`**：内容哈希历史，`UNIQUE(skill_name, content_hash)`。
 
-### 5.2 视图
+#### 视图
 
 - `v_skill_totals`：每个 skill 的 total / success / errors / denied / last_used。
 - `v_skill_last30`：近 30 天使用次数。
@@ -369,13 +432,13 @@ README，`scripts/tests/test_settings_documented.py` 就把构建判红——正
 
 插件来源和归属是**初始化时的一次性静态扫描**：入口文件加上它相对 import 的那一层；工具 id 取 `tool: {` 里**最浅的有键那一层**（再深就是某个工具自己的 `args`，不是工具）。新增、升级、改名插件或其命令/工具面后，需要重启 OpenCode 才会刷新清单；扫描无法解析的工具只记 `(unknown)`，无法明确归属的命令直接不记。
 
-### 5.3 运行参数
+#### 运行参数
 
 - `journal_mode = WAL`（读写可并发），`busy_timeout = 5000`，`synchronous = NORMAL`。
 - 文件权限 `0600`；备份目录 `0700`。
 - `source`（personal / open-source）是**派生值**，由 `category` 实时计算，**不落库**，避免重复存储。
 
-### 5.4 直接查询示例
+#### 直接查询示例
 
 ```bash
 sqlite3 ~/.local/share/opencode/skill-usage.db \
@@ -386,9 +449,9 @@ sqlite3 ~/.local/share/opencode/skill-usage.db \
 
 ---
 
-## 💾 6. 备份与恢复
+## 💾 备份
 
-### 6.1 手动备份
+### 手动备份
 
 ```bash
 skillt backup        # 旧版 CLI：备份到 DB 同目录
@@ -397,7 +460,7 @@ skillt backup        # 旧版 CLI：备份到 DB 同目录
 或 TUI 里按 `b` / Data 页「备份」按钮。备份用 `VACUUM INTO` 生成一致性快照。
 无论走哪条路径（旧版 CLI、TUI、`auto-backup`），生成的文件都会 `chmod 0600`。
 
-### 6.2 自动备份与保留策略
+### 自动备份与保留策略
 
 ```bash
 skillt auto-backup --dry-run   # 先看会做什么
@@ -415,7 +478,7 @@ skillt auto-backup             # 真正执行
   - 同名（同一秒）冲突会**报错而不是覆盖**；
   - 有 `.lock` 文件防止并发运行（锁超过 10 分钟视为过期，可被接管）。
 
-### 6.3 用 systemd timer 定时备份与轮转日志（可选，需你手动启用）
+### 用 systemd timer 定时备份与轮转日志（可选，需你手动启用）
 
 单元文件在 `~/.config/opencode/skill-tracker/systemd/`。service 里跑**两件**维护活：`auto-backup`（上面那套备份保留）与 `rotate-log --yes`（插件日志，M17）——日志没有别的清扫者，而没人排队的轮转就等于永远不会发生。也可以直接 `./install.sh --with-timer`（默认仍不装：写 systemd 单元是本项目目录之外的改动）。启用步骤：
 
@@ -435,7 +498,7 @@ loginctl enable-linger "$USER"
 
 > 单元里的 `ExecStart` 使用**绝对路径**（systemd user 的 PATH 默认不含 `~/.local/bin`）。
 
-### 6.4 恢复
+### 恢复
 
 ```bash
 # 1. 停掉正在使用该库的 OpenCode 会话（避免边写边恢复）
@@ -454,7 +517,7 @@ skillt doctor
 
 ---
 
-## 🔧 7. 故障排查
+## 🔧 故障排查
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -472,39 +535,7 @@ skillt doctor
 
 ---
 
-## 🧹 8. 删除方法
-
-按粒度从轻到重：
-
-```bash
-# 1) 只清空使用记录，保留 skills 列表
-skillt clear                      # 旧版 CLI（需确认）
-# 或 TUI Data 页「清空 usage」按钮
-
-# 2) 删除某个 skill 的全部记录（usage + 版本 + skills 行）
-skillt delete <name>              # 旧版 CLI
-# 或 TUI：切到 Skills 页 → j/k 选中 → 按 d → 确认
-
-# 3) 清除 __selftest 遗留的合成行
-skillt cleanup-selftest           # dry-run
-skillt cleanup-selftest --yes     # 真删（自动先备份）
-```
-
-完全移除本工具：
-
-```bash
-rm ~/.local/bin/skillt ~/.local/bin/skill-tracker
-rm ~/.config/opencode/plugin/skill-tracker.js
-rm -rf ~/.config/opencode/scripts ~/.config/opencode/skill-tracker
-rm -rf ~/.local/share/opencode/skillt-venv
-# 数据（谨慎，删前先备份）
-rm ~/.local/share/opencode/skill-usage.db*
-rm -rf ~/.local/share/opencode/backups
-```
-
----
-
-## 🚧 9. 已知限制
+## 🚧 已知限制
 
 以下问题在审计中确认存在。此前几轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等）；一轮又修掉了 **M1 / M7 / M8 / M9**（下文标注"已修复"）。**本轮（对采集与界面的全面实测）修掉了：dashboard 三张表 Enter 无效、Plugins 页对 `@scope/name` 型插件 Enter 无效、Recent 时间线对含 `:` 的名字 Enter 静默失效、导出泄露历史提示词、`on_mount` 开库无保护、一次失败让半屏数据停在旧值、以及测试对本机 skills 目录的依赖**；并给 `doctor` 加了 `capture.freshness` / `log.errors` / `env.opencode_version` 三项，新增 `skillt scrub-metadata`。其余如实记录、**本次不修**（M14–M18 为本轮新登记）。多数是边界情况，不影响日常使用。
 
@@ -603,7 +634,64 @@ rm -rf ~/.local/share/opencode/backups
 
 ---
 
-## 🤝 10. 参与贡献
+## 📦 仓库结构
+
+| 路径 | 作用 |
+|---|---|
+| `~/.config/opencode/plugin/skill-tracker.js` | OpenCode 插件，唯一的写入方（**不要改捕获逻辑**） |
+| `~/.config/opencode/scripts/skill_db.py` | 共享数据层（schema/迁移/查询/导出/备份），**只装 tracker 自己的数据** |
+| `~/.config/opencode/scripts/skill_db_agentos.py` | 只读邻居：AgentOS 顾问自己的库（单向 import 核心，核心永不反向 import 它） |
+| `~/.config/opencode/scripts/skill_db_claude_mem.py` | 只读邻居：claude-mem 自己的账本与日志（同上） |
+| `~/.config/opencode/scripts/opencode_compat.py` | **上游契约（Python 侧唯一副本）**：OpenCode 自己选的名字（hook 名、事件类型、载荷字段路径、它的目录布局、版本 pin）。写入端在 `plugin/skill-tracker.js` 的 `CONTRACT` 块里有对应的另一份，`test_compat.py` 按值比对两者。本工具自己定的数字与策略不放这里 |
+| `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
+| `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |
+| `~/.config/opencode/scripts/tests/` | pytest 测试 |
+| `docs/maintenance/`（只在仓库里，不安装） | 三份参考：`compat-matrix.md`（每条说法属于哪个 OpenCode 版本）、`opencode-interface.md`（本项目按名字读取的每一个宿主名词）、`measurements.md`（本仓库里任何一体积 / 速率 / 时长背后的那条命令） |
+| `~/.config/opencode/skill-tracker/` | **本目录**：文档 + systemd 单元 |
+| `~/.local/bin/skillt` | 统一入口（bash 分发器；`skill-tracker` 是它的软链接） |
+| `~/.local/share/opencode/skill-usage.db` | 主数据库（WAL 模式，0600） |
+| `~/.local/share/opencode/backups/` | 备份专用目录（0700），`auto-backup`、`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份**都写这里**（M19 已修，之前有两条路径写到了库旁边） |
+| `~/.local/share/opencode/skillt-venv/` | 给 TUI 用的 Python 虚拟环境（含 textual） |
+
+> **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：
+> 每日 / 每周 / 每月该查什么、把 tracker 与 `opencode.db` 对账的方法、每条不变量对应哪个测试、
+> 以及哪些缺陷是**刻意不修**的（别顺手改回去）。它后面那三份参考是活得比一次编辑更久的部分。
+
+---
+
+## 🧹 卸载
+
+按粒度从轻到重：
+
+```bash
+# 1) 只清空使用记录，保留 skills 列表
+skillt clear                      # 旧版 CLI（需确认）
+# 或 TUI Data 页「清空 usage」按钮
+
+# 2) 删除某个 skill 的全部记录（usage + 版本 + skills 行）
+skillt delete <name>              # 旧版 CLI
+# 或 TUI：切到 Skills 页 → j/k 选中 → 按 d → 确认
+
+# 3) 清除 __selftest 遗留的合成行
+skillt cleanup-selftest           # dry-run
+skillt cleanup-selftest --yes     # 真删（自动先备份）
+```
+
+完全移除本工具：
+
+```bash
+rm ~/.local/bin/skillt ~/.local/bin/skill-tracker
+rm ~/.config/opencode/plugin/skill-tracker.js
+rm -rf ~/.config/opencode/scripts ~/.config/opencode/skill-tracker
+rm -rf ~/.local/share/opencode/skillt-venv
+# 数据（谨慎，删前先备份）
+rm ~/.local/share/opencode/skill-usage.db*
+rm -rf ~/.local/share/opencode/backups
+```
+
+---
+
+## 🤝 参与贡献
 
 欢迎提交 Issue 与 Pull Request。提交前请确保测试全绿：
 
@@ -615,6 +703,8 @@ python3 -m pytest scripts/tests -q     # 仅标准库；TUI 测试会被跳过
 `README.zh-CN.md` —— `scripts/tests/test_readme.py` 会校验中文文档覆盖了全部
 已知限制（M1–M24）。
 
-## ⚖️ 11. 许可证
+---
+
+## ⚖️ 许可证
 
 [MIT](LICENSE) © 2026 SHADE-glitch
