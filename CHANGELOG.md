@@ -746,7 +746,8 @@ Evidence neutering `_invariant_row_mismatches` to `return []` turns the provocat
          project hit in D-048/D-051's own red-checks. During the run `git status
          --short` shows only the source edit: **no test modifies a tracked file any
          more**. 664 passed on `python3`, on `.venv/bin/python`, and with
-         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`
+         `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist` — re-measured on all
+         three at `9fb3648`, where the rule itself was written into AGENTS.md
 Cost     Two more module-level functions in `test_readme.py` instead of one test that
          reaches for its own repo root. The old version's `monkeypatch.setattr(tr,
          "ROOT", tmp_path)` form would have been worse than useless here: `ROOT`
