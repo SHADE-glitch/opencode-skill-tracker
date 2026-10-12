@@ -1012,3 +1012,48 @@ Cost     No check enforces the purge, so the next rename that skips it prints ph
          a reader who believes the output. Recorded rather than automated because the
          trigger is a filesystem event no test inside the repository can observe.
 Commit   bda057f
+
+### D-060 · 2026-10-12 · guard
+Symptom  The date-range picker had no test in this repository while being the one
+         surface whose output is not a number: it decides the window every other
+         panel then queries. Nothing said whether the 42 cells led on the right
+         weekday, whether a day click landed in the card the person last touched,
+         whether "end follows now" survived the picker's own writes, or whether the
+         span handed back is the span the pane used. The port was faithful —
+         `DateRangeModal` is 430 lines and a `diff` against CodeBuddy's copy reports
+         no differing line, comments included — which is precisely the condition
+         under which a component stops being tested because it is trusted.
+Change   `scripts/tests/test_ocut_calendar.py`, 29 tests, no product line changed.
+         Two expectations are deliberately derived *independently* of the product:
+         the chip table is written out (label → key → id) instead of read from
+         `PRESETS`, and the Sunday lead comes from an ordinal distance to a date
+         known to be a Sunday instead of from `.weekday()`, so both disagree with
+         the product rather than restate it. Covered: the twelve months of a real
+         year plus the 42-cell claim, `-other`/`-today` (today from the instant the
+         picker was *given*, not the machine's clock), the month stepper wrapping the
+         year both ways, day and hour clicks going to the active card only with the
+         hour keeping the typed minute, follow surviving a prefill and dying to a
+         typed edit, four refusals and two acceptances, Cancel and Escape, and three
+         tests that leave the modal — a picked window landing on the tab that asked
+         and on no other, the Plugins tab never being offered a picker, and a
+         `follow_now` end moving when the pinned clock moves.
+Evidence Twenty provocations against a throwaway copy of the product, with the
+         unmutated copy run green first. Three came back FAKE and all three were
+         faults of the test, not the mutation: the chip-key check read its own
+         expectation from the table it was checking; swallowing a parse error still
+         *refused*, for the unrelated blank-end reason, so the case became an
+         unparseable start with the end following, where a swallow dismisses as
+         "all time"; and the follow assertion was aimed at a test that had itself set
+         follow to False, when the one that proves it had set it True. Each was
+         re-aimed and bit. Live in a 120x50 terminal: six chips, both cards prefilled
+         from the tab's 7-day window, Sep 27 leading the Sunday-first grid, the 24
+         hours in six columns, Escape closing. Measured: 721 passed / 21 skipped,
+         identical on this machine and under `HOME=/tmp/fakehome`.
+Cost     Still unproven, and not by accident: the `TimeInput` nudge (↑/↓ and the
+         mouse wheel), the step selector's effect on those nudges, the quick-time
+         chips' `now` path through a real click, and the modal's layout at a narrow
+         terminal. None of those needed a product change today, so none of them has
+         a red yet — the row that watches the panels does not reach inside the modal.
+         The suite is Textual-driven, so it inherits the pinned textual range and
+         about 45 seconds of runtime.
+Commit   b1d34c8
