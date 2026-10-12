@@ -926,3 +926,55 @@ Cost     One more autouse fixture every ocut test now inherits, and a test that
          first reading of the failure, and only the fake-HOME reproduction
          separated them
 Commit   55acde0
+
+### D-058 · 2026-10-12 · fix
+Symptom  Two panels said more than the data supports. The cache panel printed
+         `Input` a second time under the label "Uncached in" — a number carried
+         over from a host where the cache miss *is* a separate field. OpenCode
+         puts the uncached prompt in `input` and the reused part in `cache.read`,
+         both already inside `tokens.total`, so the two lines were one column
+         wearing two names, and a reader could only try to work out what the
+         difference meant. The Plugins tab printed four count columns
+         (`uses / skills / agents / cmds`) whose only possible value is 0: a
+         passive reader has no evidence that a plugin ran, so the panel showed
+         "nothing recorded" in the place where a user reads "nothing used".
+         The commit that shipped it had already claimed the column was gone.
+Change   `dash-cache-miss` / `sum-cache-miss` deleted; the hit rate moved out of
+         the Tokens panel into the cache panel it divides (`dash-tok-hit-rate` →
+         `dash-cache-rate`), so the cache panel is read → write → rate and the
+         uncached number appears once, labelled Input. `PLUGINS_COLUMNS` is now
+         plugin / version / declared as, fed by a `path` column added to
+         `q_plugins` — the entry the host's own config spells — and `ocut
+         plugins` prints the same three fields so the two surfaces cannot
+         disagree about what is known. `scripts/tests/test_ocut_tui.py` (nine
+         tests) is the TUI's own suite; `bin/ocut`, `scripts/ocut-tui.py` and
+         `scripts/ocut-stats.py` joined the coverage gate's `CODE_PATHS`.
+Evidence Fourteen provocations, each a mutation of a throwaway copy of the
+         product under /tmp — no tracked file was edited to make a test red, and
+         the unmutated copy ran green first as the control, because a probe tree
+         that is not the product makes every red meaningless. All fourteen went
+         red on the assertion they aimed at: a fourth cache number, "Uncached in"
+         restored, panel lines stripped of their `[/dim]` marker (the label
+         harvest then finds nothing and the floor catches it), a `uses` column
+         back on Plugins, a window given to the Plugins tab, a shipped default
+         moved to all-time, the dashboard and the tools tab each ignoring their
+         own window, the tools tab reading another tab's window, the calls column
+         swapped for the completed column, a tab label drifting, a token panel
+         switched to another column, the row key built from the clipped cell, and
+         a socket opened on the repaint path. Two findings were about the tests:
+         clicking a tab *pane* does nothing (the strip's id is
+         `--content-tab-<pane>`), which had made every per-tab claim a reading of
+         the Dashboard — `activate` now clicks the strip and asserts the switch
+         took; and an expectation re-derived from the wall clock is a race, so the
+         app's clock is pinned by a fixture. The fixture keeps one failed tool
+         call: with every call completing, `calls` and `ok` are the same number
+         and a swapped column passes — that mutation was FAKE on the first pass.
+Cost     The cache panel no longer prints the uncached prompt next to the cache
+         numbers; it is on the Tokens panel under one name. The Plugins tab lost
+         the declared-skill/agent/command counts (still in `ocut inventory`). The
+         TUI suite adds about 45 seconds to the run, imports a sibling test
+         module on purpose so the host fixture stays one definition, and now
+         watches three more paths in the coverage gate — so a TUI-only repair
+         needs an entry from here on. Measured: 692 passed / 21 skipped, the same
+         numbers on this machine and under `HOME=/tmp/fakehome`.
+Commit   d92cb6b
