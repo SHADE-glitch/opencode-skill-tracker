@@ -43,7 +43,7 @@ which `test_the_maintenance_docs_are_linked_from_both_checklists` enforces.
    WARNs, §4–§9 say which side of which promise the WARN belongs to.
 
 Every recipe here was run on 2026-10-09 on the host described at the end of
-[`compat-matrix.md`](compat-matrix.md) §1. The output shown is what that host said
+[`compatibility.md`](compatibility.md) §1. The output shown is what that host said
 that day — an example of the *shape* of a reading, never an acceptance criterion.
 
 ---
@@ -525,7 +525,7 @@ OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist skillt doctor
   which the skills pin does not move.
 
 The other two files in this directory split the remaining ground:
-[`compat-matrix.md`](compat-matrix.md) is the pins, [`opencode-interface.md`](opencode-interface.md)
+[`compatibility.md`](compatibility.md) is the pins, [`opencode-interface.md`](opencode-interface.md)
 is the surface we depend on by name, and this file is everything that only a run can
 answer.
 
@@ -548,7 +548,7 @@ OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist \
 installed in *both* interpreters. On CI the same suite reported **489 passed /
 48 skipped** at that run (`37722605159`, 2026-10-08T03:26Z) — the skips were `requires_bun`
 and the dispatcher test, and the pin there is Python 3.12; see
-[`compat-matrix.md`](compat-matrix.md) §1.
+[`compatibility.md`](compatibility.md) §1.
 
 measured 2026-10-10 on python3 3.14.4 (+ `.venv` 3.13.14), textual 8.2.8, the three
 commands above, one per run so the seconds mean something — **664 passed, 0 skipped**

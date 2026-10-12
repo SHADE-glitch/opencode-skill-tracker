@@ -923,7 +923,7 @@ daily / weekly / monthly checks, the procedure that reconciles recorded rows
 against OpenCode's own `part` table, the invariants with the test guarding each
 one, and the deviations that must not be "fixed" back. Behind it sit three
 references, and they are the parts that outlive a single edit:
-[`docs/maintenance/compat-matrix.md`](docs/maintenance/compat-matrix.md) says which
+[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) says which
 OpenCode release each claim was measured on,
 [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)
 lists every host name this project reads, and

@@ -1,6 +1,6 @@
 """test_maintenance_docs.py — the maintenance documents cannot drift from the code.
 
-`docs/maintenance/compat-matrix.md` is the version matrix: among its pins it states which
+`docs/maintenance/compatibility.md` is the version matrix: among its pins it states which
 interpreter CI runs. It said **3.12** while `.github/workflows/ci.yml` had become a `3.11` +
 `3.14` matrix and `AGENTS.md` §CI described the same two ends — so the document announced an
 interpreter CI does not run, in the one file a reader is sent to for "what does CI prove". All
@@ -29,7 +29,7 @@ class CiMatrixIsDocumentedAsItRuns(unittest.TestCase):
     WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
     # The documents a reader is sent to for "what does CI run". A version named in either must
     # be the set the workflow actually runs.
-    DOCS = ("AGENTS.md", "docs/maintenance/compat-matrix.md")
+    DOCS = ("AGENTS.md", "docs/maintenance/compatibility.md")
 
     MATRIX_RE = re.compile(r'^\s*python-version:\s*\[([^\]]*)\]', re.M)
     VERSION_RE = re.compile(r'\b3\.\d+\b')
@@ -95,6 +95,33 @@ class CiMatrixIsDocumentedAsItRuns(unittest.TestCase):
         self.assertEqual(found[0][1], ["3.12"])
         # The second line states 3.11 but makes no CI claim: it is the packaging floor.
         self.assertNotIn(2, [hit[0] for hit in found])
+
+
+DOCDIR = ROOT / "docs" / "maintenance"
+
+
+class DocsIndexTest(unittest.TestCase):
+    """Every document under docs/maintenance/ is reachable from its index.
+
+    A reference nobody can walk to is a reference nobody reads at the right moment — the
+    ordinary failure where the documents exist, get written, and then a maintainer edits the
+    checklist for a month without ever being told the file is there.
+    """
+
+    def test_every_document_is_reachable_from_the_index(self):
+        index = (DOCDIR / "README.md").read_text(encoding="utf-8")
+        for path in sorted(DOCDIR.glob("*.md")):
+            if path.name == "README.md":
+                continue
+            self.assertIn(f"({path.name})", index,
+                          f"{path.name} is not linked from docs/maintenance/README.md")
+
+    def test_the_index_names_the_documents_it_should(self):
+        index = (DOCDIR / "README.md").read_text(encoding="utf-8")
+        for name in ("compatibility.md", "opencode-interface.md", "measurements.md"):
+            with self.subTest(name=name):
+                self.assertTrue((DOCDIR / name).is_file(), f"missing {name}")
+                self.assertIn(f"({name})", index, f"{name} is not indexed")
 
 
 if __name__ == "__main__":

@@ -633,7 +633,7 @@ skillt doctor
 | `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
 | `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |
 | `~/.config/opencode/scripts/tests/` | pytest 测试 |
-| `docs/maintenance/`（只在仓库里，不安装） | 三份参考：`compat-matrix.md`（每条说法属于哪个 OpenCode 版本）、`opencode-interface.md`（本项目按名字读取的每一个宿主名词）、`measurements.md`（本仓库里任何一体积 / 速率 / 时长背后的那条命令） |
+| `docs/maintenance/`（只在仓库里，不安装） | 三份参考：`compatibility.md`（每条说法属于哪个 OpenCode 版本）、`opencode-interface.md`（本项目按名字读取的每一个宿主名词）、`measurements.md`（本仓库里任何一体积 / 速率 / 时长背后的那条命令） |
 | `~/.config/opencode/skill-tracker/` | **本目录**：文档 + systemd 单元 |
 | `~/.local/bin/skillt` | 统一入口（bash 分发器；`skill-tracker` 是它的软链接） |
 | `~/.local/share/opencode/skill-usage.db` | 主数据库（WAL 模式，0600） |

@@ -400,7 +400,7 @@ def test_docs_cross_link_so_no_file_is_an_orphan():
 # MAINTENANCE ×2 — so instead of a translation they owe two things: a link from
 # both checklists, and a command beside every reading they state.
 MAINT_DOCS = ROOT / "docs" / "maintenance"
-TRIO = ("compat-matrix.md", "opencode-interface.md", "measurements.md")
+TRIO = ("compatibility.md", "opencode-interface.md", "measurements.md")
 
 
 def test_the_maintenance_docs_are_linked_from_both_checklists():
