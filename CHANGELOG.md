@@ -1057,3 +1057,79 @@ Cost     Still unproven, and not by accident: the `TimeInput` nudge (↑/↓ and
          The suite is Textual-driven, so it inherits the pinned textual range and
          about 45 seconds of runtime.
 Commit   b1d34c8
+
+### D-061 · 2026-10-13 · fix
+Symptom  The MCP tab keys a row on `(server, tool)` because `v_mcp` groups by both,
+         and the drill-down behind that row queried `mcp_usage.tool` alone. Two
+         servers exposing a tool named `search` therefore opened the same four calls
+         under either row, each screen titled with the server the person clicked and
+         each header counting both — the title disagreed with its own list. Second: a
+         double click pushed **two** copies of the drill-down, because
+         `push_screen` is not awaited inside the row handler, so the tail of the
+         click landed while the new screen was still mounting; the footer's "Back"
+         then popped one and left the other on screen. Third: the plugin drill-down
+         printed "no uses · all time" and "No calls recorded for this name", a count
+         of zero where the reader holds no tool-ownership evidence at all.
+Change   `server` travels from the row key into `HistoryScreen` and into the query,
+         through a new `_history_conds` that `q_history` and `q_entity_summary` now
+         share — the list and the header above it are one measurement at one scope,
+         so they are not allowed to spell the predicates twice. The router passes the
+         half it already parsed out of the key. A row select whose table is not on
+         the visible screen is dropped. The plugin's empty state names the missing
+         evidence in both places it appears.
+Evidence 16 provocations against a throwaway copy of the product under `/tmp`, the
+         unmutated copy run green as the control first. Dropping the server at each
+         of the four places it now travels (the SQL condition, the list call, the
+         summary call, the router) produced four separate reds — including
+         `('alpha', 4, 3, 4)`, which is the alpha row showing beta's calls. Removing
+         the `escape` half of the Back binding, the second-activation guard, the
+         prefix order, the note's list of hidden names, and the exactness of the
+         width the note promises each went red for its own assertion. Two of the 16
+         were instrument faults, found and re-aimed: one needle did not exist in the
+         file (the harness aborted before running it), and one deleted the word
+         `hidden` rather than the column names the assertion looks for. Measured:
+         736 passed / 21 skipped / 3 subtests, the same under this HOME and a fake
+         one with the skills directory pointed at a path that does not exist.
+Cost     `ModelResponsesScreen` (the Tokens tab's drill-down) is exercised only as
+         far as the row that opens it; its own header and window are not pinned by
+         this round's suite. The keyboard path — focus the table, Enter — is not
+         driven either; every activation here is a click. And the left-hand half of
+         `_cap_cell`, the one that keeps a path's tail, has no table column to reach
+         it on this substrate: `session.project_id` is 6 or 40 characters with no
+         `/` in any of 324 real sessions (measured 2026-10-13), so the drill-down's
+         project column is an opaque id and a path arrives only as
+         `tool_calls.directory`, which the detail screen prints whole. It is tested
+         directly, and named here, rather than left as a rule with a phantom column.
+Commit   8d2f53d
+
+### D-062 · 2026-10-13 · guard
+Symptom  The drill-down is three levels that hand identity to each other through a
+         row key — the entity tab, that entity's calls in the tab's own window, one
+         call's fields — and nothing in this repository followed a key across a
+         single one of those handoffs. Every failure it could catch is a visible
+         disagreement between two things on screen at once: the title above a table,
+         the counts above the list, the row under the cursor, the record it opens.
+Change   `scripts/tests/test_ocut_drill.py`, 9 tests, its own fixture because the
+         shapes needed are specific: two MCP servers sharing one tool name (the only
+         shape that tells a pair key from a tool-only query), a call whose message
+         row is absent so a real NULL reaches the detail screen, a 35-character tool
+         name and a 40-character project id so the cell cap bites in a table rather
+         than only in arithmetic, and one failed call so `calls`, `ok` and `fail` are
+         three different numbers. Part shapes still come from `test_ocut_sync`.
+Evidence 29 provocations across D-061 and this entry, all red. Three faults were the
+         harness's and are recorded because they are how a green suite can mean
+         nothing: `app.query_one` searches the **base** screen, so a second-level row
+         raised `NoMatches` and read as "nothing opened" when the opposite had
+         happened; one activation pushed two screens, so `open_row` now asserts at
+         most one level per activation — the Escape assertions in the same file had
+         been failing for that reason and not for the one the message claimed; and
+         the cap test's first premise was invented, since it asserted the project
+         column shows a cut path, which the host's own `project_id` shape makes
+         impossible. Measured: 9 passed for the file, 736 passed / 21 skipped / 3
+         subtests for the suite, identical on this machine and under a fake HOME.
+Cost     The suite drives Textual, so it inherits the pinned textual range and about
+         49 seconds. Live-terminal confirmation of the drill-down (a real tmux
+         session, real rows) was not re-run this round: the three-level chain is
+         asserted against a fixture built through the real indexer, which is a
+         stronger claim about the code than about the screen.
+Commit   04b2da6
