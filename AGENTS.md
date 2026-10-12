@@ -271,6 +271,13 @@ the code; the schema versions track the data. Never conflate them.
   file really must be edited, the restore is byte-exact, asserted by re-reading, and the
   `__pycache__` entry is purged first — a same-second, same-length edit is otherwise served
   from a stale `.pyc` and the red-check proves nothing.
+  **A directory rename is the same trap with no edit at all** (2026-10-12, D-059): the cache key
+  is mtime + size, and renaming the repository changes neither, so pytest's rewriting caches
+  (`*-pytest-*.pyc`, written under the old name) keep being served and their baked-in filename
+  names a directory that no longer exists — every skip line, traceback and `-rs` path then
+  reads `../opencode-skill-tracker/…` after the rename. Purge `scripts/**/__pycache__` and
+  `.pytest_cache` after any rename, and treat a path in test output as evidence only after that:
+  the suite can be genuinely green while every path it prints is a lie.
 - **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
 - **Never commit the working reports.** `STATE.md`, `PROFILE.md`, `AUDIT.md`, `PLAN.md`,
