@@ -827,6 +827,10 @@ def q_plugins(conn):
         "   AND v.kind = 'plugin' LIMIT 1) AS version,"
         "  (SELECT source FROM inventory v WHERE v.name = n.name"
         "   AND v.kind = 'plugin' LIMIT 1) AS source,"
+        # what the host's own config spells for this plugin — an npm name with a
+        # version, or a local file. `source` only says which root was walked.
+        "  (SELECT path FROM inventory v WHERE v.name = n.name"
+        "   AND v.kind = 'plugin' LIMIT 1) AS path,"
         " COUNT(u.call_id) AS uses, MAX(u.ts) AS last_used,"
         "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name"
         "   AND x.kind = 'skill') AS skills,"

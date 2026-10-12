@@ -116,7 +116,10 @@ TOKEN_COLUMNS = ("Model", "Provider", "Prompt Total", "Requests", "Input",
 TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used")
 SKILLS_COLUMNS = ("skill", "calls", "ok", "last used")
 AGENTS_COLUMNS = ("agent", "calls", "last used")
-PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds")
+# Name, version, and where the host says it came from. No usage column: a passive
+# reader has no evidence that a plugin ran, and a column that can only ever hold 0
+# makes "nothing recorded" look like "nothing used" — see q_plugins().
+PLUGINS_COLUMNS = ("plugin", "version", "declared as")
 MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used")
 HISTORY_COLUMNS = ("when", "project", "session", "status", "duration")
 # q_plugin_history selects from `tool_calls`, so one row here is one call of a
@@ -1272,14 +1275,13 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tok-output"),
                                 Static(id="dash-tok-api"),
                                 Static(id="dash-tok-usage"),
-                                Static(id="dash-tok-hit-rate"),
                                 classes="usage-panel", id="panel-dash-tokens",
                             ),
                             Vertical(
                                 Static("Cache", classes="panel-title"),
                                 Static(id="dash-cache-hit"),
-                                Static(id="dash-cache-miss"),
                                 Static(id="dash-cache-write"),
+                                Static(id="dash-cache-rate"),
                                 classes="usage-panel", id="panel-dash-cache",
                             ),
                             classes="dash-row", id="dash-row-1",
@@ -1359,7 +1361,6 @@ if HAVE_TEXTUAL:
                             Vertical(
                                 Static("Cache breakdown", classes="panel-title"),
                                 Static(id="sum-cache-hit"),
-                                Static(id="sum-cache-miss"),
                                 Static(id="sum-cache-write"),
                                 Static(id="sum-hit-rate"),
                                 classes="usage-panel", id="panel-cache",
@@ -1459,11 +1460,13 @@ if HAVE_TEXTUAL:
             # No time window: the plugin list is all-time (the inventory carries
             # no timestamps), so start/end are accepted for the shared fill
             # signature but ignored. Name is the row key, so Enter/double-click
-            # opens the plugin's own drill-down; version is not shown.
+            # opens the plugin's own drill-down.
             self._fill_wide(
                 "t-plugins",
-                [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
-                  f"{r['agents']:,}", f"{r['commands']:,}"]
+                # `source` is which root the reader walked ("config"), which says
+                # nothing a person can act on; `path` is the entry the host's own
+                # config spells — an npm name or a local file — so that is the column.
+                [[r["plugin"], r["version"] or "-", r["path"] or "-"]
                  for r in db.q_plugins(conn)],
                 "No plugins installed", key_kind="plugin")
 
@@ -1830,11 +1833,10 @@ if HAVE_TEXTUAL:
             put("#sum-input", "Input", fmt_n(s["prompt_tokens"]))
             put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
             put("#sum-total", "API Total", fmt_n(s["total_tokens"]))
-            # OpenCode splits the prompt the way the cache works and names no third
-            # number: "Uncached in" is what other hosts called the cache miss, so it
-            # is Input again and is only ever spelled out here, not at every use.
+            # OpenCode names no third cache number: what other hosts called the
+            # cache miss is its `input`, which the Tokens panel already prints. Repeating
+            # it here read as a second measurement of a different thing.
             put("#sum-cache-hit", "Cache read", fmt_n(s["cache_read"]))
-            put("#sum-cache-miss", "Uncached in", fmt_n(s["prompt_tokens"]))
             put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
             # cache read / (cache read + uncached input) — the whole prompt.
             frac = db.cache_read_rate(s["cache_read"], s["prompt_tokens"])
@@ -1917,14 +1919,14 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-tok-api", "API Total", fmt_n(s["total_tokens"]))
             self._put_panel("#dash-tok-usage", "Prompt Total",
                             fmt_n(s["prompt_total_tokens"]))
-            self._put_panel("#dash-tok-hit-rate", "Hit rate",
-                            self._hit_rate(s["cache_read"], s["prompt_tokens"]))
 
         def _render_dashboard_cache(self, s: dict) -> None:
+            # The rate lives with the two numbers it divides, not with the token
+            # totals: same window, same rows, and no line that repeats "Input".
             self._put_panel("#dash-cache-hit", "Cache read", fmt_n(s["cache_read"]))
-            self._put_panel("#dash-cache-miss", "Uncached in",
-                            fmt_n(s["prompt_tokens"]))
             self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
+            self._put_panel("#dash-cache-rate", "Hit rate",
+                            self._hit_rate(s["cache_read"], s["prompt_tokens"]))
 
         def _render_dashboard_runtime(self, a: dict) -> None:
             # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.

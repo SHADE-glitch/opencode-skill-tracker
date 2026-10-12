@@ -32,6 +32,14 @@ CODE_PATHS = [
     # and the ocut layer is where a renamed host field would go unnoticed.
     "scripts/ocut_db.py",
     "scripts/ocut-sync.py",
+    # The interface the owner reads, added 2026-10-12 the day it was put on the new
+    # schema: a panel that prints the wrong column is a fix, and the first two of
+    # those were found by the TUI's own suite. Their introduction was one `feat:`
+    # commit, which the exclusion below exempts, so widening the list costs nothing
+    # in back-fill.
+    "scripts/ocut-tui.py",
+    "scripts/ocut-stats.py",
+    "bin/ocut",
     "plugin/skill-tracker.js",
     "scripts/opencode_compat.py",
     "scripts/skill_db.py",

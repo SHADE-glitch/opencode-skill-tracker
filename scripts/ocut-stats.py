@@ -268,10 +268,13 @@ def cmd_models(conn, args):
 
 
 def cmd_plugins(conn, args):
+    # No usage column: see q_plugins(). Same three fields as the TUI's Plugins tab,
+    # so the two surfaces cannot disagree about what is known.
     rows = _rows(db.q_plugins(conn),
-                 ["plugin", "uses", "skills", "agents", "commands", "last_used"])
-    print(table(["plugin", "uses", "skills", "agents", "cmds", "last used"],
-                [[r[0], r[1], r[2], r[3], r[4], ts(r[5])] for r in rows]))
+                 ["plugin", "version", "path"])
+    print(table_or(["plugin", "version", "declared as"],
+                   [[r[0], r[1] or "-", r[2] or "-"] for r in rows],
+                   empty="  (none)"))
 
 
 def cmd_show(conn, args):
