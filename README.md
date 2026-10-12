@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-[![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-skill-tracker)
+[![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
 Record and query how every skill, **every MCP tool** and **every plugin tool /
 command** in [OpenCode](https://opencode.ai) is actually used: what ran, when,
@@ -68,8 +68,8 @@ interactive TUI needs [Textual](https://textual.textualize.io/)
 ### Out of the box
 
 ```bash
-git clone https://github.com/SHADE-glitch/opencode-skill-tracker.git
-cd opencode-skill-tracker
+git clone https://github.com/SHADE-glitch/opencode-usage-tracker.git
+cd opencode-usage-tracker
 ./install.sh
 ```
 
@@ -107,8 +107,8 @@ skillt             # launch the interactive TUI
 Same thing, spelled out — useful if you prefer to place the repo elsewhere:
 
 ```bash
-git clone https://github.com/SHADE-glitch/opencode-skill-tracker.git
-cd opencode-skill-tracker
+git clone https://github.com/SHADE-glitch/opencode-usage-tracker.git
+cd opencode-usage-tracker
 
 # 1. venv for the TUI
 uv venv --python 3.13 .venv
@@ -880,7 +880,7 @@ If the database was polluted historically, clean it with
 ## 📦 Repository layout
 
 ```
-opencode-skill-tracker/
+opencode-usage-tracker/
 ├── README.md                     # this file (English)
 ├── README.zh-CN.md               # full documentation, Chinese
 ├── MAINTENANCE.md                # operating checklist (English)

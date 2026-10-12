@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-[![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-skill-tracker)
+[![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
 记录并查询 OpenCode 里每个 skill、**MCP 工具和插件工具/命令**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
 数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
@@ -67,8 +67,8 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 ### 一键安装
 
 ```bash
-git clone https://github.com/SHADE-glitch/opencode-skill-tracker.git
-cd opencode-skill-tracker
+git clone https://github.com/SHADE-glitch/opencode-usage-tracker.git
+cd opencode-usage-tracker
 ./install.sh
 ```
 
@@ -103,8 +103,8 @@ skillt             # 启动交互式 TUI
 同一件事，逐条写出——适合你想把仓库放到别处时：
 
 ```bash
-git clone https://github.com/SHADE-glitch/opencode-skill-tracker.git
-cd opencode-skill-tracker
+git clone https://github.com/SHADE-glitch/opencode-usage-tracker.git
+cd opencode-usage-tracker
 
 # 1. 给 TUI 的 venv
 uv venv --python 3.13 .venv

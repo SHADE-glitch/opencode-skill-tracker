@@ -1,6 +1,6 @@
 [Unit]
 Description=OpenCode skill tracker automatic backup and log rotation
-Documentation=https://github.com/SHADE-glitch/opencode-skill-tracker/blob/master/README.zh-CN.md
+Documentation=https://github.com/SHADE-glitch/opencode-usage-tracker/blob/master/README.zh-CN.md
 
 [Service]
 Type=oneshot

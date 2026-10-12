@@ -1,4 +1,4 @@
-# CHANGELOG — opencode-skill-tracker
+# CHANGELOG — opencode-usage-tracker
 
 Original project, **no upstream**: nothing here is a deviation from somebody else's code, so this
 record is not a divergence list. It records the repairs, the performance work, the drift guards and
