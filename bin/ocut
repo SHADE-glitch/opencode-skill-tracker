@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# ocut — entry point for the OpenCode usage tracker.
+#
+#   ocut                 launch the interactive TUI (eight tabs)
+#   ocut sync            index what OpenCode wrote since the last run
+#   ocut sync --full     rebuild the tracker database from scratch
+#   ocut stats|tools|skills|agents|plugins|mcp|models|show|recent|inventory|export|health
+#                        headless reports (no TUI, standard library only)
+#   ocut backup          snapshot the database before a risky step
+#   ocut restore         list snapshots, or restore one: ocut restore NAME
+#   ocut format          print the format registry; --write regenerates its document
+#
+# Written in bash on purpose: it must still run and print a useful error when the
+# TUI venv is missing or broken, so it cannot depend on any Python.
+#
+# Location-independent: it resolves itself through symlinks, so the repository may
+# live anywhere and ~/.local/bin/ocut may be a symlink back to it. Override with
+# OCUT_SCRIPTS (a scripts/ dir) and OCUT_VENV (a venv dir *or* a python binary)
+# when the layout is unusual.
+set -euo pipefail
+
+# `--help` is answered BEFORE any location is resolved. The launcher is the one
+# piece of this tool that has to work when the install is broken — resolving a
+# venv first would turn "show me the commands" into a failure to find python.
+for a in "$@"; do
+  case "$a" in
+    -h|--help|help)
+      # Print the leading comment block instead of a hard-coded line range: a
+      # range is exactly what lets help text drift out of step with the script.
+      tail -n +2 "${BASH_SOURCE[0]}" | while IFS= read -r line; do
+        case "$line" in
+          \#*) line="${line#\#}"; printf '%s\n' "${line# }" ;;
+          *) break ;;
+        esac
+      done
+      exit 0
+      ;;
+  esac
+done
+
+# readlink -f / cd return non-zero for exotic installs; the `|| true` guards keep
+# `set -e` from aborting with no message, so the fallbacks below can speak.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+SELF="${SELF:-${BASH_SOURCE[0]}}"
+REPO_DIR="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)" || REPO_DIR=""
+
+SCRIPTS="${OCUT_SCRIPTS:-}"
+if [ -z "$SCRIPTS" ] || [ ! -d "$SCRIPTS" ]; then
+  if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/scripts" ]; then
+    SCRIPTS="$REPO_DIR/scripts"
+  else
+    # install.sh only ever symlinks bin/ocut into ~/.local/bin; it never copies
+    # the scripts into a user path, so there is no second place to look. Saying
+    # "not found" beats exec'ing a path that cannot exist.
+    echo "ocut: no scripts directory found next to $SELF — set OCUT_SCRIPTS" >&2
+    exit 1
+  fi
+fi
+
+# OCUT_VENV may name a venv directory *or* a python binary. Both are honoured:
+# naming the interpreter used to be discarded silently and system python3 ran
+# instead, which stays invisible until the TUI fails on a missing dependency.
+PY="${OCUT_VENV:-}"
+if [ -n "$PY" ] && [ -x "$PY/bin/python" ]; then
+  PY="$PY/bin/python"
+elif [ -n "$PY" ] && [ -x "$PY" ]; then
+  :
+elif [ -n "$PY" ]; then
+  echo "ocut: OCUT_VENV='$PY' is neither a venv dir nor an executable" >&2
+  exit 1
+elif [ -n "$REPO_DIR" ] && [ -x "$REPO_DIR/.venv/bin/python" ]; then
+  PY="$REPO_DIR/.venv/bin/python"
+else
+  # The headless reports need only the standard library; the TUI prints its own
+  # instructions when it cannot import textual.
+  PY="$(command -v python3 || true)"
+  if [ -z "$PY" ]; then
+    echo "ocut: no python3 on PATH and no venv at $REPO_DIR/.venv" >&2
+    exit 1
+  fi
+fi
+
+# The subcommand is the first token that is not a flag and not the value of one,
+# so global flags may sit before OR after it: `ocut --limit 5 tools` ==
+# `ocut tools --limit 5`. A value-taking flag missing from this list makes its
+# VALUE the command (`ocut --db X health` would look for a command named X), so the
+# list is not decoration. It is checked against the two Python scripts' own
+# `add_argument` calls by test_the_value_flag_list_is_the_scripts_own_one — a list
+# kept honest only against a test's copy of itself is how this file once advertised
+# --days, --out, --keep and --hours, none of which anything accepted.
+VALUES_FOR=("--db" "--kind" "--limit" "--host-db" "--host-config")
+cmd=""; rest=(); skip_next=0
+for a in "$@"; do
+  if [ "$skip_next" -eq 1 ]; then skip_next=0; rest+=("$a"); continue; fi
+  case " ${VALUES_FOR[*]} " in
+    *" $a "*) skip_next=1; rest+=("$a"); continue ;;
+  esac
+  case "$a" in
+    -*) rest+=("$a") ;;
+    *) if [ -z "$cmd" ]; then cmd="$a"; else rest+=("$a"); fi ;;
+  esac
+done
+cmd="${cmd:-tui}"
+
+case "$cmd" in
+  tui)
+    exec "$PY" "$SCRIPTS/ocut-tui.py" "${rest[@]}" ;;
+  sync)
+    exec "$PY" "$SCRIPTS/ocut-sync.py" "${rest[@]}" ;;
+  backup|restore|stats|tools|skills|agents|plugins|mcp|models|show|recent|inventory|export|health|format)
+    exec "$PY" "$SCRIPTS/ocut-stats.py" "$cmd" "${rest[@]}" ;;
+  *)
+    echo "ocut: unknown command '$cmd'" >&2
+    echo "  try: ocut | ocut sync | ocut stats | ocut health | ocut help" >&2
+    exit 2 ;;
+esac

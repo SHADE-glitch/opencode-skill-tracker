@@ -1345,6 +1345,28 @@ def format_time(hour: int, minute: int) -> str:
     return datetime(2000, 1, 1, hour, minute).strftime(TIME_DISPLAY_FMT)
 
 
+def parse_datetime(date_text: str, time_text: str, default_year: int) -> int | None:
+    """A typed date plus an optional time -> epoch **milliseconds**, or ``None``.
+
+    Both fields come from the date picker, and either may be blank: a blank date
+    and a blank time are "not chosen", which the caller reads as an unbounded
+    edge of the window rather than as midnight on some invented day. An empty
+    time means the start of the day (and the end of it for an upper bound, which
+    is the caller's decision, not this function's). Raises ``ValueError`` with a
+    message naming the field that failed, because the picker has two inputs and a
+    bare "invalid" does not say which one to look at.
+    """
+    date = (date_text or "").strip()
+    if not date:
+        return None
+    day = parse_date(date, default_year)
+    hour, minute = 0, 0
+    clock = (time_text or "").strip()
+    if clock:
+        hour, minute = parse_time(clock)
+    return int(day.replace(hour=hour, minute=minute).timestamp() * 1000)
+
+
 def _ts_where(start_ts, end_ts):
     if start_ts is None:
         return "ts < ?", [end_ts]
