@@ -867,15 +867,31 @@ _HISTORY_TABLE = {
 }
 
 
-def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None):
+def _history_conds(kind, name, server, start_ts, end_ts):
+    """The WHERE pieces one entity shares between the list and its header counts.
+
+    ``server`` exists because the MCP tab keys a row on (server, tool) while the
+    table column it searches is `tool`: two servers exposing the same tool name are
+    two rows, and a history that ignored the server would show both of their calls
+    under whichever server the person clicked. The screen title and its rows have to
+    be about the same thing, so the pair is a condition, not a display hint.
+    """
+    table, col = _HISTORY_TABLE[kind]
+    conds = [(f"{col} = ?", name)]
+    if kind == "mcp" and server is not None:
+        conds.append(("server = ?", server))
+    return table, conds + _time_conds(start_ts, end_ts, col="ts")
+
+
+def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None, server=None):
     """Recent calls for one entity in a window, newest first. kind in tool|skill|agent|mcp.
 
     ``call_id`` rides along so a row can open the single-call detail screen; it
     is not one of the columns the list shows. The window is half-open
-    (``ts >= start AND ts < end``); both bounds ``None`` is all-time.
+    (``ts >= start AND ts < end``); both bounds ``None`` is all-time. ``server``
+    scopes an MCP row to the pair it was keyed on — see :func:`_history_conds`.
     """
-    table, col = _HISTORY_TABLE[kind]
-    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts, col="ts")
+    table, conds = _history_conds(kind, name, server, start_ts, end_ts)
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
         "SELECT ts, project, session_id, status, duration_ms, call_id"
@@ -917,16 +933,20 @@ def q_model_calls(conn, limit=50, model=None, start_ts=None, end_ts=None):
     return conn.execute(sql, params).fetchall()
 
 
-def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None):
+def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None, server=None):
     """Windowed aggregates for one entity — the numbers the drill-down header shows.
 
     Every entity table carries ``status`` and ``duration_ms``, so one shape fits
     all four. The completed/errored/running counts COALESCE to 0 because "0 of 0
     calls completed" is true, not unknown; ``avg_ms`` and the first/last stamps
     stay NULL over an empty window (never a fabricated 0 or epoch).
+
+    The header and the list are the same measurement at the same scope, so they
+    share :func:`_history_conds` rather than each spelling the predicates out: a
+    header counting both MCP servers above a list of one is exactly the disagreement
+    this exists to prevent.
     """
-    table, col = _HISTORY_TABLE[kind]
-    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts, col="ts")
+    table, conds = _history_conds(kind, name, server, start_ts, end_ts)
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
         "SELECT COUNT(*) AS calls,"
