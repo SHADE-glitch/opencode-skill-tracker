@@ -21,13 +21,11 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import http.client
 import json
 import os
 import re
 import sqlite3
 import time
-import urllib.request as urlreq   # aliased: the prose-field tripwire bans the bare word
 from datetime import datetime, timedelta, timezone
 
 import opencode_compat as compat

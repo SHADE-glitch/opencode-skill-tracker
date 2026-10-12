@@ -12,7 +12,6 @@ import pytest
 from conftest import HostServiceQuery, load_module
 
 import skill_db as db
-import skill_db_claude_mem as cm
 import settings as cfg
 
 st = load_module("skill-tui.py", "skill_tui")
@@ -557,18 +556,6 @@ def test_the_new_checks_can_never_fail_doctor(tmp_path, monkeypatch):
         assert found[n][0] != "FAIL", found[n]
     assert st._cli_doctor(conn, Args(db_path)) == 0
     conn.close()
-
-
-def test_the_log_read_is_bounded_like_every_other_log_we_open(tmp_path, monkeypatch):
-    """doctor read the whole plugin log with a plain `open()`; nothing else does.
-
-    The claude-mem reader stops at `CLAUDE_MEM_LOG_BYTES_CAP` because a foreign log
-    is not ours to size. The tracker's own log grows one line per recorded error
-    forever (M17: no rotation), so an unbounded read here is a stall that gets
-    worse with age on the cheapest diagnostic the tool has. The cap must be named
-    in the module, not inline, or the message cannot say what it covered.
-    """
-    assert st.TRACKER_LOG_BYTES_CAP == cm.CLAUDE_MEM_LOG_BYTES_CAP
 
 
 def test_a_bounded_log_read_reports_a_floor_never_a_clean_bill(tmp_path, monkeypatch):

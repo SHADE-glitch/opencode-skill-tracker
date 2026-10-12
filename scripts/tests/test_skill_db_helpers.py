@@ -10,12 +10,16 @@ take. This module pins their remaining branches directly, including the
 
 from __future__ import annotations
 
+import pathlib
+import re
 import sqlite3
 from datetime import timezone
 
 import pytest
 
 import skill_db as db
+
+SCRIPTS = pathlib.Path(db.__file__).resolve().parent
 
 
 class _BrokenConn:
@@ -130,3 +134,24 @@ def test_db_file_of_returns_the_real_file(seeded_db):
     conn = db.open_db(seeded_db)
     assert db.db_file_of(conn) == seeded_db
     conn.close()
+
+def test_no_module_imports_names_by_value_from_the_core():
+    """`from skill_db import HOME` freezes the value at import time.
+
+    The suite repoints `skill_db.HOME` to prove default-path resolution, and a name
+    copied in at import time keeps answering with this machine's real home — a test
+    that quietly reads the developer's files while believing it is isolated. The
+    promise used to be pinned by `test_module_boundaries.py`, which went with the two
+    neighbour modules; the rule outlives them, so it is re-pinned here against every
+    production script rather than against a named pair of files.
+
+    Enumerated from the directory, not from a hand-copied list: a new script is
+    covered the moment it exists, and a renamed one cannot hide.
+    """
+    scripts = sorted(f for f in SCRIPTS.glob("*.py") if f.name != "__init__.py")
+    assert scripts, f"no production scripts found under {SCRIPTS}"
+    offenders = []
+    for f in scripts:
+        if re.search(r"^from skill_db import", f.read_text(encoding="utf-8"), re.M):
+            offenders.append(f.name)
+    assert not offenders, f"imports core names by value: {offenders}"

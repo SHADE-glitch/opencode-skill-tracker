@@ -33,7 +33,6 @@ from conftest import load_module
 
 import skill_db as db
 import settings as cfg
-import skill_db_claude_mem as cm
 
 st = load_module("skill-tui.py", "skill_tui_rotate")
 
@@ -67,7 +66,6 @@ def test_the_rotation_cap_is_the_number_the_reader_reads(monkeypatch):
     reader took the module default, so raising the knob moved one side only.
     """
     assert cfg.spec("log.max_bytes")["default"] == st.TRACKER_LOG_BYTES_CAP
-    assert st.TRACKER_LOG_BYTES_CAP == cm.CLAUDE_MEM_LOG_BYTES_CAP
     assert cfg.spec("log.keep_files")["default"] == 5
     assert cfg.spec("log.keep_files")["minimum"] == 1
 

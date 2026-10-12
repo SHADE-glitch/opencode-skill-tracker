@@ -11,7 +11,7 @@ SYSTEMD = ROOT / "skill-tracker" / "systemd"
 
 # Every documented limitation, in both languages. M14-M18 came out of the
 # full capture/UI audit; M19 out of the privacy cleanup that followed it; M22-M23
-# out of the claude-mem neighbour and the Agents page.
+# out of the Agents page and the subagent round.
 LIMITATIONS = tuple(f"M{i}" for i in range(1, 25))
 
 # --- HTTP status-code parity across a bilingual pair -------------------------
@@ -96,9 +96,14 @@ def test_readme_documents_every_known_limitation():
         "重启 OpenCode",                 # M11/M12
         "静态扫描",                      # M12
         "allowlist",                      # M13
-        # M22: two promises that are easy to lose while summarising the command.
-        "只数、不读",                    # `q=` is the user's own prompt text
-        "共用一个总截止时间",            # three endpoints, one budget
+        # M22, in its surviving shape: a foreign value that could carry prose is counted
+        # and never read. The keyword stayed when the reader left because the rule did —
+        # it now describes the SKILL.md body and the plugin log.
+        "只数、不读",
+        # "共用一个总截止时间" (three claude-mem endpoints under one deadline) was dropped
+        # on 2026-10-12 with D-053, in step with its English twin "one shared deadline":
+        # no HTTP probe exists in this project any more, so the keyword could only ever
+        # match prose *about* the withdrawal from now on.
         "采集顺序",                        # M23: `(unknown)` is not anonymous work
         # M24: the subagent stream's two promises, easy to lose in a summary.
         "subagent_usage", "Spawned", "散文探测器",
@@ -127,8 +132,16 @@ def test_english_readme_documents_every_known_limitation():
         "no row at all",       # M15
         "COALESCE",            # M18
         "The default now writes into",   # M19, fixed — must say where it goes
-        "counted, never read",   # M22: `q=` holds the user's prompt text
-        "one shared deadline",   # M22: three endpoints, not three timeouts
+        # M22, in its surviving shape: a foreign value that could carry prose is
+        # counted and never read. The keyword stayed when the reader left because the
+        # rule did — it now describes the SKILL.md body and the plugin log.
+        "counted, never read",
+        # "one shared deadline" (the claude-mem HTTP probe's three endpoints under one
+        # deadline) was dropped on 2026-10-12 with D-053 rather than left to pass on
+        # unrelated text: no HTTP probe exists in this project any more, so a keyword
+        # naming its shape could only match prose *about* the withdrawal. The rule that
+        # replaces it is stronger and is checked where it lives —
+        # `test_no_http_is_reachable_from_the_tui_refresh_path` arms the stdlib doors.
         "capture order",         # M23: `(unknown)` is not anonymous work
         # M24: the gate is a shape bound, and saying "prose detector" is the lie
         # a future edit would tell. Both READMEs must also name the two things
@@ -158,7 +171,7 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
     # Everything a reader needs to notice capture has decayed.
     for needle in (
         "skillt doctor", "skillt cleanup-selftest", "skillt sync --dry-run",
-        "skillt scrub-metadata", "skillt claude-mem",
+        "skillt scrub-metadata",
         # The two commands that *change* data, named in both checklists: a checklist
         # that describes only the read-only half teaches nobody what to run when the
         # database or the log outgrows the machine.
@@ -184,12 +197,10 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
         assert needle in zh, f"MAINTENANCE.zh-CN.md dropped an invariant: {needle}"
 
     # Deviations must be written down where the next reader will look, not in
-    # a commit message. The claude-mem ones are the three things a future editor
-    # is most likely to "simplify" back into a wrong answer: read the tail, count
-    # categories instead of levels, and put the HTTP probe on a repaint path.
+    # a commit message. Each name below is a thing a future editor is most likely
+    # to "simplify" back into a wrong answer.
     for needle in ("set_interval", "active_app", "animation_level", "row_targets", "schema_version",
-                   "CLAUDE_MEM_LOG_BYTES_CAP", "truncated", "unparsed",
-                   "_LOG_LINE_RE", "claude_mem_worker",
+                   "truncated", "unparsed",
                    # The subagent round: three names a future editor would have to
                    # delete on purpose to make the docs disagree with the code.
                    "subagent_usage", "SUBAGENT_LABEL_RE", "Spawned",
@@ -197,16 +208,20 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
                    # The selftest log isolation, named the same in both languages.
                    "logPath()", "OPENCODE_SKILL_TRACKER_LOG",
                    "skill-tracker-selftest.log",
-                   # The two subagent columns and the injection grouping: an
+                   # The two subagent columns and the count-conserving groupings: an
                    # English-only or Chinese-only edit fails here, not in review.
-                   "Ran as", "Spawned", "by_project", "by_day", "projectless",
-                   "older_days", "undated", "opencode.db",
+                   "Ran as", "Spawned", "opencode.db",
+                   # `unparsed` / `unparsed_name` / `undated` stayed because all three
+                   # still name a live bucket (`plan_retention()`, `skillt sync`,
+                   # `prune-usage`). `by_project`, `projectless` and `older_days` were
+                   # dropped on 2026-10-12 with D-053: they named only the claude-mem
+                   # trace grouping, and once that reader left they could keep passing
+                   # on prose *about* the withdrawal — the same reason "one shared
+                   # deadline" came out of the limitation keywords above.
+                   "unparsed_name", "undated",
                    # The upstream-contract module: both checklists must point at it,
                    # or the one place to edit on an upgrade is undocumented.
                    "opencode_compat", "CONTRACT",
-                   # The neighbour modules split out of skill_db: if a checklist
-                   # still says `skill_db.agentos_*`, the door it names is gone.
-                   "skill_db_agentos",
                    # The S8 UI round: four derived surfaces, each of which was
                    # hand-written and measurably wrong before. A checklist that
                    # stops naming them has lost the reason they are computed.
@@ -231,7 +246,7 @@ def test_readme_documents_commands_and_backup_ops():
     for cmd in (
         "skillt health", "skillt auto-backup", "skillt doctor", "skillt sync",
         "skillt insight", "skillt export", "skillt cleanup-selftest",
-        "skillt scrub-metadata", "skillt agentos", "skillt claude-mem",
+        "skillt scrub-metadata",
         # The two that arrived with the settings layer: `config` is the only way to
         # edit the file, and `prune-usage` is the only command that deletes history,
         # so both have to be findable in the language the reader reads.
@@ -240,9 +255,7 @@ def test_readme_documents_commands_and_backup_ops():
         assert cmd in text, f"command not documented: {cmd}"
     # the new headless surface must be documented where readers look for it
     en = (ROOT / "README.md").read_text(encoding="utf-8")
-    for cmd in ("skillt scrub-metadata", "skillt doctor", "--freshness-days",
-                "skillt agentos", "OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS",
-                "skillt claude-mem", "inject-trace.log", "worker.pid"):
+    for cmd in ("skillt scrub-metadata", "skillt doctor", "--freshness-days"):
         assert cmd in en, f"README.md does not document: {cmd}"
     assert "enable-linger" in text
     assert "120 秒" in text or "120" in text
@@ -297,24 +310,6 @@ def test_readmes_list_every_tab_page():
                          ("README.zh-CN.md", listed(zh, "页面："))):
         assert items == labels, f"{label} page list {items} != the app's {labels}"
         assert "Advisor" not in items, f"{label} advertises a tab that is gone"
-
-
-def test_readmes_say_the_tracker_cannot_record_the_advisor():
-    """`skillt agentos` invites one wrong belief: that these numbers were measured.
-
-    The Advisor *page* is gone but the command is not, and the misunderstanding is
-    the same one the tab used to answer on screen. Each language must say, in its
-    own words, that the advisor registers no tool and no command, so no usage row
-    can ever name it — and that every number was written by the advisor into its
-    own store. A translation that drops the sentence drops the build.
-    """
-    en = (ROOT / "README.md").read_text(encoding="utf-8")
-    zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
-
-    for phrase in ("no tool and no command", "zero usage rows", "its own store"):
-        assert phrase in en, f"README.md does not say: {phrase}"
-    for phrase in ("不注册任何工具", "不注册任何命令", "0 行", "它自己的库"):
-        assert phrase in zh, f"README.zh-CN.md does not say: {phrase}"
 
 
 def test_readme_documents_top_limit_alias():
@@ -533,6 +528,19 @@ def _invariant_rows(text: str):
             yield m["promise"].strip(), m["checks"].strip(), m["run"].strip().strip("`")
 
 
+def _suite_files() -> set:
+    """The test files that actually exist, by name."""
+    return {f.name for f in (ROOT / "scripts" / "tests").glob("test_*.py")}
+
+
+def _suite_functions() -> set:
+    """Every `def test_*` name defined anywhere in the suite."""
+    names = set()
+    for f in sorted((ROOT / "scripts" / "tests").glob("test_*.py")):
+        names.update(re.findall(r"^def (test_\w+)", f.read_text(encoding="utf-8"), re.M))
+    return names
+
+
 def _invariant_row_mismatches(text: str) -> list:
     """Rows whose documented command cannot select a check the same row names.
 
@@ -544,6 +552,18 @@ def _invariant_row_mismatches(text: str) -> list:
     """
     problems = []
     for promise, checks, cmd in _invariant_rows(text):
+        # Existence, not just selector arithmetic. A row can cite a check by name and
+        # a command can point at a file, and both can outlive what they name: the
+        # suite stayed green while three of the files this table runs had already been
+        # deleted. Two holes made that possible — the `if not names: continue` below
+        # skipped every row that cited files instead of functions, and a `-k` needle
+        # happily "matched" the id of a test that no longer exists. Both are closed.
+        for cited in re.findall(r"`(test_[a-z0-9_]+\.py)`", checks):
+            if cited not in _suite_files():
+                problems.append((promise, cited, cmd, "names a test file that does not exist"))
+        for cited in re.findall(r"`(test_[a-z0-9_]+)`", checks):
+            if cited not in _suite_functions():
+                problems.append((promise, cited, cmd, "names a check the suite no longer defines"))
         names = re.findall(r"`(test_[a-z0-9_]+)`", checks)
         if not names:
             continue                      # the row names whole files; nothing to match
@@ -624,6 +644,18 @@ def test_an_invariant_row_that_names_a_missing_check_is_caught():
     assert edited != text, "could not inject into the row"
     found = _invariant_row_mismatches(edited)
     assert any(n == "test_a_check_nobody_wrote" for _, n, _, _ in found), (promise, found)
+
+    # (c) the deleted-file shape this gate used to miss: a row that cites a test file
+    # which no longer exists. The control above proves the real table is clean; this
+    # proves the gate can see the difference.
+    file_row = next((r for r in rows if re.search(r"`test_[a-z0-9_]+\.py`", r[1])), None)
+    assert file_row, "no invariant row cites a test file, so the gate above is unprovable"
+    cited = re.findall(r"`(test_[a-z0-9_]+\.py)`", file_row[1])[0]
+    edited = text.replace(f"`{cited}`", "`test_a_file_nobody_deleted_back.py`")
+    assert edited != text, "could not inject the missing-file citation"
+    found = _invariant_row_mismatches(edited)
+    assert any("does not exist" in why for _, _, _, why in found), \
+        "a row citing a deleted test file slipped through"
 
     # (b) a selector whose first needle cannot match the ids the row claims
     t_promise, _, t_cmd = next(r for r in rows if "-k" in r[2])

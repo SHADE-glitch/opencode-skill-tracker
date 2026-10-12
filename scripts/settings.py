@@ -46,9 +46,9 @@ REGISTRY = (
     _spec(
         "view.days", 30, 1, "--days",
         "How many days of history the headless reports cover (`skillt insight`, "
-        "`skillt claude-mem`). The interactive screens use fixed windows instead — "
+        "`skillt export`). The interactive screens use fixed windows instead — "
         "7-day trends and 30-day totals — because their layout is pinned to them.",
-        "无头报告（`skillt insight`、`skillt claude-mem`）覆盖多少天历史。交互页面用的是固定"
+        "无头报告（`skillt insight`、`skillt export`）覆盖多少天历史。交互页面用的是固定"
         "窗口——7 天趋势、30 天合计——因为它们的排版按这两个数字钉死。",
     ),
     _spec(

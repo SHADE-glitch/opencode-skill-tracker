@@ -20,8 +20,6 @@ READMES = (ROOT / "README.md", ROOT / "README.zh-CN.md")
 SOURCES = (
     ROOT / "plugin" / "skill-tracker.js",
     ROOT / "scripts" / "skill_db.py",
-    ROOT / "scripts" / "skill_db_agentos.py",
-    ROOT / "scripts" / "skill_db_claude_mem.py",
     ROOT / "scripts" / "skill-tui.py",
     ROOT / "scripts" / "skill-stats.py",
     ROOT / "scripts" / "settings.py",

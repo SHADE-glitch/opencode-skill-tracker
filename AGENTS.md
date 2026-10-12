@@ -32,35 +32,19 @@ below). Three layers, in dependency order:
    become `(unknown)`, while unresolved commands are dropped fail-closed.
 2. `scripts/skill_db.py` — the shared data layer (schema, migrations, queries,
    export, backup). Imported by both the TUI and the tests. It holds **only** the
-   tracker's own data; the two neighbours are separate modules (item 4) that import
-   it, and it never imports them.
+   tracker's own data.
 3. `scripts/skill-tui.py` (Textual TUI + `--cli` headless subcommands) and
    `scripts/skill-stats.py` (legacy CLI). Read-only apart from explicit
    `delete` / `clear` / `backup` / `vacuum`.
-4. `scripts/skill_db_agentos.py` and `scripts/skill_db_claude_mem.py` — **read-only
-   neighbours**, not a fourth layer. The AgentOS advisor registers no tool and no
-   command, so it can never appear in the usage tables, and `skillt agentos` is
-   the only surface that reads its own store
-   (`$AGENT_OS_ROOT/store/aos.db` + `store/loops/*.json`). claude-mem registers a
-   tool but does its real work in its own hooks, which the host never reports to
-   us, so `skillt claude-mem` reads what it wrote (counts, timestamps, token
-   totals) and nothing else.
-   Those counts may be **grouped** (`by_project`, `by_day`) because the trace line
-   already carries `project=` and a timestamp — grouping adds no new read, only
-   buckets, and any line that will not group is counted (`projectless`,
-   `older_days`, `undated`) rather than dropped. A `project=` value is admitted only
-   if it is slug-shaped, so prose in that foreign field becomes a number, never a
-   label. OpenCode's own `opencode.db` is **not** a data source for this project:
-   it holds the subagent history our writer predates, and reading a live foreign
-   database for it was considered and declined (MAINTENANCE §8).
-   The Advisor tab that used to show this in the TUI was removed on 2026-10-03 at
-   the owner's request; the data layer and the command stayed on purpose, so the
-   page can come back without re-deriving the projection.
+
+OpenCode's own `opencode.db` is **not** a data source for this project: it holds the
+subagent history our writer predates, and reading a live foreign database for it was
+considered and declined (MAINTENANCE §8).
 
 `bin/skillt` is a bash dispatcher that resolves its own location through
 symlinks and execs one of the above.
 
-`scripts/opencode_compat.py` is **not** a fifth layer: it is the single place
+`scripts/opencode_compat.py` is **not** a fourth layer: it is the single place
 where OpenCode's own names are written down (hook ids, event types, payload field
 paths, the host's directory layout, the version pins, the derived `source` and
 `status` vocabularies). Everything else in the project refers to it.
@@ -180,44 +164,38 @@ the code; the schema versions track the data. Never conflate them.
 - **Do not change the capture logic in the plugin** without tests. Writes are
   deduplicated by `UNIQUE(session_id, call_id)` + `ON CONFLICT` upsert; that
   invariant is load-bearing.
-- **A foreign store is read-only and field-whitelisted.** The claude-mem reader
-  may name only counters, timestamps and short category labels; its prose columns
-  (`prompt_text`, `text`, `narrative`, `tool_input`, …) are named nowhere in the
-  code, and `~/.claude-mem/settings.json` — which holds that plugin's API keys —
-  is never opened at all (`CLAUDE_MEM_FORBIDDEN_FILES`). A value from a foreign
-  enum column is echoed only if it is label-shaped (`_short_label`), and a store
-  with none of our tables present is reported unreadable rather than empty.
-  The advisor store is read-only and field-whitelisted the same way. Never open it with
-  `open_db()` — that helper falls back to read-write and creates a missing file,
-  which would hand a foreign store to a "read-only" reader. Use
-  `_open_agentos_ro()` (`file:...?mode=ro`). Loop files carry `task_text` (the
-  user's task verbatim) and stage `data` carries engine payloads, so
-  `_project_loop()` names every field it emits and never splats a dict: adding a
-  field upstream cannot leak it here, only omitting one would. One level deeper
-  is the same rule: the recall stage's `data` holds `query` (text derived from
-  the user's task) right next to `injection_chars`, so `_project_injection()`
-  names each field and `_count_only()` accepts integers and sized collections
-  only — a text-valued count yields `None`, never a character count.
-- **A foreign *file* is read under the same contract as a foreign store.** A log
-  line is prose: `inject-trace.log`'s `q=` carries text derived from the user's
-  prompt and a worker-log line carries paths and messages, so the reader counts
-  **shapes** and returns integers — nothing returns a line, and a line matching no
-  known shape lands in `unrecognized` / `unparsed` instead of vanishing. Scan from
-  the **start** under a byte cap (`CLAUDE_MEM_LOG_BYTES_CAP`); a tail is blind to
-  the early part, and when the cap bites the result says `truncated` so its counts
-  read as floors, not totals. An HTTP answer from that neighbour is projected by
-  field name **and** by type (`_numbers_only()`), because a field renamed later can
-  start carrying a path or a sentence. `worker.pid`'s `startToken` is what
-  authenticates to that worker: parsed, never emitted.
+- **A foreign *file* is read as counts, never as content.** Anything outside this
+  project's own database belongs to somebody else: `~/.config/opencode/skills` and the
+  host's config are opened read-only, and the plugin log the host appends to is
+  scanned from the **start** under a byte cap — a tail is blind to the early part, and
+  when the cap bites the result says `truncated` so its counts read as floors, not
+  totals. A line that matches no known shape lands in `unparsed` instead of vanishing,
+  and a foreign field contributes only what is label-shaped: `SKILL.md` frontmatter
+  yields `name` and the `source`/`category` derived from its path, never the body.
+  Guards: `test_scan_sync.py`, `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`,
+  `test_the_rotation_cap_is_the_number_the_reader_reads`.
+    **What died with the neighbours (2026-10-12, D-### below):** the claude-mem ledger
+    reader, the AgentOS advisor reader, and with them `_short_label`, `_numbers_only`,
+    `_project_loop`, `_count_only`, `CLAUDE_MEM_FORBIDDEN_FILES` and the rule that a
+    foreign *store* is opened with `mode=ro` and never through `open_db()` — that
+    helper falls back to read-write and creates a missing file, which would hand a
+    foreign store to a "read-only" reader. The rule outlives its subjects: the first
+    foreign **store** this project reads again must come back under it, with its own
+    check named in the invariant table.
 - **No HTTP and no subprocess on the repaint path.** A keystroke (throttled by
   `REFRESH_STALE_AFTER_S`), a tab activation and `r` all re-render, so one network
   wait there freezes the interface for the same reason app timers are banned —
-  different mechanism, identical failure. `claude_mem_http()` is reached only from
-  headless commands, and
-  `test_no_http_is_reachable_from_the_tui_refresh_path` pins that the TUI never
-  calls it. `os.kill(pid, 0)` and reading files are allowed: measured 8.2–15.8 ms
-  for all three claude-mem files together, which that page pays per repaint,
-  against 0.7–2.0 ms for the tables.
+  different mechanism, identical failure.
+  `test_no_http_is_reachable_from_the_tui_refresh_path` pins it by arming three
+  standard-library doors (`urllib.request.urlopen`, `http.client.HTTPConnection`,
+  `socket.create_connection`), requiring that each stub actually answered, and then
+  visiting every page, `s` and `r`: no door may answer. `socket.socket` is
+  deliberately **not** patched — asyncio's own selector loop builds its self-pipe
+  through it, so patching that makes the harness fail rather than the app, which is an
+  instrument error and not a finding. The two `subprocess.run` calls in this file are
+  `doctor`'s host questions (`opencode --version`, `systemctl --user is-enabled`); they
+  are reachable only from the headless commands, and
+  `test_the_timer_check_never_fails_and_never_shells_out_uninvited` keeps them there.
 - **A setting is a registry entry or it does not exist.** `scripts/settings.py` is
   the only place a knob is declared: default, floor, flag, and an explanation in
   both languages, or `test_every_key_carries_an_explanation_in_both_languages` and
@@ -402,7 +380,7 @@ machine's real files.
 
 | The promise | What would break it | The check | Run it |
 |---|---|---|---|
-| Pure local, no network, nothing that stores message content | a new field read, an HTTP call on a repaint, a dependency that phones home | `test_no_http_is_reachable_from_the_tui_refresh_path`, `test_the_writer_never_names_a_permission_title`, `test_the_subagent_writer_never_names_a_text_field`, `test_no_path_or_free_text_crosses_the_http_whitelist` | `python3 -m pytest scripts/tests -q -k "title or text_field or http or whitelist or forbidden"` |
+| Pure local, no network, nothing that stores message content | a new field read, an HTTP call on a repaint, a dependency that phones home | `test_no_http_is_reachable_from_the_tui_refresh_path`, `test_the_writer_never_names_a_permission_title`, `test_the_subagent_writer_never_names_a_text_field` | `python3 -m pytest scripts/tests -q -k "title or text_field or http"` |
 | The writer is the only writer, and it still loads | a named `export function`, a bare-function default, a schema edit in one copy only | `test_loader_does_not_enumerate_exports`, `test_default_export_is_server_module`, `test_plugin_and_python_schema_do_not_drift` | `python3 -m pytest scripts/tests -q -k "export or loader or drift or schema"` |
 | Every OpenCode name lives in one place per language | a handler that spells a host string again, a pin that no longer matches the writer | `test_compat.py` in full — value-compared against the `CONTRACT` block | `python3 -m pytest scripts/tests/test_compat.py -q` |
 | Views and schema roll forward instead of silently keeping the old definition | a `CREATE VIEW` edit without a `SCHEMA_VERSION` bump | `test_migration.py` | `python3 -m pytest scripts/tests/test_migration.py -q` |
@@ -410,7 +388,6 @@ machine's real files.
 | A schedule is reported as a schedule, never inferred from the file it produces | a `backups.latest` PASS masking a removed timer unit, a check that FAILs a machine for choosing not to install, a check that shells out on the repaint path, "cannot ask systemd" read as healthy | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`, `test_a_disabled_timer_is_named_as_disabled_not_as_missing`, `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`, `test_the_timer_check_never_fails_and_never_shells_out_uninvited`, `test_the_timer_check_asks_about_the_unit_install_sh_installs` | `python3 -m pytest scripts/tests/test_doctor.py -q -k "timer or scheduled or systemd"` |
 | The plugin log's reader and its rotator stop at the **same number** | a setting resolved by one side and defaulted by the other, which is how `doctor` starts reporting a floor as a total | `test_the_rotation_cap_is_the_number_the_reader_reads` (both commands, at the default *and* under an override), `test_the_reader_bound_moves_with_the_writer_bound` (spies on the actual read), `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill` | `python3 -m pytest scripts/tests -q -k "bound or rotation_cap or truncated or bounded"` |
 | A knob exists in one registry, documented in both languages, and zero-config still works | a setting that only reads the environment, a key added without an explanation, a writer under `~/.config/opencode` | `test_settings.py` + `test_settings_documented.py` | `python3 -m pytest scripts/tests/test_settings.py scripts/tests/test_settings_documented.py -q` |
-| A foreign store is read-only, field-whitelisted, and never reached from a repaint | a neighbour importing the TUI, a `open_db()` on someone else's file, a prose column named | `test_module_boundaries.py`, `test_claude_mem.py`, `test_agentos.py` | `python3 -m pytest scripts/tests/test_claude_mem.py scripts/tests/test_agentos.py scripts/tests/test_module_boundaries.py -q` |
 | The interface says what it actually does — keys, empty states, colours, widths | a hand-copied key list or label set, an imperative colour, a layout claim read off the CSS | the S8 guards: `test_a_new_binding_documents_itself_in_the_help`, `test_every_table_page_status_line_is_dimmed_throughout`, `test_the_card_grid_switches_where_the_layout_actually_fits`, `test_the_result_colour_is_a_theme_token_and_not_a_literal`, `test_tui_creates_no_app_timers`, `test_tui_disables_textual_animations` | `python3 -m pytest scripts/tests/test_tui.py -q -k "timer or animation or http or dimmed or help or card_grid or right_edge or theme_token"` |
 | The two languages say the same thing, including how many limitations there are | a one-language edit, a document that froze its `M1–M<n>` at the number of the day | `test_readme.py` (bilingual parity + `test_the_documented_limitation_range_is_the_range_the_gate_pins` + `test_readmes_document_every_key_the_screen_binds`) | `python3 -m pytest scripts/tests/test_readme.py -q` |
 | Every commit that touches shipped code is recorded, and the record is not a diary | a repair that exists only in a commit message, an entry that quotes no commit | `test_record_coverage.py` | `python3 -m pytest scripts/tests/test_record_coverage.py -q` |
@@ -444,28 +421,19 @@ run and believed.
   commands and invariants, and that both key tables cover every key the screen
   binds (`test_readmes_document_every_key_the_screen_binds`) —
   update all four when behaviour changes, or the suite fails.
-- **The advisor store is reached only through `skill_db_agentos.agentos_*`, and
-  only from the CLI.** No TUI page may open it:
-  `test_tui_never_reads_the_advisor_store` spies on the single door and visits
-  every tab. Whatever does read it receives only the dict `_project_loop` produced
-  — nobody may open the file, open the database, or assemble a path from a
-  store-supplied id.
-  `test_task_text_and_payloads_are_never_read` and
-  `test_a_text_valued_count_field_is_never_counted` are the guards; the
-  source-scanning TUI test that used to cover the screen went with that screen.
-- **A neighbour module imports the core, never the reverse**
-  (`skill_db_agentos.py` / `skill_db_claude_mem.py` → `skill_db.py`), and it reaches
-  core state as `db.HOME` / `db.fmt_time`, not by `from skill_db import ...`: a
-  name copied in at import time ignores the suite's
-  `monkeypatch.setattr(db, "HOME", …)`, which is how a test would silently read
-  this machine instead of its fixture. `test_module_boundaries.py` pins both halves.
-  A scan that used to slice a section out of `skill_db.py` now reads the reader's
-  own file — when a section moves, the scan moves with it or it passes vacuously.
+- **A module reaches core state through the module object, never by value.** A name
+  copied in at import time ignores the suite's `monkeypatch.setattr(db, "HOME", …)`,
+  which is how a test would silently read this machine instead of its fixture.
+  `test_no_module_imports_names_by_value_from_the_core` pins it for every production
+  script. A scan that used to slice a section out of `skill_db.py` now reads the
+  reader's own file — when a section moves, the scan moves with it or it passes
+  vacuously.
 - **A hand-drawn bar is scaled against a peak that includes every value it
-  prints.** `bar()` multiplies `value / peak * width`, so a reference line (the
-  advisor's per-call budget) that can exceed the data's own maximum overflows the
-  column — real loops run 0–20 ms against a 1200 ms budget and drew 1467 blocks.
-  Fold the reference into the peak, and never hand `bar()` a `None`.
+  prints.** `bar()` multiplies `value / peak * width`, so a reference line that can
+  exceed the data's own maximum overflows the column — the one time this project drew
+  such a line (a 1200 ms per-call budget against values that really ran 0–20 ms) it
+  drew 1467 blocks. Fold the reference into the peak, and never hand `bar()` a `None`.
+  The caller that taught this went away on 2026-10-12; the arithmetic did not.
 - **Column widths are ours to compute, not Textual's to discover.**
   `DataTable` re-measures auto-width columns in `_on_idle`, one message-pump
   cycle after the rows arrive: the first frame renders every column exactly as

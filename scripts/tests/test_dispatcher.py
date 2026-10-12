@@ -98,7 +98,7 @@ def test_directory_db_exit_2(tmp_path):
 # scrub-metadata is dry-run by default, so routing it here proves bin/skillt
 # knows the command and that it writes nothing.
 @pytest.mark.parametrize(
-    "cmd", ["insight", "health", "mcp", "plugins", "agentos", "claude-mem",
+    "cmd", ["insight", "health", "mcp", "plugins",
             "doctor", "auto-backup", "scrub-metadata", "cleanup-selftest"]
 )
 def test_headless_commands_run(db_path, cmd):

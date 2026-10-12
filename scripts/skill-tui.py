@@ -7,7 +7,7 @@ Two modes in one file:
   * --cli <subcommand>   stdlib only; works on the system python3
                          subcommands: insight | export | sync | cleanup-selftest
                                       | scrub-metadata | health | mcp | plugins
-                                      | agentos | claude-mem | auto-backup | doctor
+                                      | auto-backup | doctor
 
 `textual` is imported lazily so the --cli path never depends on the venv.
 
@@ -33,8 +33,6 @@ if SCRIPT_DIR not in sys.path:
 
 import skill_db as db  # noqa: E402
 import opencode_compat as compat  # noqa: E402
-import skill_db_claude_mem as cm  # noqa: E402
-import skill_db_agentos as aos  # noqa: E402
 import settings as cfg  # noqa: E402
 
 SORT_MODES = ["count", "last_used", "success_rate", "name"]
@@ -391,207 +389,6 @@ def _flat_bits(node, prefix=""):
     return bits
 
 
-def _print_claude_mem_activity(activity, worker, http) -> None:
-    """Files first, HTTP last.
-
-    The two log files say whether the plugin is working even when its database is
-    missing or its worker is stopped, so they print in every case; the endpoints
-    are only this command's, and only ever after the files.
-    """
-    trace = activity.get("trace")
-    if trace:
-        print(f"  inject log   {trace['injected']} injected"
-              f" ({trace['injected_bare']} bare, {trace['injected_with_source']} with source)"
-              f" · {trace['loaded']} loaded · {trace['worker_ensure']} worker ensures"
-              f" · {trace['chars_total']:,} chars injected")
-        extra = []
-        if trace.get("unrecognized"):
-            extra.append(f"{trace['unrecognized']} line(s) of a shape this version does not know")
-        if trace.get("injected_with_query"):
-            extra.append(f"{trace['injected_with_query']} carried a query (counted, never read)")
-        if trace.get("truncated"):
-            extra.append("read capped at the byte limit, so this is a floor")
-        if extra:
-            print("               " + " · ".join(extra))
-        groups = trace.get("by_project") or {}
-        if groups:
-            bits = [f"{name} {v['injected']}/{v['loaded']}" for name, v in groups.items()]
-            if trace.get("projectless", {}).get("injected") or \
-                    trace.get("projectless", {}).get("loaded"):
-                pl = trace["projectless"]
-                bits.append(f"(no usable project name) {pl['injected']}/{pl['loaded']}")
-            print("  by project   " + " · ".join(bits) + "   [injected/loaded]")
-        days = trace.get("by_day") or {}
-        if days:
-            bits = [f"{day[5:]} {v['injected']}" for day, v in days.items()]
-            older = trace.get("older_days") or {}
-            if older.get("days"):
-                bits.append(f"… {older['days']} older day(s): {older['injected']}")
-            if (trace.get("undated") or {}).get("injected"):
-                bits.append(f"undated {trace['undated']['injected']}")
-            print("  by day       " + " · ".join(bits) + "   [injected, local days]")
-    log = activity.get("worker_log")
-    if log:
-        levels = " · ".join(f"{k} {v:,}" for k, v in sorted((log.get("levels") or {}).items()))
-        print(f"  worker log   {levels}   ({log['lines']:,} lines, "
-              f"{log['size_bytes']:,} bytes scanned)")
-        extra = []
-        if log.get("unparsed"):
-            extra.append(f"{log['unparsed']} line(s) not in `[time] [level] [category]` shape")
-        if log.get("truncated"):
-            extra.append("scanned bytes capped, so the counts are a floor")
-        if extra:
-            print("               " + " · ".join(extra))
-    if worker.get("available"):
-        print(f"  worker       {'up on port ' + str(worker['port']) if worker['alive'] else 'not running'}"
-              + (f" · pid {worker['pid']}" if worker.get("pid") else "")
-              + (f" · since {worker['started_at']}" if worker.get("started_at") else "")
-              + (f" · {worker['reason']}" if worker.get("reason") else ""))
-    if http.get("available"):
-        for field in ("stats", "queue", "chroma"):
-            node = http.get(field)
-            if node:
-                print(f"  {field:<12} " + " · ".join(_flat_bits(node)))
-        if http.get("skipped"):
-            print("               not reached inside the shared deadline: "
-                  + ", ".join(http["skipped"]))
-    elif worker.get("alive"):
-        print(f"  http         {http.get('reason') or 'no answer from the worker'}")
-
-
-def _cli_claude_mem(conn, args) -> int:
-    """claude-mem's own ledger, read-only. Nothing here writes to that store."""
-    res = cm.claude_mem_summary(conn, days=args.days)
-    store = cm.claude_mem_store()
-    activity = cm.claude_mem_activity(store=store)
-    worker = cm.claude_mem_worker(store=store)
-    # Only a headless command reaches this: the same call from the TUI would put a
-    # network wait on the path that repaints for every key.
-    http = cm.claude_mem_http(worker=worker)
-    res["activity"], res["worker"], res["http"] = activity, worker, http
-    if args.json:
-        print(json.dumps(res, ensure_ascii=False, indent=2))
-        return 0
-    if not res["available"]:
-        print(f"claude-mem: not aggregated ({res['reason']})")
-        print("  set OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB, or CLAUDE_MEM_DIR"
-              " pointing at the directory holding claude-mem.db")
-        _print_claude_mem_activity(activity, worker, http)
-        return 0
-
-    t = res["tables"]
-    age = cm.claude_mem_age_days(res)
-    print("claude-mem (read-only; that store is never written from here)")
-    print("-" * 56)
-    print(f"  store      {res['db_path']}")
-    print(f"  newest row {res['newest'] or '-'}"
-          + (f"  ({age:.1f} d ago)" if age is not None else ""))
-    print("  " + "   ".join(
-        f"{name} {(t[name] or {}).get('n')}" for name in cm.CLAUDE_MEM_TABLES))
-    obs = t.get("observations") or {}
-    if obs.get("by"):
-        print("  by type    " + " · ".join(f"{k} {v}" for k, v in obs["by"].items()))
-    sess = t.get("sdk_sessions") or {}
-    if sess.get("by"):
-        print("  sessions   " + " · ".join(f"{k} {v}" for k, v in sess["by"].items()))
-    tokens = [(n, (t.get(n) or {}).get("tokens")) for n in ("observations", "session_summaries")]
-    tokens = [(n, v) for n, v in tokens if isinstance(v, int) and v]
-    if tokens:
-        print("  discovery tokens  " + " + ".join(f"{v:,} ({n})" for n, v in tokens))
-    h = res.get("health") or {}
-    if h:
-        bits = [f"{h.get('consecutiveFailures', 0)} consecutive failures"]
-        if h.get("lastSuccessAt"):
-            bits.append(f"last success {h['lastSuccessAt']}")
-        if h.get("lastErrorAt"):
-            bits.append(f"last error {h['lastErrorAt']}"
-                        + (f" ({h['lastErrorKind']})" if h.get("lastErrorKind") else ""))
-        print("  observer   " + " · ".join(bits))
-    b = res.get("backfill") or {}
-    if b:
-        print(f"  backfill   through {b.get('throughDay')} · {b.get('eventCount')} events"
-              f" · completed {b.get('completedAt')}")
-    _print_claude_mem_activity(activity, worker, http)
-    tw = res.get("tracker_same_window")
-    if tw:
-        print(f"  same {res['days']} d in this tracker: {tw.get('skill_usage')} skill"
-              f" / {tw.get('mcp_usage')} mcp / {tw.get('plugin_usage')} plugin"
-              "   (builtins are never measured here, so 0 is not 'nothing happened')")
-    return 0
-
-
-def _cli_agentos(conn, args) -> int:
-    """The AgentOS advisor store, read-only. Nothing here writes to that store."""
-    res = aos.agentos_summary(conn, limit=args.limit)
-    if args.json:
-        print(json.dumps(res, ensure_ascii=False, indent=2))
-        return 0
-    if not res["available"]:
-        print(f"AgentOS advisor: not aggregated ({res['reason']})")
-        print("  set AGENT_OS_ROOT, or OPENCODE_SKILL_TRACKER_AGENTOS_DB=<path to store/aos.db>")
-        return 0
-
-    sc = res["store_counts"]
-    print("AgentOS advisor (read-only; that store is never written from here)")
-    print("-" * 56)
-    print(f"  store      {res['db_path']}")
-    if res["loops_dir"]:
-        print(f"  loops dir  {res['loops_dir']}")
-    print(f"  memories {sc.get('memories')}   retrieval {res['retrieval'].get('n')}"
-          f" over {res['retrieval'].get('memories')} memory/memories"
-          f"   observations {sc.get('observations')}   candidates {sc.get('candidates')}"
-          f"   reviews {sc.get('learning_reviews')}")
-    if res["telemetry"]:
-        parts = []
-        for t in res["telemetry"]:
-            last = (db.fmt_time(t["last"]) or "")[5:]
-            parts.append(f"{t['event_type']} {t['n']} (last {last})")
-        print("  telemetry  " + "  ·  ".join(parts))
-    print(f"  per-call budget {res['timeout_ms']} ms — a slower stage never reached the prompt")
-    sized = [l.get("injection") or {} for l in res["loops"] if l.get("injection")]
-    if sized:
-        newest, oldest = sized[0], sized[-1]
-        chars = [c.get("chars") for c in sized if isinstance(c.get("chars"), int)]
-        if chars:
-            print(f"  injected {newest.get('injected')} memories / "
-                  f"{newest.get('chars')} chars in the newest loop"
-                  f"   (oldest shown: {oldest.get('injected')} / {oldest.get('chars')} chars"
-                  f"; peak {max(chars)})")
-
-    print()
-    print(f"Loops (showing {len(res['loops'])} of {res['loops_total']}, newest first)")
-    print("-" * 56)
-    if not res["loops"]:
-        print("  (no loop files yet)")
-    for loop in res["loops"]:
-        usage = loop.get("usage") or {}
-        used = (f"{usage.get('skill', 0)} skill"
-                f" / {usage.get('mcp', 0)} mcp / {usage.get('plugin', 0)} plugin")
-        slow = loop.get("slowest_stage") or {}
-        slow_txt = f"{slow.get('name')} {slow.get('ms')}ms" if slow else "-"
-        if loop.get("over_budget_ms") and slow.get("ms") is not None:
-            slow_txt += f" · over the {res['timeout_ms']}ms budget"
-        inj = loop.get("injection") or {}
-        inj_txt = ("-" if not inj else
-                   f"searched {inj.get('retrieved')} / recalled {inj.get('recalled')}"
-                   f" / reached the prompt {inj.get('injected')}"
-                   f" ({inj.get('chars')} chars)")
-        print(f"  {str(loop.get('loop_id')):<28} {(db.fmt_time(loop.get('created_at')) or '')[5:]:<12}"
-              f" {str(loop.get('final_status')):<9} measured calls {used}   {inj_txt}"
-              f"   slowest {slow_txt}")
-        cells = []
-        for name, st in loop.get("stages", {}).items():
-            mark = {"completed": "ok", "pending": "-", "failed": "ERR"}.get(st["status"], st["status"][:3])
-            cells.append(f"{name}:{mark}")
-        print("      " + " ".join(cells))
-        if loop.get("errors") or (loop.get("postflight") or {}).get("has_error"):
-            print("      errors:"
-                  f" loop={loop.get('errors')}"
-                  f" postflight={'error' if (loop.get('postflight') or {}).get('has_error') else 'clean'}"
-                  "  (text lives in the store; not copied here)")
-    return 0
-
-
 def _cli_health(conn, args) -> int:
     report = db.health_report(conn)
     if args.json:
@@ -821,14 +618,12 @@ MIN_PYTHON = (3, 11)
 
 # The plugin log is read from the start and never in full: it grows one line per
 # error forever (M17, no rotation), and `doctor` is the cheapest diagnostic this
-# tool has — it must not get slower with age. 4 MiB is this project's own choice;
-# it happens to match `CLAUDE_MEM_LOG_BYTES_CAP`, and `test_doctor.py` pins that
-# they have not drifted apart, but the tracker's bound is not derived from a
-# neighbour's. It is `settings`' **default** for `log.max_bytes` — what both
-# `doctor` and `skillt rotate-log` use when the owner has not said otherwise. The
-# reader takes the *resolved* value, not this constant, because the promise that no
-# line in the active log is invisible to `doctor` holds only while the reader and
-# the rotator stop at the same number, and an override moves both at once.
+# tool has — it must not get slower with age. 4 MiB is this project's own choice:
+# it is `settings`' **default** for `log.max_bytes` — what both `doctor` and
+# `skillt rotate-log` use when the owner has not said otherwise. The reader takes
+# the *resolved* value, not this constant, because the promise that no line in the
+# active log is invisible to `doctor` holds only while the reader and the rotator
+# stop at the same number, and an override moves both at once.
 TRACKER_LOG_BYTES_CAP = cfg.spec("log.max_bytes")["default"]
 
 # The three streams the plugin writes, in the order the report lists them.
@@ -1090,51 +885,6 @@ def _doctor_checks(conn, args) -> list:
     except Exception as e:  # noqa: BLE001
         add("capture.freshness", False, f"error: {e}", warn=True)
 
-    # --- claude-mem: a read-only neighbour, silent when not installed -----
-    # Deliberately no line at all when there is no store: warning about a plugin
-    # the user never installed is noise, and noise trains people to skip the
-    # report. When it *is* installed it is judged on the same clock as
-    # capture.freshness, and its own failure counter is surfaced — that store is
-    # written by a background worker, so "stale" and "failing" are different
-    # stories and both matter.
-    try:
-        summary = cm.claude_mem_summary(conn, days=limit)
-        if summary["available"]:
-            age = cm.claude_mem_age_days(summary)
-            obs = (summary["tables"].get("observations") or {}).get("n")
-            health = summary.get("health") or {}
-            fails = health.get("consecutiveFailures")
-            parts = [f"observations {obs}",
-                     f"newest {summary['newest'] or '-'}"
-                     + (f" ({age:.1f}d)" if age is not None else "")]
-            if age is None:
-                parts.append("no rows in its own ledger")
-            if isinstance(fails, int) and fails:
-                parts.append(f"{fails} consecutive observer failures"
-                             + (f" ({health.get('lastErrorKind')})"
-                                if health.get("lastErrorKind") else ""))
-            # Its own log and its own pid file, both read from disk. The ERROR
-            # count is the one thing the ledger cannot show: a worker can be
-            # healthy-looking and failing on every sync. HTTP is not consulted
-            # here at all — doctor stays offline.
-            store = cm.claude_mem_store()
-            levels = ((cm.claude_mem_activity(store=store).get("worker_log")
-                       or {}).get("levels") or {})
-            errs = levels.get("ERROR", 0)
-            if isinstance(errs, int) and errs:
-                parts.append(f"{errs} worker-log ERROR lines")
-            worker = cm.claude_mem_worker(store=store)
-            if worker["available"]:
-                parts.append(f"worker up :{worker['port']}" if worker["alive"]
-                             else "worker down (on-demand)")
-            want = f"want <= {limit}d"
-            if age is None or age > limit or fails or errs:
-                add("claude_mem.capture", False, "  ·  ".join(parts + [want]), warn=True)
-            else:
-                add("claude_mem.capture", True, "  ·  ".join(parts + [want]))
-    except Exception as e:  # noqa: BLE001
-        add("claude_mem.capture", False, f"error: {e}", warn=True)
-
     try:
         if not os.path.isfile(TRACKER_LOG_PATH):
             add(
@@ -1377,12 +1127,11 @@ def cli_main(args) -> int:
         return 2
 
     # sync / cleanup-selftest / scrub-metadata / doctor need write access
-    # (migration); health, mcp, plugins and agentos are pure reads and open the
+    # (migration); health, mcp and plugins are pure reads and open the
     # DB read-only so they can never alter it.
     try:
         conn = db.open_db(
-            args.db, readonly=(args.command in ("health", "mcp", "plugins", "agentos",
-                                                "claude-mem"))
+            args.db, readonly=(args.command in ("health", "mcp", "plugins"))
         )
     except sqlite3.Error as e:
         print(f"skillt: cannot open database {args.db}: {e}", file=sys.stderr)
@@ -1403,10 +1152,6 @@ def cli_main(args) -> int:
             return _cli_sync(conn, args)
         if args.command == "health":
             return _cli_health(conn, args)
-        if args.command == "agentos":
-            return _cli_agentos(conn, args)
-        if args.command == "claude-mem":
-            return _cli_claude_mem(conn, args)
         if args.command == "mcp":
             return _cli_mcp(conn, args)
         if args.command == "plugins":
@@ -2607,44 +2352,6 @@ def _tui_classes() -> dict:
                 except Exception:  # noqa: BLE001 - table empty
                     pass
 
-        def _claude_mem_activity_line(self) -> str:
-            """What claude-mem's own files say, in one line.
-
-            Its injection runs in hooks, so no call of ours records it — whether or
-            not the same plugin also registers tools, which is a surface this page
-            already counts separately.
-
-            Files only, never HTTP: this page repaints on every tab change and on
-            any keypress once it is `REFRESH_STALE_AFTER_S` stale, and one network
-            wait there freezes the interface — the same freeze the no-timers rule
-            guards against, arrived at by a different mechanism. Liveness is
-            `os.kill(pid, 0)`, a syscall, not a request.
-            """
-            store = cm.claude_mem_store()
-            activity = cm.claude_mem_activity(store=store)
-            if not activity["available"]:
-                return ""
-            trace = activity.get("trace") or {}
-            log = activity.get("worker_log") or {}
-            bits = []
-            if trace:
-                bits.append(f"injected {trace['injected']:,}")
-                if trace.get("loaded"):
-                    bits.append(f"loaded {trace['loaded']:,}")
-                if trace.get("unrecognized"):
-                    bits.append(f"{trace['unrecognized']} trace line(s) of an unknown shape")
-            if log:
-                bits.append(f"worker ERROR {(log.get('levels') or {}).get('ERROR', 0):,}")
-            worker = cm.claude_mem_worker(store=store)
-            if worker["available"]:
-                bits.append(f"worker up :{worker['port']}" if worker["alive"]
-                            else "worker down")
-            if trace.get("truncated") or log.get("truncated"):
-                bits.append("counts are floors: the byte cap cut a file short")
-            return ("[dim]claude-mem, from its own log files — its injection hooks"
-                    " make no call for the tables below to count: "
-                    + " · ".join(bits) + "[/dim]")
-
         def render_plugins(self, rows=None) -> None:
             if rows is None:
                 # The union of what the scan registered and what was called: a
@@ -2733,9 +2440,6 @@ def _tui_classes() -> dict:
                     " — a 0 here means the tool was not used, not that it was"
                     " missed[/dim]"
                 )
-            activity_line = self._claude_mem_activity_line()
-            if activity_line:
-                lines.append(activity_line)
             if not rows:
                 lines.append(self._empty_note(
                     "plugin surfaces", total=plugin_unfiltered, filtered=bool(needle)))
@@ -3222,7 +2926,7 @@ class Args:
 
 CLI_COMMANDS = {
     "insight", "export", "sync", "cleanup-selftest", "scrub-metadata", "health",
-    "mcp", "plugins", "agentos", "claude-mem", "auto-backup", "doctor", "config",
+    "mcp", "plugins", "auto-backup", "doctor", "config",
     "prune-usage", "rotate-log",
 }
 
@@ -3368,7 +3072,7 @@ def main(argv):
             raise SystemExit(
                 "--cli requires a subcommand: "
                 "insight|export|sync|cleanup-selftest|scrub-metadata|health|mcp|"
-                "plugins|agentos|claude-mem|auto-backup|doctor|config|prune-usage|"
+                "plugins|auto-backup|doctor|config|prune-usage|"
                 "rotate-log"
             )
         return cli_main(args)

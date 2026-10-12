@@ -56,7 +56,7 @@ Design constraints, deliberately kept:
 | `uv` | optional but recommended for creating the venv; plain `python3 -m venv` also works |
 
 The headless subcommands (`insight`, `health`, `doctor`, `export`, `sync`,
-`mcp`, `plugins`, `agentos`, `claude-mem`, `auto-backup`) need **only the Python
+`mcp`, `plugins`, `auto-backup`) need **only the Python
 standard library**. The
 interactive TUI needs [Textual](https://textual.textualize.io/)
 (`textual>=8.2,<9`), installed into a venv by `install.sh`.
@@ -228,13 +228,9 @@ one whose Total is 0.
 A name missing from `Ran as` did not run **since OpenCode last started**, not never:
 `subagent_usage` begins where the writer begins (M24). Recovering the earlier
 history would mean reading OpenCode's own database; that is deliberately not done
-here and is recorded as deferred in `MAINTENANCE.md` §8.
-
-There is **no Advisor page**: the tab was removed on 2026-10-03 at the owner's
-request. The read-only aggregation it showed still exists headless as
-`skillt agentos` (see Commands below), and that command is now the only surface
-that opens that store — no page of the TUI reads it, which is pinned by
-`test_tui_never_reads_the_advisor_store`.
+here and is recorded as deferred in `MAINTENANCE.md` §8. The two read-only neighbours
+that used to sit beside this tool (`skillt agentos`, `skillt claude-mem`) were retired
+on 2026-10-12 (D-053); nothing outside this database is read any more.
 
 | Key | Action |
 |---|---|
@@ -300,8 +296,6 @@ skillt doctor  [--json] [--freshness-days N]
 skillt cleanup-selftest [--yes]
 skillt scrub-metadata [--yes] [--json] [--limit N]
 skillt prune-usage [--keep-days N] [--keep-versions N] [--yes] [--json]
-skillt agentos   [--json] [--limit N]
-skillt claude-mem [--json] [--days N]
 skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
 skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 ```
@@ -344,28 +338,6 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
   taken first, then the WAL is checkpointed so the text really leaves the disk).
   See M14.
 
-- `claude-mem` — the **claude-mem** plugin's own ledger, read-only: how many
-  observations, prompts and sessions it holds, how fresh its newest row is, its
-  discovery-token totals, and the background observer's failure counter — beside
-  what *this* tracker measured over the same window. Counts and timestamps only:
-  the prose columns of that store, and its `settings.json` (which holds its API
-  keys), are never read. See M22. Found at its default path when installed;
-  otherwise set `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` or `CLAUDE_MEM_DIR`.
-  `skillt doctor` says nothing about it when the store is absent.
-
-  It reads three more of claude-mem's own files, in this order: `inject-trace.log`
-  (what its hook injected — the query text after `q=` is **counted, never read**,
-  and the counts are grouped by `project=` and by **local** day, with anything
-  ungroupable counted rather than dropped),
-  `logs/claude-mem-<date>.log` (line counts per level, which is where the day's
-  ERROR total comes from) and `worker.pid` (liveness and port, so nothing here
-  hardcodes `37700`). Only after the files does this one command ask the running
-  worker three HTTP questions (`/api/stats`, `/api/processing-status`,
-  `/api/chroma/status`) under **one shared deadline, not one timeout each**, and it
-  keeps only integers and booleans from the answers — `database.path`,
-  `worker.version` and the free-text `details` are dropped. None of it is written
-  into the tracker's tables, and none of it happens inside the TUI: the Plugins
-  page prints the same log-file numbers as one dim line and never opens a socket.
 - `rotate-log` — keeps the plugin's own log from outrunning the reader (M17). It
   **renames** the file rather than emptying it: every line that leaves the live path is
   still on disk in `skill-tracker.log.<UTC stamp>`, because those lines are the evidence
@@ -391,26 +363,6 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
   date we do not have. `subagent_usage` is never in the delete set: those rows are events,
   not calls, and the spawn record is the only witness that a subagent ran (M24). Deleting
   rows frees pages; the file does not shrink until `skillt vacuum`.
-- `agentos` — the **AgentOS advisor**, aggregated read-only from its own store.
-  The advisor registers no tool and no command, so it can never appear in the
-  usage tables above: it produces **zero usage rows** there, and
-  `plugin_inventory` carries a single row for it with both the tool list and the
-  command list empty. This reads its `store/aos.db` + `store/loops/*.json`
-  instead, and it is now the only surface that does — the TUI has no Advisor
-  page.
-  Requires `AGENT_OS_ROOT` (or
-  `OPENCODE_SKILL_TRACKER_AGENTOS_DB`) and reports plainly when neither is set.
-  Per loop it shows the stage statuses and timings, the slowest stage against
-  the advisor's per-call budget, how much measured tool activity that same
-  session produced (the join), and whether the recalled memory actually reached
-  the prompt — `searched 3 / recalled 3 / reached the prompt 4 (1234 chars)`,
-  counted from the advisor's own result numbers. `memory_ids` and
-  `injected_memory_ids` are kept apart because
-  a hypothesis can be injected on its own, so collapsing them would hide that. **Nothing is ever written to that
-  store**, and no field is ever read that could carry text: the projection names
-  every emitted field, so a loop's `task_text` and the engines' stage payloads
-  stay where they are. See M21.
-
 Argument validation: `--days ≥ 1`, `--min-uses ≥ 0`, `--limit ≥ 1`,
 `--freshness-days ≥ 1`; invalid values fail fast with exit code 2. Every
 headless subcommand also works when stdout is **not** a TTY (pipes,
@@ -456,11 +408,11 @@ skillt config list --json
 
 | Key | Default | Flag | Environment | What it changes |
 |---|---|---|---|---|
-| `view.days` | `30` | `--days` | `OPENCODE_SKILL_TRACKER_VIEW_DAYS` | how many days the headless reports cover (`insight`, `claude-mem`). The interactive screens are pinned to fixed windows — 7-day trends, 30-day totals — so this does not stretch them |
+| `view.days` | `30` | `--days` | `OPENCODE_SKILL_TRACKER_VIEW_DAYS` | how many days the headless reports cover (`insight`, `export`). The interactive screens are pinned to fixed windows — 7-day trends, 30-day totals — so this does not stretch them |
 | `view.limit` | `10` | `--limit` | `OPENCODE_SKILL_TRACKER_VIEW_LIMIT` | how many rows `skillt insight` lists per ranked table. The interactive tables hold every row and scroll |
 | `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | how many events the Recent timeline lists. Older events stay in the database; only what the screen holds changes |
 | `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | how few calls make a skill "worth advising about" in `skillt insight` |
-| `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | how old the newest recorded call may get before `doctor` warns that capture looks stalled — and the same clock the claude-mem line is judged by |
+| `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | how old the newest recorded call may get before `doctor` warns that capture looks stalled |
 | `log.max_bytes` | `4194304` | `--max-bytes` | `OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES` | when the plugin's own log passes this size `skillt rotate-log` moves it aside — **and `doctor log.errors` reads the log at this same resolved value**, so the two cannot drift when an owner sets it (`TRACKER_LOG_BYTES_CAP` is only its shipped default). Floor 1024 — a smaller cap would rotate on the first line |
 | `log.keep_files` | `5` | `--keep-files` | `OPENCODE_SKILL_TRACKER_LOG_KEEP_FILES` | how many rotated logs stay beside the live one. Rotation is a rename, so the lines move rather than disappear; this is how far back that history goes |
 | `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0` = off: nothing is ever deleted.** Usage rows older than this many days become the delete set of `skillt prune-usage`, which lists them first and only removes them with `--yes`, after a backup |
@@ -511,9 +463,7 @@ OpenCode runtime
   never modifies it.
 - **Shared data layer**: `scripts/skill_db.py` — schema, migrations, queries,
   export and backup — used by both `skill-tui.py` and the test suite. It holds the
-  tracker's own data and nothing else: the two read-only neighbours are
-  `skill_db_agentos.py` and `skill_db_claude_mem.py`, which import it and are never
-  imported by it.
+  tracker's own data and nothing else.
 - **Upstream contract**: every name OpenCode chose is written once per language —
   `scripts/opencode_compat.py` on the Python side, the `CONTRACT` block in
   `plugin/skill-tracker.js` on the writer's side (hooks are registered and events
@@ -549,12 +499,6 @@ did not exist while six variables shipped undocumented.
 | `OPENCODE_SKILL_TRACKER_DEBUG` | `1` enables per-call debug lines in the plugin log |
 | `OPENCODE_SKILL_TRACKER_BACKUP_DIR` | where `VACUUM INTO` backups are written and retention sweeps look (default `~/.local/share/opencode/backups`) |
 | `OPENCODE_SKILL_TRACKER_STREAMS` | read side: comma list of streams `doctor` may call stalled (default: all three). An excluded stream is still printed, marked `(excluded)` |
-| `OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB` | the claude-mem store to read (default `~/.claude-mem/claude-mem.db`) |
-| `CLAUDE_MEM_DIR` | that plugin's own directory name for the same purpose; `…_CLAUDE_MEM_DB` wins |
-| `AGENT_OS_ROOT` | the advisor's root, from which `store/aos.db` and `store/loops/*.json` are resolved |
-| `OPENCODE_SKILL_TRACKER_AGENTOS_DB` | the advisor database directly, bypassing `AGENT_OS_ROOT` |
-| `AOS_DB` | AgentOS's own variable name for the same file, tried last — the readers follow the neighbour's convention rather than inventing a third |
-| `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` | the advisor's per-call budget the "over budget" flag is measured against (default 1200, see M21) |
 | `SKILLT_SCRIPTS` | override the `scripts/` directory the launcher uses |
 | `SKILLT_VENV` | point the launcher at a venv dir or a python binary |
 | `SKILLT_CONFIG_DIR` | installer only: the OpenCode config directory to link into (default `~/.config/opencode`) — for a sandboxed install test |
@@ -801,7 +745,7 @@ The full audit — M1 through M24, with reproduction notes — lives in
   is also where the "is the cap near?" arithmetic lives), and it is the only place
   capture errors appear, which is what `doctor log.errors` reads — so clearing it erases
   that history. **Both sides are now bounded.** The reader counts only the first
-  `log.max_bytes` (default 4 MiB, the same bound the claude-mem reader uses) from the
+  `log.max_bytes` (default 4 MiB, this project's own choice) from the
   **start** of the file and says so in the line it prints ("a floor, not a total");
   `skillt rotate-log` renames the file at that same size — one setting, read by both
   sides after resolution, so a line cannot sit in the active log and be
@@ -827,28 +771,21 @@ The full audit — M1 through M24, with reproduction notes — lives in
   1.18.33 sends — that mismatch is fixed, and
   `test_permission_rejection_writes_a_denied_row` pins the real shapes; what is
   left is a host boundary, not a tracker bug.
-- **M21** The advisor's per-call budget is a copied default. skillt cannot read
-  `AOS_TIMEOUT_MS` across the seam, so the "over budget" flag uses AgentOS's
-  documented default (1200 ms) unless
-  `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` says otherwise. If AgentOS changes its
-  default and nobody changes this, the flag goes quietly stale — the same shape
-  as M13, and the reason it is named here rather than buried in a constant.
-- **M22** The claude-mem numbers come from a foreign schema, and they are only
-  numbers. `skillt claude-mem` reads another plugin's SQLite store read-only —
-  counts, timestamps and short category labels, never the prose columns beside
-  them (`prompt_text`, `text`, `narrative`, `tool_input`, and so on) and never its
-  `settings.json`. A rename upstream blanks a number rather than breaking anything
-  (the M21 shape again), and a store whose tables are all missing is reported as
-  unreadable rather than as installed-and-empty. What claude-mem *does* — its own
-  hooks, its own summariser — is not observable from here at all: this reads what
-  it wrote, not what it did. Its two log files are read under the same contract,
-  parsed by line **shape** (a line whose format has changed is counted as
-  `unrecognized` rather than dropped, and no log line is ever echoed) and scanned
-  from the **start** of the file under a byte cap — a tail is blind to the early
-  part, and on the real log every one of its 57 ERROR lines is early. When the cap
-  bites the result says `truncated` and the number is a floor, not a total. The
-  HTTP projection is by field name *and* by type, so a field that is renamed to
-  carry prose yields nothing instead of leaking it.
+- **M21** (withdrawn 2026-10-12, D-053) Was: the advisor's per-call budget is a
+  copied default, because skillt cannot read `AOS_TIMEOUT_MS` across a seam, so the
+  "over budget" flag used AgentOS's documented 1200 ms. The advisor reader left with
+  the command, so no seam is left to copy across. The shape it warned about is still a
+  rule: a bound taken from somebody else's default goes stale in silence, so any
+  foreign value is named where a reader can see it — which is what M13 does.
+- **M22** (withdrawn 2026-10-12, D-053) Was: the claude-mem numbers come from a foreign
+  schema, and they are only numbers. That reader is gone with `skillt claude-mem`.
+  What it taught stays, and now applies to the host's own files and log: read a foreign
+  field by name and by type; treat a foreign value that could carry prose as
+  **counted, never read** (a `SKILL.md` body and a log line's message text contribute a
+  shape and a count, never the text); count an unparseable line as `unparsed` instead of
+  dropping it; and mark a byte-capped scan `truncated` so its numbers read as floors and
+  not totals. If this project ever reads a foreign **store**
+  again, it comes back under those rules with its own check named in `AGENTS.md`.
 - **M23** The Agents page counts the agent a row's session **first** reported, not
   the agent that ran that call. All three usage upserts write
   `metadata = COALESCE(existing, excluded)`, so whichever JSON lands first is
@@ -956,8 +893,6 @@ opencode-skill-tracker/
 ├── plugin/skill-tracker.js       # OpenCode plugin — the only writer
 ├── scripts/skill_db.py           # shared data layer (the tracker's own data only)
 ├── scripts/opencode_compat.py    # every OpenCode name, in one place
-├── scripts/skill_db_agentos.py   # read-only neighbour: the advisor's own store
-├── scripts/skill_db_claude_mem.py # read-only neighbour: claude-mem's own ledger
 ├── scripts/skill-tui.py          # TUI + --cli headless subcommands
 ├── scripts/skill-stats.py        # legacy CLI (backwards compatible)
 ├── scripts/tests/                # pytest suite

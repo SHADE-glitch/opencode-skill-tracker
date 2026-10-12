@@ -16,13 +16,11 @@ from pathlib import Path
 
 import pytest
 
-import skill_db_claude_mem as cm
 
 pytest.importorskip("textual")
 
 from conftest import load_module
 
-import skill_db_agentos as aos  # noqa: E402
 
 st = load_module("skill-tui.py", "skill_tui")
 
@@ -920,63 +918,57 @@ def test_tui_plugin_detail_screen_opens(seeded_plugin_db):
     _run(_run_it())
 
 
-def test_tui_plugins_page_shows_claude_mem_activity(seeded_plugin_db, tmp_path, monkeypatch):
-    """One dim line, read from the neighbour's own files.
+def test_no_http_is_reachable_from_the_tui_refresh_path(seeded_plugin_db, monkeypatch):
+    """No repaint path may wait on a network answer.
 
-    Its injection runs in hooks, so none of it lands in the tracker's tables —
-    and it gets a line rather than a table, because `_PAGE_TABLES` assumes one
-    table and one sort per page.
-    """
-    import re
-    from rich.text import Text
-    from textual.widgets import Static, TabbedContent
-    from conftest import write_claude_mem_files
-
-    store = write_claude_mem_files(tmp_path / "cm", pid=os.getpid(), port=37701)
-    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB", store)
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
-        async with app.run_test(size=(160, 45)) as pilot:
-            await pilot.pause()
-            app.screen.query_one(TabbedContent).active = "tab-plugins"
-            await pilot.pause()
-            raw = str(app.screen.query_one("#plugins-label", Static).content)
-            lines = [Text.from_markup(l).plain for l in raw.splitlines() if l.strip()]
-            cm = [l for l in lines if "claude-mem" in l]
-            assert len(cm) == 1, lines
-            assert "injected 2" in cm[0], cm[0]
-            assert "worker ERROR 2" in cm[0], cm[0]
-            assert "worker up :37701" in cm[0], cm[0]
-            assert "SENTINEL-WORKER-TOKEN" not in cm[0], cm[0]
-            # It sits after the inventory lines, not among them.
-            assert lines.index(cm[0]) > [i for i, l in enumerate(lines)
-                                         if l.startswith("Inventory")][0], lines
-            assert app.screen._PAGE_TABLES["tab-plugins"], lines
-            assert len(app.screen._PAGE_TABLES["tab-plugins"]) == 1, \
-                "the activity line must not add a second table to the page"
-            assert len(app.screen.query("#plugins-table")) == 1
-
-    _run(_run_it())
-
-
-def test_no_http_is_reachable_from_the_tui_refresh_path(seeded_plugin_db, tmp_path, monkeypatch):
-    """The Plugins page repaints on every tab change and on any keypress once it is
+    The Plugins page repaints on every tab change and on any keypress once it is
     `REFRESH_STALE_AFTER_S` stale; a network wait there freezes the UI.
-
     `_refresh_pages` catches an exception from one section and marks that page
     stale, so raising here would be *swallowed* — the guard therefore records the
-    call. An empty log is the proof, and no stale page proves nothing swallowed a
-    failure on the way to it.
-    """
-    from textual.widgets import TabPane, TabbedContent
-    from conftest import write_claude_mem_files
+    call before it raises.
 
-    store = write_claude_mem_files(tmp_path / "cm", pid=os.getpid())
-    monkeypatch.setenv("OPENCODE_SKILL_TRACKER_CLAUDE_MEM_DB", store)
+    The stubs sit on the standard library's own doors, not on one named reader: a
+    check that spies on a single function passes vacuously the day that function is
+    renamed or a second surface appears beside it. `socket.socket` is deliberately
+    **not** patched — asyncio's own selector loop builds a self-pipe through it, so
+    patching it makes the harness fail rather than the app, which is an instrument
+    error and not a finding.
+
+    Each door is armed before it is believed: the test reaches it once on purpose
+    and requires that the stub is what answered. Without that, a patch that missed
+    its target would read exactly like a clean repaint path.
+    """
+    import http.client
+    import socket
+    import urllib.request
+    from textual.widgets import TabPane, TabbedContent
+
     hits = []
-    monkeypatch.setattr(st.cm, "claude_mem_http",
-                        lambda *a, **k: hits.append("http") or {"available": False})
+
+    def _blocked(name):
+        def _stub(*args, **kwargs):
+            hits.append(name)
+            raise AssertionError(f"a repaint reached {name}")
+        return _stub
+
+    doors = (
+        ("urllib.request.urlopen", urllib.request, "urlopen",
+         lambda: urllib.request.urlopen("http://127.0.0.1:1/armed")),
+        ("http.client.HTTPConnection", http.client, "HTTPConnection",
+         lambda: http.client.HTTPConnection("127.0.0.1", 1)),
+        ("socket.create_connection", socket, "create_connection",
+         lambda: socket.create_connection(("127.0.0.1", 1))),
+    )
+    for name, module, attr, call in doors:
+        monkeypatch.setattr(module, attr, _blocked(name))
+
+    for name, _module, _attr, call in doors:
+        try:
+            call()
+        except AssertionError:
+            pass
+        assert hits == [name], f"{name} is not armed; the stub never answered: {hits}"
+        hits.clear()
 
     async def _run_it():
         app = SkillTUI(db_path=seeded_plugin_db, no_sync=True)
@@ -990,7 +982,7 @@ def test_no_http_is_reachable_from_the_tui_refresh_path(seeded_plugin_db, tmp_pa
             await pilot.press("r")                      # the refresh binding
             await pilot.pause()
             app.screen.refresh_all()                    # and the whole sweep at once
-            assert hits == [], "the TUI called the worker over HTTP"
+            assert hits == [], f"the TUI reached the network on a repaint: {hits}"
             assert app.screen._page_stale == {}, app.screen._page_stale
 
     _run(_run_it())
@@ -1765,46 +1757,6 @@ def test_tui_refreshes_when_a_tab_is_activated(seeded_db):
             assert any(r["name"] == "tab-activated" for r in app.recent_rows_cache), (
                 "the activated page must pick up the row written since mount"
             )
-            app.conn.close()
-
-    _run(_run_it())
-
-
-def test_tui_never_reads_the_advisor_store(seeded_db, tmp_path, monkeypatch):
-    """No page of the TUI may open the advisor store.
-
-    This used to pin that only the Advisor tab read it, because the digest does
-    per-file I/O and was irrelevant to every other page. The tab was removed at
-    the owner's request, so the contract is now stronger: `skillt agentos` is the
-    only door into that store, and mounting, refreshing and visiting every tab
-    must never open it. A spy that records the call does not have to be cleared
-    at any point — there is no legitimate read to ignore.
-    """
-    import skill_db as db
-    from test_agentos import _make_store
-    from textual.widgets import TabPane
-
-    monkeypatch.setenv(aos.AGENTOS_DB_ENV, _make_store(tmp_path))
-
-    calls = []
-    real = aos.agentos_summary
-
-    def spy(*args, **kwargs):
-        calls.append(1)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(st.aos, "agentos_summary", spy)
-
-    async def _run_it():
-        app = SkillTUI(db_path=seeded_db, no_sync=True)
-        async with app.run_test(size=(120, 45)) as pilot:
-            await pilot.pause()          # mount runs the full refresh
-            assert calls == [], "mount must not read the advisor store"
-            app.screen.refresh_all()
-            for tab in app.screen.query(TabPane):
-                app.screen.query_one("TabbedContent").active = tab.id
-                await pilot.pause()
-            assert calls == [], "no tab may read the advisor store"
             app.conn.close()
 
     _run(_run_it())
