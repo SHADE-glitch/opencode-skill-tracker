@@ -30,11 +30,10 @@ the numbers this table used to hold were already wrong when they were relocated
 | Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2`. `subagent_usage` was added 2026-10-04 **without** a bump: the counter exists because a view cannot be redefined by `CREATE VIEW IF NOT EXISTS`, and this is a table, which `ensure_schema()` creates idempotently on every run |
 | Export document | `schema_version = 6` (4 = metadata is allowlisted, 5 = `plugin_inventory.scope`, 6 = the `subagent_usage` key). `PRAGMA user_version` / `SCHEMA_VERSION` stayed at **2**: that counter exists because `CREATE VIEW IF NOT EXISTS` cannot re-define a view, and this round added a table, not a view — `ensure_schema()` runs the table DDL every time, so no bump was owed |
 | Test suite | three commands, in this order, and what each one proves: measurements §10. The pass count is a *run* (it differs between the system interpreter, the venv, and CI, and AGENTS.md forbids copying it into a document), so it is not stated here any more — it was 530 here when this row was written and is not 530 now. What is stable: the shipped `__selftest()` floor is `test_selftest_is_green_end_to_end`, the recipe is measurements §5, and the third command (`OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`) is the one that proves the green was not bought with this machine's real files |
-| AgentOS advisor store (another process's state, and it moves) | `/home/shade/Public/AgentOS/store/aos.db` plus `store/loops/*.json`, read only through `skill_db_agentos`, read-only URI, never from a repaint — the rules and the reason are in [`docs/maintenance/compat-matrix.md`](docs/maintenance/compat-matrix.md) §4 and `test_module_boundaries.py`. Its event/row/loop counts and its stage timings are measurements, so they are not kept here; re-read them with `skillt agentos`. What is stable: **the TUI has no Advisor page any more** (removed 2026-10-03 at the owner's request) and `test_tui_never_reads_the_advisor_store` pins that no tab reads it; `skillt agentos` needs `AGENT_OS_ROOT` in the environment it runs in — **it is `export`ed in `~/.zshrc`** since 2026-10-01, so an interactive shell has it while anything non-interactive (cron, systemd, `env -i`) must set it itself. Whether a loop is a live-test sample or real usage is not this project's call to make; the newest loops are labelled with their own `model` |
-| claude-mem neighbour (another process's state, and it moves) | `~/.claude-mem/` — its ledger counts, its `inject-trace.log` line totals and its worker-log level counts are **measurements of a file being appended to by someone else**, so they live with the command: measurements §6 (read cost) and `skillt claude-mem` (the reading itself). What is stable and belongs here: the reader takes the **newest dated** worker log by mtime and leaves the others alone (`test_only_the_dated_worker_log_is_read`), a foreign log line is counted and never read, `~/.claude-mem/settings.json` is never opened, and `startToken` is never read. The cost of reading its three things is what the Plugins page's dim line pays on a repaint, and why `claude_mem_http` is never called from that path — the number moves with the neighbour's log size, so it is re-taken rather than quoted. Its inventory line and its activity line describe different things: the tools `claude-mem-inject.js` registers can be at 0 calls while the injection line is current |
+| Read set — what this project opens outside its own database | **Nothing that used to be here is read any more.** The two read-only neighbours were retired on 2026-10-12 (D-053): the AgentOS advisor's store (`store/aos.db` + `store/loops/*.json`) and claude-mem's ledger with its three files and its three HTTP endpoints — the modules, the `skillt agentos` / `skillt claude-mem` commands, the `claude_mem.capture` doctor line and the Plugins page's dim activity line all went together, so no reader here opens a foreign database or a socket any more. What is still opened, and under which rule: the host's skills tree (`SKILL.md` frontmatter only — `name`, plus the `source`/`category` derived from the path, **never the body**), the host's config (read-only, and a parse failure is never read as "empty config"), and this project's **own** plugin log — the file its own writer appends to between runs — scanned from the **start** under the resolved `log.max_bytes` so a capped count says `truncated` and reads as a floor. `opencode.db` is still not opened at all — §8 records the declined backfill. The same list as a **contract**, not a run, is [`docs/maintenance/compat-matrix.md`](docs/maintenance/compat-matrix.md) §4, and every host name in it is declared in [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) and `scripts/opencode_compat.py`. Guards: `test_scan_sync.py`, `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`, `test_the_rotation_cap_is_the_number_the_reader_reads`. The rule outlives its subjects: the first foreign **store** read again comes back under AGENTS.md's — read-only URI, field-whitelisted, never `open_db()`, never from a repaint — with its own check named in that file's invariant table. The dated readings of the two retired neighbours are kept in [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §6 and §7, marked withdrawn |
 | Tracker log | `~/.config/opencode/logs/skill-tracker.log`. Its size, line count, lines/day and error count are a growth measurement with a command: measurements §4. What belongs here is the *shape* of what it contains. It holds **4 `[err]` lines, all `selftest FAIL: …`, written by this project on 2026-10-04 07:32Z** while the subagent assertions were still red — `doctor`'s `log.errors` warns on them, and they are residue from a test run, not a capture fault, which is why they are still here and still reported. **The gap they exposed is fixed** (2026-10-04): `__selftest()` now redirects its own log to `skill-tracker-selftest.log` beside its temp database unless `OPENCODE_SKILL_TRACKER_LOG` names a path explicitly, so the documented hand-run recipe can no longer touch this file — re-verified 2026-10-09 by running that recipe (measurements §5) and comparing this log's sha256 before and after: unchanged. Do not delete lines from a live log by hand |
 | Backup timer | **NOT INSTALLED as of 2026-10-10 00:07** — `systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`, no `skillt*` unit file exists anywhere under `~/.config/systemd`, `/etc/systemd` or `~/.local/share/systemd`, and `journalctl --user -u skillt-auto-backup.timer` ends at `Stopped … 2026-10-07 21:48:34`. The service's last successful run was **2026-10-07 00:18**, which is why `backups.latest` is 3.0 d and will trip its 7-day WARN around **2026-10-14**. `Linger=yes` is still set, so nothing about the session prevents the unit — it is simply gone. **Nobody in this round removed it and nobody in this round will put it back**: installing a systemd unit is a change outside this project, and the owner's decision for S7 was that `install.sh` keeps it behind `--with-timer`. **Decided on 2026-10-10 12:5x: the owner does not want the unit installed.** An empty schedule is therefore a *choice*, not an outage — `backups.scheduled` will keep WARNING, `backups.latest` will trip its 7-day line around 2026-10-14, and **neither is a new fault**. A backup becomes a deliberate act: `skillt auto-backup`. If that ever changes, re-arm with `./install.sh --with-timer`, then read `systemctl --user status skillt-auto-backup.timer` and `skillt doctor`'s `backups.latest`. What *is* verified about the unit itself: `systemd-analyze verify --user` accepts both files, and the exact `ExecStart` pair was run by hand through the installed launcher (`below the cap; nothing to rotate`, log sha256 unchanged). Note that starting it also prunes real backups per retention, so that hand-run is not a routine check |
-| What `doctor`'s WARNs mean on this host | Measured 2026-10-10 12:2x: **17 PASS / 4 WARN / 0 FAIL**. A future reader will hit those four again and may spend a round "fixing" things that are supposed to warn, so each one is named with what it actually is. ① `backups.scheduled` — **by owner decision** (the row above: no systemd unit wanted); it can only ever WARN, never FAIL. ② `log.errors` — 4 lines, all stamped `2026-10-04T07:32:13Z` / `07:32:25Z`, which are **two distinct `selftest FAIL` labels written twice each** during the red-before-green step of `0c8f41d`; `d1884cd` stopped `__selftest` from writing into the shared log, and since then 169 newer lines added **0** `[err]`. The check counts lines, not age, so it will WARN on history forever unless the log is rotated. ③ `claude_mem.capture` — an ERROR line in *claude-mem's own* worker log, a neighbour process this project only reads. ④ `env.opencode_version` — the host moved to 1.18.35 while `DEFAULT_BUILTIN_TOOLS` is pinned to 1.18.34; clearing it needs the live `/experimental/tool/ids` probe (measurements §5), which is the owner's call, not a routine fix. **So: ①③④ are expected, ② is history. None of the four is a defect in the tracker, and `0 FAIL` is the part that actually gates work** |
+| What `doctor`'s WARNs mean on this host | Measured 2026-10-10 12:2x: **17 PASS / 4 WARN / 0 FAIL**. A future reader will hit the survivors again and may spend a round "fixing" things that are supposed to warn, so every line of that dated set is named with what it actually is. ① `backups.scheduled` — **by owner decision** (the row above: no systemd unit wanted); it can only ever WARN, never FAIL. ② `log.errors` — 4 lines, all stamped `2026-10-04T07:32:13Z` / `07:32:25Z`, which are **two distinct `selftest FAIL` labels written twice each** during the red-before-green step of `0c8f41d`; `d1884cd` stopped `__selftest` from writing into the shared log, and since then 169 newer lines added **0** `[err]`. The check counts lines, not age, so it will WARN on history forever unless the log is rotated. ③ ~~`claude_mem.capture`~~ — **no longer a check**: it WARNed on an ERROR line in *claude-mem's own* worker log, a neighbour process this project only read, and the reader went on 2026-10-12 (D-053). A reader of this row who counts four WARNs is reading the 2026-10-10 record, not this host. ④ `env.opencode_version` — the host moved to 1.18.35 while `DEFAULT_BUILTIN_TOOLS` is pinned to 1.18.34; clearing it needs the live `/experimental/tool/ids` probe (measurements §5), which is the owner's call, not a routine fix. **So of that dated set: ①④ are expected, ② is history, ③ is retired. None of the four was a defect in the tracker, and `0 FAIL` is the part that actually gates work** |
 | What `doctor` could not see, and now can | Until 2026-10-10 there was **no check asking whether the timer is installed**, and this row is the evidence: for three days `backups.latest` read PASS — truthfully, the backup was 3.0 d old and the threshold is 7 — while the thing that makes backups had been removed. **A schedule is not a file.** `backups.scheduled` now asks `systemctl --user is-enabled skillt-auto-backup.timer` and WARNs on anything but `enabled`, including "cannot ask systemd" (a machine with no user systemd is *unknown*, not healthy). It never FAILs, because not installing the unit is a legitimate choice the owner made. The two checks are meant to be able to disagree: on this host today `backups.latest` is PASS and `backups.scheduled` is WARN, and that pair is the whole finding |
 | Loose backups (M19) | **Closed for the part this row used to describe** — re-read 2026-10-10: `ls ~/.local/share/opencode/` holds no `skill-usage-backup-*.db` outside `BACKUP_DIR` at all; the six backups are all inside it, which is what retention sweeps. One loose artifact remains and it is not a backup: `skill-usage-export-20260923-100620.json`, `schema_version = 1`, 40,390 B. A full key walk of it (all 32 distinct keys, every list element) finds **no** `summary`, `title`, `error`, `text`, `prompt` or `body` key, so it carries none of the M14 metadata text — but it does carry skill `description` and `path` values and the exporting machine's `db_path`, which is what an export of a skill inventory is for. Every backup in `BACKUP_DIR` was checked the same way for rows whose `metadata` carries `summary`/`title`: **0 in all six** |
 | Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots). **That deletion has not happened**, because the timer that would have run it was stopped on 2026-10-07 — with both backups still present today, which is the row above's evidence that a schedule is not a file |
@@ -118,19 +117,6 @@ Healthy today means, at minimum:
 skillt cleanup-selftest          # dry run; must report no synthetic rows
 skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
 skillt sync --dry-run            # scanned == skills row count, changed == 0
-skillt claude-mem                # the memory plugin's own ledger: how fresh its
-                                 # background capture is, its token totals, and the
-                                 # observer's consecutive-failure count (silent in
-                                 # `doctor` when that store is absent). Below the
-                                 # ledger it prints the plugin's own two log files
-                                 # (injected count, ERROR lines) and `worker.pid`
-                                 # liveness, then the worker's three HTTP answers.
-                                 # `worker log ERROR …` is the line that tells you
-                                 # the background syncer is failing while its
-                                 # ledger still looks fresh.
-skillt agentos                   # advisor loops: over-budget stages, errors, whether
-                                 # the recalled memory reached the prompt, and the
-                                 # join with measured usage (needs AGENT_OS_ROOT)
 # growth watch (M17): size, lines, lines/day, error count and whether the read is
 # truncated — one recipe, one place: docs/maintenance/measurements.md §4. Do not
 # re-derive it with a bare `wc -l` here: a line count without the cap comparison
@@ -297,19 +283,32 @@ state.
   a guard. The column was later removed at the owner's request, and the lesson
   stays: `test_tui_trend_rows_are_a_fixed_width` names the absolute row width
   (20) in its own breath, not just the equality between the lines.
-- **No page of the TUI opens the advisor store.** The Advisor tab was removed on
-  2026-10-03 at the owner's request; `skill_db_agentos.agentos_*` (its own module)
-  stayed, so that store is still readable headless — just not from a screen.
-  `test_tui_never_reads_the_advisor_store` spies on the one door into it and
-  visits every tab, mount and `refresh_all` included, and must see zero calls.
-- **The advisor's three recall counts are never collapsed into one.** `retrieved`
-  is the engine's self-report, `recalled` is `len(memory_ids)`, `injected` is
-  `len(injected_memory_ids)`; a hypothesis can be injected on its own, so merging
-  them hides a real fact. The field that used to be printed under a header saying
-  "recall" was a reporting error, not a style problem.
-  `test_the_recall_counts_surface_and_the_query_dict_does_not` pins the three
-  numbers on the projected dict; the fixture loop gives them different values,
-  because with equal ones no test could tell the difference.
+- **Nothing outside this project's own database is read.** The Advisor tab was removed on
+  2026-10-03 at the owner's request; the two read-only neighbours that fed `skillt agentos`
+  and `skillt claude-mem` were withdrawn with their commands on 2026-10-12 (D-053), so there
+  is no foreign store left anywhere in the read set to keep off a repaint path — and
+  `test_tui_never_reads_the_advisor_store` went with the store it spied on. What survives
+  has subjects and checks: the repaint path carries no HTTP and no subprocess at all
+  (`test_no_http_is_reachable_from_the_tui_refresh_path`), and a foreign **file** is read as
+  counts, never as content (`test_scan_sync.py`,
+  `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`). The rule outlives its
+  subjects, so the first foreign store read again comes back under AGENTS.md's — read-only
+  URI, field-whitelisted, never `open_db()`, never from a repaint — with its own check named
+  in that file's invariant table, because a promise naming a check nobody wrote is worse
+  than no promise.
+- **Two counts that mean different things never merge, and the fixture that pins them never
+  gives them the same value.** The case that taught this was the advisor's recall triple —
+  `retrieved` (the engine's self-report), `recalled` (`len(memory_ids)`), `injected`
+  (`len(injected_memory_ids)`) — and a hypothesis can be injected on its own, so collapsing
+  them hides a real fact; printing one of them under a header that said "recall" was a
+  reporting error, not a style problem. That reader and
+  `test_the_recall_counts_surface_and_the_query_dict_does_not` were withdrawn on 2026-10-12
+  (D-053); the two live pairs are `Spawned`/`Ran as` against `Total`
+  (`test_spawns_and_runs_are_two_columns_and_never_inside_total`) and `registered`/`ever_called`
+  on the Plugins page. The half that does not depend on the subject is the fixture rule: the
+  advisor's loop deliberately carried three different numbers, because with equal ones no
+  assertion can tell a merge from a coincidence — the same reason a fixture holding **one**
+  row produces a negative (see the double-click entry below).
 - **Row dispatch is an explicit kind list ending in `else: return`.** It used to
   end in the plugin call, so any kind it had not heard of was handed three
   positional arguments it did not have and the handler raised `IndexError`. A new
@@ -320,23 +319,16 @@ state.
   is the tuple stored in `app.row_targets`, because parsing a name back out of a
   key — or out of a rendered cell — is how a value containing the separator turns
   into the wrong row.
-- **The advisor store is reached only through `skill_db_agentos.agentos_*`, and only
-  as a projection.** The digest lists `store/loops/*.json`, `json.load`s one file at a
-  time and hands out what `_project_loop` names — a caller never receives
-  `task_text`, a recall `query` or a stage payload. The id comes from the file's
-  content, not its name, so no path is ever assembled from store-supplied text.
-  `test_task_text_and_payloads_are_never_read` and
-  `test_a_text_valued_count_field_is_never_counted` are the guards. The screen
-  that used to need the same rule was deleted with the tab, and its source-grepping
-  test went with it.
 - **`bar(value, peak, width)` overflows when `value > peak` and raises on `None`.**
   The advisor's per-stage chart learned this on real data: with the peak taken from
   the stages alone, a loop whose slowest stage was 18 ms against a 1200 ms budget
   drew **1467 blocks** and wrapped the page — the fixture loop had a 4000 ms stage,
-  which hid it completely. That chart is gone with the tab. The dashboard trend
-  charts still call the same helper and are safe for the same two reasons: their
-  peak is `max()` of the values they plot, and a day with no calls is `0`, never
-  `None`.
+  which hid it completely. That chart went with the tab and the reader that fed it
+  was withdrawn on 2026-10-12 (D-053); the arithmetic did not, and neither did the
+  reason the fixture mattered — a sample whose own maximum sits above the reference
+  line is exactly what hides an overflow. The dashboard trend charts still call the
+  same helper and are safe for the same two reasons: their peak is `max()` of the
+  values they plot, and a day with no calls is `0`, never `None`.
 - **Double-click needs no new code, but does need a coordinate that is on a row.**
   Textual posts `RowSelected` when a click lands on the cell that already holds the
   row cursor, i.e. the second click; no click-chain timer, so the no-app-timers rule
@@ -346,7 +338,9 @@ state.
   `test_tui_dashboard_row_double_click_opens_detail` asserts the header first so the
   positive case cannot be vacuous. Note for anyone carrying old numbers over: the
   Advisor table's `(4, 2)` negative was an artifact of that fixture holding **one**
-  row — on a table with several rows y=2 is a row and it opens the page.
+  row — on a table with several rows y=2 is a row and it opens the page. That table is
+  gone (2026-10-12, D-053); the trap is not, and it is the reason a coordinate claim here
+  has to state how many rows the fixture holds before anyone reuses the number.
 - **The plugin surface scan is one hop wide, and the entry is never size-capped.**
   A published `main` is often a shim: `opencode-mem@2.28.1`'s `dist/plugin.js` is
   407 bytes and registers nothing — its tool lives in the chunk the shim pulls in
@@ -366,8 +360,10 @@ state.
 - **Tool ids are the keys at the shallowest level that has any — not "level one".**
   The block used to be matched with a regex that stopped at the first `}`, which did
   two wrong things at once: it invented tools (the keys of a nested
-  `args: { query: … }` — claude-mem listed `query` beside its real
-  `claude_mem_search`) and it lost them (any tool written *after* a nested object).
+  `args: { query: … }` — the miscount was first seen on claude-mem, which listed
+  `query` beside its real `claude_mem_search`; the attribution scan and its guard
+  are still live, while the reader of claude-mem's own ledger was withdrawn
+  2026-10-12, D-053) and it lost them (any tool written *after* a nested object).
   The walk now skips string literals and takes the shallowest populated level, which
   is the level where DCP's `tool:{ ...cond && { compress: … } }` and opencode-mem's
   `tool: { memory: tool({ args: {…} }) }` both come out right. An ALL_CAPS filter
@@ -427,7 +423,23 @@ state.
   `test_tui_trend_rows_are_a_fixed_width` — the last measures the rendered text
   with the markup stripped, because `Static.content` keeps it.
 - **The two subagent roles get two columns.** `Spawned` is what this agent started, `Ran as` how often this name was somebody's child; they never merge into one number and neither enters `Total`, which stays skill + MCP + plugin on every row — pinned row by row in `test_spawns_and_runs_are_two_columns_and_never_inside_total`, not just against totals that happen to exist. A child-only row's `Success rate` is over its runs (the only outcome it has) and carries `⟨sub⟩` so it cannot be read as a lazy primary agent.
-- **Injection grouping conserves, and the day is local.** `by_project` and `by_day` are derived from what the trace line already carries; every line that will not group is counted in `projectless`, `older_days` or `undated` instead of vanishing, and `test_grouping_never_loses_a_count` asserts the sums add back to the totals. Days follow `fmt_time`'s local calendar because the trend charts do (M1); a `project=` value is admitted only if it is slug-shaped (no spaces, no path), so a sentence in that foreign field becomes a count, never a label.
+- **A grouping conserves, and a value that will not parse is counted, never dropped.** The
+  trace grouping that taught this — `by_project` and `by_day` of the claude-mem injection line,
+  with `projectless`, `older_days` and `undated` catching every line that would not group, and
+  `test_grouping_never_loses_a_count` asserting the buckets add back to the total — left with
+  that reader on 2026-10-12 (D-053). The rule did not, and three live subjects still obey it:
+  `plan_retention()` buckets the backups `by_day` and `by_month` and puts every name that will
+  not parse into `unparsed`, which is **never** scheduled for deletion (`test_backup.py`);
+  `skillt sync` counts a skill whose frontmatter name it cannot read as `unparsed_name` instead
+  of losing the row (`test_sync_counts_unparsed_names`); and `skillt prune-usage` counts every
+  row whose timestamp will not parse as `undated` and keeps it, because "older than N days" is a
+  claim that row cannot support (`test_row_retention.py`). A split whose buckets do not add back
+  to the total is a loss dressed as a report. Usage windows keep grouping by the **local**
+  calendar day — the day buckets come from `local_day_bounds()` and `date(timestamp,'localtime')`,
+  which is the fix M1 records — while backup and rotation filenames stay a UTC stamp, because the
+  rows inside them are UTC. And a foreign label is admitted only through a shape gate:
+  `SUBAGENT_LABEL_RE` takes a slug-shaped name and counts everything else as `(unnamed)`, so a
+  sentence in somebody else's field becomes a number, never a label.
 - **Row identity is never parsed out of the row key.** Names contain the
   separators (`@scope/pkg`, `conductor:newTrack`, server names with `_`), so
   every table registers `(kind, ...parts)` in `app.row_targets`. Don't reintroduce
@@ -443,36 +455,47 @@ state.
   set, so a new key cannot arrive silently.
 - **`scrub-metadata` edits rows in place rather than deleting them**, and only
   after a backup when `--yes`.
-- **A neighbour's log is scanned from the start, not from the tail.** Its worker
-  log held **57 ERROR lines**, every one of them in the early part of the file; a
-  64 KB tail reported 0 of them. So `CLAUDE_MEM_LOG_BYTES_CAP` cuts the *end*, and
-  when it bites the result carries `truncated` and the counts are labelled floors
-  rather than totals. An estimate of "1–2 ms to read the whole file" was written
-  into the plan before it was measured; it is really **8.2–15.8 ms** for the three
-  files (2026-10-04) — re-taken 2026-10-09 as **12.2–14.0 ms**, same command,
-  measurements §6, and the gap between the two readings *is* the point: this cost is
-  the neighbour's log size, not our code. Either way it is why the HTTP probe stays
-  off the repaint path.
-- **The level is the second bracket, the category the third.** `[time] [LEVEL]
-  [category] message`: reading ERROR as a category counts nothing at all, and
-  counting categories instead of levels would have called a clean day healthy.
-  `_LOG_LINE_RE` is positioned on that, and a line that does not match is counted
-  in `unparsed` instead of being dropped.
-- **Files before HTTP, and HTTP never inside the TUI.** `claude_mem_worker()` reads
-  `worker.pid` and calls `os.kill(pid, 0)` — a syscall, so liveness and port cost
-  microseconds and still answer when nothing is running. The three endpoints are
-  only reached from `skillt claude-mem`, share **one** deadline (`clock` is
-  injected so that arithmetic is tested without sleeping), and are projected by
-  field name **and** by type: `database.path`, `worker.version` and chroma's free
-  text `details` are dropped because they are not integers or booleans, not because
-  a rule named them. Guards: `test_the_http_probe_shares_one_deadline`,
-  `test_no_path_or_free_text_crosses_the_http_whitelist`,
-  `test_no_http_is_reachable_from_the_tui_refresh_path`.
-- **doctor is offline, and a stopped worker is not a warning.** The worker is an
-  on-demand process; its absence is a state, not a fault, so `claude_mem.capture`
-  prints `worker down` and stays PASS. What does warn is the log's ERROR count —
-  the one signal the ledger cannot give, because a syncer can fail every attempt
-  while its newest row still looks fresh.
+- **A log is scanned from the start, not from the tail, and a capped read is a floor.**
+  The rule was earned on claude-mem's worker log — **57 ERROR lines**, every one of them in
+  the early part of the file, so a 64 KB tail reported 0 of them — and that reader went on
+  2026-10-12 (D-053), taking `CLAUDE_MEM_LOG_BYTES_CAP` and its bracket-position parser
+  (`_LOG_LINE_RE` read the level from the second bracket and the category from the third, and
+  counted a line matching neither as `unparsed` rather than dropping it) with it. Nothing
+  here parses a foreign log's levels any more. The cap that survives is this project's own
+  `log.max_bytes`, **resolved once and used by both sides**: `doctor log.errors` counts the
+  first N bytes of the plugin log from the **start** and says "a floor, not a total" when the
+  cap bites, and `skillt rotate-log` renames the file at that same number. Guards:
+  `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`,
+  `test_the_rotation_cap_is_the_number_the_reader_reads`,
+  `test_the_reader_bound_moves_with_the_writer_bound`. The cost half of the old lesson is
+  what makes it a rule rather than a preference: "1–2 ms to read the whole file" was written
+  into that plan before anyone measured, and the readings came back **8.2–15.8 ms**
+  (2026-10-04) then **12.2–14.0 ms** (2026-10-09) — measurements §6, kept as what was true at
+  those commits, withdrawn with the reader. Two readings of the same command five days apart
+  differing by 4 ms says the cost is the size of a file another process appends to, never a
+  property of the code that counts it.
+- **No HTTP anywhere, and nothing on the repaint path.** `claude_mem_worker()` read
+  `worker.pid` and called `os.kill(pid, 0)` — a syscall, so liveness and port cost
+  microseconds and still answered when nothing was running — and only then did that one
+  command ask the running worker three questions under **one shared deadline**, projecting
+  the answers by field name **and** by type. All of it left on 2026-10-12 (D-053): there is
+  no code path in this project that opens a socket now, and the only HTTP in it is the
+  `curl` a human runs by hand from §5. "Files before HTTP, and never inside the TUI" is the
+  shape that survives, and it is checked without any history to lean on:
+  `test_no_http_is_reachable_from_the_tui_refresh_path` arms `urllib.request.urlopen`,
+  `http.client.HTTPConnection` and `socket.create_connection`, requires each stub to have
+  answered, then visits every page plus `s` and `r` — no door may answer.
+- **A thing that is not running is a state, not a fault.** `claude_mem.capture` carried this
+  line: a stopped on-demand worker printed `worker down` and stayed PASS, because "did not
+  run" is not the claim "ran badly" makes. The check was deleted with its reader on
+  2026-10-12 (D-053); the rule lives on in the schedule checks, which is where it bites now —
+  `backups.scheduled` WARNs and never FAILs a machine whose owner chose not to install the
+  unit, `disabled` / `not-found` / "cannot ask systemd" are three different statements, and an
+  absent schedule is reported as absent rather than inferred from the last file it produced
+  (`test_a_disabled_timer_is_named_as_disabled_not_as_missing`,
+  `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`). What still warns on
+  evidence rather than on absence is `log.errors`, the one signal a row count cannot give: a
+  writer can fail every attempt while its newest row still looks fresh.
 - **The Agents page has no sort, on purpose.** `action_cycle_sort` returns for
   `tab-agents`; falling through to the `else` would cycle the *Skills* sort while
   the user stands on Agents and sees nothing change. Its `(unknown)` row is real
@@ -567,9 +590,6 @@ same `COALESCE` freezes `agent`, so the Agents page counts the agent a session
 | `branchByDir` negative cache has no TTL (M16) | small | touches the capture path; AGENTS.md requires tests for capture changes, and the dominant cause of nulls here is non-git session dirs |
 | `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
 | Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
-| `skillt agentos` re-reads every loop file in `store/loops/` on each call (`--limit N` caps how many are projected, not how many are listed) | small | the store holds five loops today; there is no filename↔loop_id convention to exploit, and a cache would mean holding a second copy of state another process owns. It was the Advisor tab that made this a per-keystroke cost; the tab is gone, so the cost is now paid only when the command is run |
-| The advisor digest reads AgentOS's stage field names | small | `retrieved` / `injection_chars` are engine internals; renaming one empties those numbers instead of breaking anything, and `_count_only` refuses to count text. A printed count that used to be a number turning into `-` is the signal |
-| The Plugins page re-reads claude-mem's whole worker log on every repaint — measured 8.2–15.8 ms (2026-10-04) and 12.2–14.0 ms (2026-10-09) for all three files, command in measurements §6 | small | Bounded by `CLAUDE_MEM_LOG_BYTES_CAP` (4 MiB), and the page repaints on a tab change or a keypress at most once per `REFRESH_STALE_AFTER_S`. An mtime/size cache would make the line stale in exactly the case it exists for — noticing the syncer *started* failing — and milliseconds are not the freeze that banned HTTP from this path. Two readings five days apart differ by 4 ms and the neighbour's log, not our reader, moved |
 | `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
 | Row retention runs only by hand (M17 is closed; `retention.usage_days` defaults to 0) | small | arming it deletes recorded history on a schedule nobody chose, so the default is off and `skillt prune-usage --yes` is the decision point. `skill_versions` is bounded by `retention.max_skill_versions`, off by the same reason |
 | Backfill `subagent_usage` from OpenCode's own `part` table (the 84 pre-restart spawns: `explore` 61, `general` 13, `auditor` 5, `researcher` 3, `reviewer` 2, `verifier` 1) | small — one read-only pass, 8 whitelisted json paths, idempotent on `(parent_session_id, call_id)` | **the owner declined it 2026-10-04**: it would add a live foreign database (OpenCode's own, WAL, being written while a session runs) to this project's read set for history nobody is asked about daily. `Ran as` therefore says "since OpenCode last started", and M24 says so on the page. Revisit only if a real question needs the older numbers. |

@@ -72,18 +72,20 @@ rather than trusted).
 
 ---
 
-## 4. Where the neighbouring stores sit
+## 4. What is read outside this project's own database
 
-Not OpenCode, but the same decay risk, so the same table.
+Not OpenCode, but the same decay risk, so the same table. Since 2026-10-12 (D-053) it has
+one row that is a withdrawal notice instead of a read.
 
-| Neighbour | What we read | Contract |
+| Source | What is read | Contract |
 |---|---|---|
-| claude-mem | its SQLite store (counts, timestamps, token totals) and its own two log files (`inject-trace.log`, worker log) | field-whitelisted, shape-gated; a foreign log line is **counted, never read**; the byte cap makes counts floors and says so. `~/.claude-mem/settings.json` is never opened |
-| AgentOS advisor | `store/aos.db` + `store/loops/*.json`, through `skill_db_agentos.agentos_*` only | read-only URI (`mode=ro`), every emitted field named, never a dict splat; no TUI page may open it |
+| The host's skills tree (`~/.config/opencode/skills/**/SKILL.md`) | frontmatter `name`, plus the `source`/`category` derived from the path | read-only, and a value that could carry prose is **counted, never read** — the body is not opened (`test_scan_sync.py`) |
+| The host's config (`opencode.json`, `.jsonc`) | MCP servers, plugin specs, skill directories | read-only; a parse failure is **never** read as "empty config" |
+| This project's own plugin log | `[err]` line counts | scanned from the **start** under the resolved `log.max_bytes`; when the cap bites the line says `truncated`, so the count reads as a floor |
+| A foreign SQLite store | **nothing — withdrawn 2026-10-12 (D-053)** | claude-mem's ledger (with its `inject-trace.log`, worker log and `worker.pid`, and three HTTP endpoints on that worker) and the AgentOS advisor's `store/aos.db` + `store/loops/*.json` left with `skillt claude-mem` and `skillt agentos`. The contract they were held to is the standing rule for the next one: read-only URI (`mode=ro`), never `open_db()` — that helper falls back to read-write and creates a missing file — every emitted field named by name **and** by type, never a dict splat, never reached from a repaint, and its own check named in `AGENTS.md`'s invariant table |
 
-If either changes its schema, the correct failure is "reported unreadable", not
-"reported empty" — a missing store answers `available: False` with a `reason`, and is
-never created by the reader (`test_a_missing_store_is_reported_and_never_created`,
-`test_activity_is_optional_and_silent_when_the_files_are_absent`). A foreign store that
-grew a new column costs us nothing; one that renamed a column we count should make a
-count go to zero, which is why the zero is printed with its reason.
+If a foreign store is ever read again, the correct failure mode is the one those readers had:
+"reported unreadable", never "reported empty" — a missing store answers `available: False`
+with a `reason` and is never created by the reader. A foreign field that is renamed should
+make a count go to zero and print that zero with its reason; a foreign field renamed to carry
+prose should yield nothing at all.

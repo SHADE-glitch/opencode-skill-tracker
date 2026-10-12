@@ -35,8 +35,10 @@ which `test_the_maintenance_docs_are_linked_from_both_checklists` enforces.
    `SCHEMA_VERSION = 2`, textual `>=8.2,<9`);
    *a measurement* — true at a timestamp on one machine (everything below);
    *a reading of somebody else's store* — true at a timestamp **and moving while you
-   are not looking** (claude-mem's ledger and logs, the AgentOS store, our own plugin
-   log). The third kind is why §6 and §7 state no thresholds.
+   are not looking** (our own plugin log, which the plugin appends to between runs).
+   Until 2026-10-12 this kind had two more subjects, claude-mem's ledger and logs and the
+   AgentOS store; §6 records those readings as what they were and marks them withdrawn.
+   The third kind is why §7 states no thresholds.
 4. **`skillt doctor` is the aggregate; these recipes are the parts.** When doctor
    WARNs, §4–§9 say which side of which promise the WARN belongs to.
 
@@ -57,7 +59,6 @@ If one of them moves, this file moves with it and
 | Pin | Value lives at | Where this file uses it |
 |---|---|---|
 | `log.max_bytes` | `settings.py` `REGISTRY`, surfaced as `TRACKER_LOG_BYTES_CAP` in `skill-tui.py` | §4's `truncated=` test and §8's rotation plan — the same number on both sides, which is the invariant |
-| `CLAUDE_MEM_LOG_BYTES_CAP` | `skill_db_claude_mem.py` | §6 — pinned equal to the row above by `test_the_rotation_cap_is_the_number_the_reader_reads` |
 | `PRAGMA user_version` / `SCHEMA_VERSION` | `skill_db.py` | §2 — the view-redefinition counter, bumped only by `test_migration.py`'s rule |
 | freshness thresholds | `skill-tui.py` `CAPTURE_FRESHNESS_DAYS`, `doctor`'s 7-day backup age | §8 and §9 quote them as the reason a line is PASS, not as a measurement |
 
@@ -143,7 +144,7 @@ appears **0 times** — that is the whole point of the run, and the number to lo
 after any upgrade.
 
 The key set is a pin, not a measurement: `METADATA_KEYS` in `skill_db.py` is what the
-export contract allows, `test_no_path_or_free_text_crosses_the_http_whitelist` and
+export contract allows, `test_export_scrubs_metadata_keys_that_are_not_allowlisted` and
 `test_the_writer_never_names_a_permission_title` hold it, and `skillt scrub-metadata`
 must answer 0 rows for anything outside it. So a **new key name** in this output is a
 finding, even if the count is small; a **changed count** of an allowed key is not.
@@ -269,11 +270,21 @@ Two things this recipe is easy to get wrong, both of which I did today:
 
 ---
 
-## 6. Neighbour stores: what reading them costs
+## 6. Neighbour stores: what reading them cost — withdrawn 2026-10-12 (D-053)
 
-The Plugins page's dim line pays this on every repaint, and it is why
-`claude_mem_http` is never called from a refresh path (MAINTENANCE §6,
-`test_no_http_is_reachable_from_the_tui_refresh_path`).
+**Withdrawn, and kept as a record.** The two read-only neighbours — claude-mem's ledger plus
+its `inject-trace.log`, worker log and `worker.pid`, and the AgentOS advisor's store — were
+deleted together with `skillt claude-mem` and `skillt agentos` on 2026-10-12, so this recipe
+cannot be re-run: `skill_db_claude_mem` is no longer in the tree. The numbers stay because they
+are what was true at those commits, and because two of them are load-bearing in prose elsewhere:
+the 57 ERROR lines that made "scan from the **start**" a rule, and the 4 ms drift between two
+readings of one command.
+
+The Plugins page's dim line paid this on every repaint, and that is why `claude_mem_http` was
+never called from a refresh path. `test_no_http_is_reachable_from_the_tui_refresh_path` still
+pins the repaint path, and since D-053 it does so with no neighbour to keep off it.
+
+The command as it was run (imports a module that no longer exists):
 
 ```bash
 cd <repo> && python3 - <<'PY'
@@ -291,20 +302,19 @@ PY
 ```
 
 2026-10-09: **12.2–14.0 ms** (5 runs). The number that was in MAINTENANCE §0 was
-**8.2–15.8 ms** measured 2026-10-04. Both are honest; they are not comparable,
-because the third kind of number (§0 rule 3) is being read from files another process
-is appending to — its worker log had rolled over twice more in between, and its
-ERROR count had moved from 5 to 16.
+**8.2–15.8 ms** measured 2026-10-04. Both are honest; they are not comparable, because the third
+kind of number (§0 rule 3) was being read from files another process was appending to — its
+worker log had rolled over twice more in between, and its ERROR count had moved from 5 to 16.
 
-That is the reason to re-run this recipe rather than trust either reading: the cost
-scales with how much that log has grown since its last rotation, bounded by
-`CLAUDE_MEM_LOG_BYTES_CAP` (`4 MiB`, and `test_the_rotation_cap_is_the_number_the_reader_reads`
-keeps it equal to our own `log.max_bytes`). If a future reading comes out an order of
-magnitude higher, the suspect is the neighbour's log size, not our reader.
+That was the reason to re-run this recipe rather than trust either reading: the cost scaled with
+how much that log had grown since its last rotation, bounded by `CLAUDE_MEM_LOG_BYTES_CAP`
+(`4 MiB`, which `test_the_rotation_cap_is_the_number_the_reader_reads` kept equal to our own
+`log.max_bytes`). After D-053 that same test pins the surviving pair — the reader and the
+rotator of **this project's own** log — which is the shape the rule was always about.
 
-The AgentOS store is measured the same way through `skill_db_agentos` — counts and
-timestamps only, read-only URI, never from a repaint. Its loops get *slower over time*
-by design (they are LLM runs), so no threshold is written for it here or anywhere.
+The AgentOS store was measured the same way through `skill_db_agentos` — counts and timestamps
+only, read-only URI, never from a repaint. Its loops got *slower over time* by design (they are
+LLM runs), which is why no threshold was ever written for it here or anywhere.
 
 ---
 
@@ -388,9 +398,10 @@ Read the two columns differently.
 
 - **Left column is ours.** It is the number a maintenance decision can act on:
   `tab-plugins` is 4–30× the others, and §6's 12.2–14.0 ms accounts for essentially
-  all of that gap — i.e. the cost is the *neighbour read*, not the queries. If a
-  future reading shows `tab-plugins` still ~15 ms while §6 has dropped to ~2 ms, then
-  our own query on that page has become the problem and that is worth a fix.
+  all of that gap — i.e. the cost was the *neighbour read*, not the queries. That read
+  was withdrawn on 2026-10-12 (D-053), so the next run of this recipe should put
+  `tab-plugins` beside its neighbours; if it still sits near 15 ms with §6 gone, our own
+  query on that page has become the problem and that is worth a fix.
 - **Right column is Textual's frame plus ours.** The 40–100 ms floor on every page,
   including the 0.5 ms one, is `pilot.pause()`'s layout pass. It is an upper bound on
   what a tab switch costs, and it is **not** comparable to a click-to-paint number on
@@ -479,12 +490,15 @@ skillt doctor; echo "exit $?"
 **17 PASS / 3 WARN**; the added line is `backups.scheduled`, and it appeared because
 the check was written, not because the machine changed.
 
-The four WARNs, and which of them is not a finding about this project:
+The four WARNs as they read that day, and which of them is not a finding about this project.
+Three of the four lines still exist — `claude_mem.capture` was deleted on 2026-10-12 (D-053)
+with the reader it reported on, so the same command prints one line fewer today — and the rows
+are kept because a WARN's *reason* is the part that is easy to lose, not its name.
 
 | Check | Today's line | What it means |
 |---|---|---|
 | `backups.scheduled` | `skillt-auto-backup.timer: not-found — nothing runs auto-backup or rotate-log on a schedule; ./install.sh --with-timer arms it` | **the finding this file exists for.** The unit files are gone from every systemd directory and `journalctl --user -u skillt-auto-backup.timer` ends at `Stopped … 2026-10-07 21:48:34`, while `backups.latest` on the same screen reads PASS at 3.0 days. A recent file and a live schedule are two facts; only the second one produces the next backup |
-| `claude_mem.capture` | 1802 observations, newest 0.1 d, **16 worker-log ERROR lines**, worker up :37700 | the *neighbour's* worker is erroring. It is not our capture: the WARN is the reason the line exists. Compare §6's reading — the ERROR count is the same fact, and it moved 5 → 16 in five days |
+| `claude_mem.capture` — **withdrawn 2026-10-12 (D-053)** | 1802 observations, newest 0.1 d, **16 worker-log ERROR lines**, worker up :37700 | the *neighbour's* worker was erroring. It was never our capture: saying so out loud was the reason the line existed. §6's reading is the same fact, and it had moved 5 → 16 in five days. The check, its reader and `skillt claude-mem` are gone; the row stays as what the screen said on 2026-10-10 |
 | `log.errors` | 4 error lines; last `2026-10-04T07:32:25.031Z [err] selftest FAIL: …` | residue from *our own* test runs, dated before the log-isolation fix (§5). Honest history, deliberately not hand-deleted |
 | `env.opencode_version` | `` `opencode --version` unavailable (not on PATH?) `` | **an instrument fault, not host drift.** This shell has no `opencode` on PATH. It previously read "1.18.35 vs the 1.18.34 pin", which *was* drift. Same WARN, different reason — read the message, not the check name |
 

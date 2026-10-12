@@ -760,3 +760,100 @@ Cost     Two more module-level functions in `test_readme.py` instead of one test
          already equalled that value, so the injection would not have entered the
          branch it claimed to exercise
 Commit   b9eb105
+
+### D-053 · 2026-10-12 · revert
+Symptom  The AgentOS advisor reader and the claude-mem reader were the only parts
+         of this project that opened *another program's* state, and the project is
+         being rebuilt as a passive usage tracker that reads OpenCode's own
+         database. Keeping them would have put two sources of truth under one set
+         of panels — and while removing them, three promises turned out to be
+         pinned to nothing (D-054, D-055), so the withdrawal is what made them
+         visible
+Change   `scripts/skill_db_agentos.py`, `scripts/skill_db_claude_mem.py`, the
+         `skillt agentos` / `skillt claude-mem` commands, `doctor`'s
+         `claude_mem.capture` line and the Plugins page's dim activity line are
+         gone, with `test_agentos.py`, `test_claude_mem.py` and
+         `test_module_boundaries.py`. AGENTS.md's layer list, its foreign-store
+         rule, its conventions and the invariant table now describe only what
+         still has a subject *and* a check; M21/M22 are marked withdrawn in place
+         and keep their numbers, so `M1–M24` stays the true range and every dated
+         reading beside them stays readable
+Evidence Red first: deleting the two modules aborted collection with **4 errors**
+         (`test_doctor`, `test_module_boundaries`, `test_rotate_log`, `test_tui`),
+         rc=2 — the guards were wired to them, which is the proof the deletion was
+         real. After the sweep: `598 passed, 2 failed` on `.venv/bin/python` (both
+         failures are this record's own gates, closed by this entry), the *same*
+         598 with `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`, and
+         `577 passed, 21 skipped` on system `python3` 3.14. Collection went 666 →
+         600, accounted in full rather than eyeballed: 63 `def test_` bodies
+         removed (13 + 43 + 3 in the deleted files, 5 individual cases elsewhere)
+         plus 4 parametrised instances (two `agentos` rows in the English-output
+         matrix, two dispatcher commands). Read-only L2 on the real database:
+         `skillt health` and `skillt plugins` both rc=0, and the removed commands
+         fail by naming the commands that still exist
+Cost     The two readers were the only copy of that integration knowledge; the
+         field whitelists and the HTTP-by-type projection survive here as the
+         record, and the rule they enforced now governs any future foreign store.
+         AgentOS cites these paths in ten documents — no code dependency, so
+         nothing breaks, but those anchors now point at withdrawn files and are
+         listed for its owner rather than silently rewritten. One unplanned loss:
+         `~/.local/bin/skillt` disappeared during this round for a cause not
+         established, and the suite **went green while 21 dispatcher tests skipped
+         on it** — a whole production surface stopped being tested and only the
+         skip count betrayed it. Relinked by hand and re-verified (21 passed)
+Commit   0c2a39d
+
+### D-054 · 2026-10-12 · fix
+Symptom  `scripts/skill_db.py` — the module that owns the "nothing leaves the
+         machine" promise — imported `http.client` and `urllib.request as urlreq`
+         with **zero references anywhere in the project**. They were the residue of
+         the code that moved out to the neighbours: the writer of the promise kept
+         an HTTP client nobody called, and no test could see it, because nothing
+         fails when an unused import sits beside a correct one
+Change   Both imports removed
+Evidence `grep -n "urlreq\|http.client" scripts/skill_db.py` is empty, and the
+         suite is unchanged at 598 passed — which is exactly the point: the removal
+         is not what the suite proves. What proves the *promise* is the retargeted
+         repaint guard in D-055, which now arms the standard library's own doors
+         instead of trusting one named function
+Cost     None at runtime. A future reader who wants an HTTP call must add the
+         import deliberately and answer to the guard, not find one already there
+Commit   0c2a39d
+
+### D-055 · 2026-10-12 · guard
+Symptom  Two gates could not fail on the shape this round produced. (1)
+         `_invariant_row_mismatches()` built its list of cited checks with
+         `` `(test_[a-z0-9_]+)` ``, which never matches a *file* name
+         (`test_claude_mem.py` has a `.` outside the class), and then bailed with
+         `if not names: continue` — so every row citing whole files was unchecked,
+         and its command could name three deleted files and pass. Its `-k` half
+         matched needles against the **id string** in the document, not against the
+         suite, so a citation of a test that no longer existed still "matched".
+         (2) `test_no_http_is_reachable_from_the_tui_refresh_path` spied on
+         `st.cm.claude_mem_http`; take the neighbour away and the test has no
+         target, so the promise "no HTTP on the repaint path" would have left with
+         the code it was written against
+Change   (1) Existence is now checked before arithmetic: every `test_*.py` a row
+         cites must exist under `scripts/tests/`, and every `test_*` function name
+         must be defined somewhere in the suite. A provocation case injects
+         `test_a_file_nobody_deleted_back.py` into a real row **as a string** and
+         requires the gate to catch it — no tracked file is touched, per D-052.
+         (2) The repaint guard arms three doors (`urllib.request.urlopen`,
+         `http.client.HTTPConnection`, `socket.create_connection`), requires each
+         stub to answer once *before* believing the clean run, then visits every
+         page plus `s` and `r`. `socket.socket` is deliberately not patched:
+         asyncio's own selector loop builds its self-pipe through it, so patching
+         it makes the harness fail rather than the app
+Evidence The strengthened gate went red on the first run and named **exactly 4
+         stale citations across 2 rows** — one deleted check in the "pure local"
+         row, three deleted files in the foreign-store row — which is what proves
+         it had been blind rather than merely quiet. Both rows were then fixed in
+         the document, not by loosening the gate. The new HTTP guard's first
+         version failed at the arming step for the reason above, and that failure
+         is recorded in its docstring so nobody re-patches `socket.socket` later
+Cost     The gate reads every test file to build its two name sets (one pass,
+         ~0.1 s in a 0.7 s suite). A row that cites nothing checkable must now be
+         deleted instead of left as prose — which is how the foreign-store row
+         went, and the reason D-053's Cost line says the promise returns with its
+         own check when a foreign store is read again
+Commit   0c2a39d

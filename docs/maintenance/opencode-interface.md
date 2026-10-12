@@ -79,12 +79,13 @@ classified as builtin, so its calls get attributed to a plugin and land in `(unk
 | Edge | Direction | Rule |
 |---|---|---|
 | `GET /experimental/tool/ids` | out, **only** during a manual refresh of the allowlist, against `opencode serve --pure` | never from the plugin, never from the TUI. The recipe is MAINTENANCE §5 |
-| `http://127.0.0.1:<worker port>` | out, claude-mem's own worker, headless commands only | one shared deadline for the three endpoints, field-name **and** type whitelist (`_numbers_only`), no path or free text crosses it |
+| `http://127.0.0.1:<worker port>`, and `os.kill(pid, 0)` beside it | **both gone — withdrawn 2026-10-12 (D-053)** | claude-mem's worker was the only process this project ever probed: three endpoints under one shared deadline, answers projected by field name **and** type (`_numbers_only`), plus `worker.pid` liveness, whose `startToken` was parsed and never emitted. None of it reached the TUI, and none of it is reachable anywhere now — no code path here opens a socket or signals a process |
 | `opencode --version` | out, `skillt doctor` only | a subprocess, so CI and this shell both need it on `PATH`; when it is absent the check WARNs with "`not on PATH?`" — an instrument statement, not a version claim |
-| `os.kill(pid, 0)` | local, worker liveness from `worker.pid` | allowed on the repaint path precisely because it is a syscall, not a request. `startToken` in that file is parsed and never emitted |
 
-Nothing else in this project opens a socket. There is no telemetry, no update check, and
-no dependency that may put message content on disk.
+Nothing else in this project opens a socket. After D-053 that sentence covers the whole
+program rather than just the repaint path: there is no telemetry, no update check, and no
+dependency that may put message content on disk. The only HTTP left is the `curl` a human runs
+from MAINTENANCE §5 against `opencode serve --pure`.
 
 ## 6. Environment variables the writer honours
 
