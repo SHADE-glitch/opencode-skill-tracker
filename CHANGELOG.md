@@ -971,10 +971,12 @@ Evidence Fourteen provocations, each a mutation of a throwaway copy of the
          and a swapped column passes — that mutation was FAKE on the first pass.
 Cost     The cache panel no longer prints the uncached prompt next to the cache
          numbers; it is on the Tokens panel under one name. The Plugins tab lost
-         the declared-skill/agent/command counts (still in `ocut inventory`). The
-         TUI suite adds about 45 seconds to the run, imports a sibling test
-         module on purpose so the host fixture stays one definition, and now
-         watches three more paths in the coverage gate — so a TUI-only repair
-         needs an entry from here on. Measured: 692 passed / 21 skipped, the same
-         numbers on this machine and under `HOME=/tmp/fakehome`.
+         the per-plugin counts, which are not lost — `ocut inventory` lists every
+         declared surface with its owner plugin, so four numbers that were always
+         0 are now one read away as rows that carry information. The TUI suite
+         adds about 45 seconds to the run, imports a sibling test module on
+         purpose so the host fixture stays one definition, and now watches three
+         more paths in the coverage gate — so a TUI-only repair needs an entry
+         from here on. Measured: 692 passed / 21 skipped, the same numbers on
+         this machine and under `HOME=/tmp/fakehome`.
 Commit   d92cb6b
