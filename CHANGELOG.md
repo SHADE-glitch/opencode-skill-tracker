@@ -895,3 +895,34 @@ Cost     One more path list to keep current when a module is added, and a
          reader itself is documented in its own registry block and commit message
          rather than restated here
 Commit   8ab2b31
+### D-057 · 2026-10-12 · fix
+Symptom  The suite pushed at 8ab2b31 was **green on this machine and red on the
+         runner** (`CI 38243202108`, job `test (3.11)`, IndexError). One test —
+         `test_tool_calls_land_in_tool_calls_and_their_specialised_table` — called
+         sync without a config home, so the MCP server list and the inventory came
+         from the real `~/.config/opencode` on the machine running the test. Here
+         that file declares `context7` and `basic-memory`, so the tool name split
+         correctly and the row existed; on a runner with no such file the server
+         list was empty, nothing was attributed, and `mcp_usage[0]` did not exist.
+         The product was right and the test was wrong, which is the worst kind of
+         red: it says nothing about the code and everything about where it ran
+Change   An autouse fixture `no_real_host_config` points `db.HOST_CONFIG_DIR` and
+         `db.HOST_DB` at paths that cannot exist, so a test that forgets
+         `host_config` fails **in the test** rather than succeeding here and
+         failing elsewhere. The case itself now passes a fixture config declaring
+         the server it expects. The docstring names this incident so nobody
+         removes the fixture as "paranoid"
+Evidence Both directions provoked. (1) Guard on, call still forgetful: red under
+         the real HOME — the false green is gone. (2) Guard off *and* call
+         forgetful: green under this HOME, red under `HOME=/tmp/fakehome`, i.e.
+         the CI/local split reproduced on one machine, then closed. Full suite
+         after the fix: 668 passed on the real HOME and 647 passed + 21 skipped
+         under `HOME=/tmp/fakehome XDG_CONFIG_HOME=… XDG_DATA_HOME=…` (the skips
+         are the dispatcher cases with no `~/.local/bin/skillt`)
+Cost     One more autouse fixture every ocut test now inherits, and a test that
+         wants the real config must say so explicitly — which is the point. The
+         runner being 3.11 while both local interpreters are 3.13/3.14 did **not**
+         cause this; the version axis and the machine axis were conflated in the
+         first reading of the failure, and only the fake-HOME reproduction
+         separated them
+Commit   55acde0
