@@ -980,3 +980,35 @@ Cost     The cache panel no longer prints the uncached prompt next to the cache
          from here on. Measured: 692 passed / 21 skipped, the same numbers on
          this machine and under `HOME=/tmp/fakehome`.
 Commit   d92cb6b
+
+### D-059 · 2026-10-12 · chore
+Symptom  Reconciling CI against this machine after the rename, `pytest -rs` printed
+         the local skips as `../opencode-skill-tracker/scripts/tests/test_dispatcher.py:49`
+         — a directory that does not exist (`ls -ld` says so). The suite was green, so
+         nothing looked wrong, and yet every path in its output named a phantom file.
+         Nothing here invented that string: `.pyc` validity is judged by source mtime
+         plus size, and a **directory rename changes neither**, so the rewriting caches
+         written before the rename stayed valid indefinitely and carried the old
+         absolute path into every skip line, traceback and report.
+Change   AGENTS.md's stale-`.pyc` rule gained the rename branch and the action that
+         follows from it (purge `scripts/**/__pycache__` and `.pytest_cache`, and only
+         then treat a path in test output as evidence). The caches were purged — all
+         three are gitignored, so nothing shipped moved.
+Evidence Read from the cache files before deleting them: `grep -c` for the old path
+         hits in `test_dispatcher.cpython-313-pytest-9.1.1.pyc` and its 314 twin, and
+         zero in the plain `cpython-313.pyc` — the lie lives in pytest's rewriting
+         cache, not in the source. Both directions of the fix: before the purge the
+         skip line reads `../opencode-skill-tracker/…`, after it reads
+         `scripts/tests/test_dispatcher.py:49` with the same reason text ("dispatcher
+         not installed"). And the suite is unchanged by the purge — 692 passed / 21
+         skipped before, 692 / 21 after — which is the point: this was never a
+         correctness failure, it was an instrument printing a path that cannot be
+         opened. The same reconciliation closed the CI gap it had been standing in the
+         way of: all 21 local skips are `test_dispatcher.py` (its launcher link is
+         dangling), and the runner's extra 27 are the bun-gated ones — 692 + 21 =
+         665 + 48 = 713 items on both machines.
+Cost     No check enforces the purge, so the next rename that skips it prints phantom
+         paths again and stays green; only the AGENTS sentence stands between that and
+         a reader who believes the output. Recorded rather than automated because the
+         trigger is a filesystem event no test inside the repository can observe.
+Commit   bda057f
