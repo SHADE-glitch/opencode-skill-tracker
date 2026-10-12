@@ -857,3 +857,41 @@ Cost     The gate reads every test file to build its two name sets (one pass,
          went, and the reason D-053's Cost line says the promise returns with its
          own check when a foreign store is read again
 Commit   0c2a39d
+
+### D-056 · 2026-10-12 · guard
+Symptom  The passive reader landed with two checks that *looked* like they proved
+         something and did not, and one coverage hole to go with them. (1) The
+         privacy scan put its sentinels in prose fields **outside** the tool
+         arguments, so a writer that dumped a whole `state.input` dict into
+         `skill_usage.skill` — the exact leak the project's one privacy promise
+         forbids — passed. (2) The "longest MCP prefix wins" test used `basic` vs
+         `basic-memory`, where the separator makes the short name unable to match
+         at all, so it stayed green with the prefix sort reversed. (3) Neither
+         `scripts/ocut_db.py` nor `scripts/ocut-sync.py` was in
+         `test_record_coverage.CODE_PATHS`, which is the list that decides whether
+         a commit to a file has to be accounted for at all
+Change   Both tests re-cut until they discriminate: a sentinel now sits *inside* a
+         skill call's arguments, and the prefix fixture uses `playwright` vs
+         `playwright_browser`, the case that really does split a tool name in half.
+         The two new code paths are listed the day the files exist, with a comment
+         naming what absence costs. `reconcile()` was written and then deleted in
+         the same sitting: nothing called it, and its two-granularity check is
+         pinned by a test that runs on every suite instead of a helper no command
+         reaches — the schema comment that credited `ocut health` with that check
+         was reworded to credit the test, because a comment naming a check that
+         does not exist is how a panel starts lying
+Evidence Provoked against the committed product, eight mutations, eight reds —
+         `state.title` into `project`, a read-write host connection, no cursor
+         holdback, `session` behind a cursor, `usage_available` back to "nothing
+         is missing", dropping an orphan step instead of writing it, shortest
+         prefix first, inventory merged instead of rewritten, no renumbering reset,
+         unparsed counts silently zeroed, and both host guards removed together.
+         The two named above were caught *being ineffective* by the same process,
+         which is the only reason they are worth recording. `mode=ro` alone did not
+         make the write test fail — `PRAGMA query_only` held it, so that test is
+         written against both guards and the mutation has to remove both
+Cost     One more path list to keep current when a module is added, and a
+         CHANGELOG entry for checks that had not yet failed in production. The
+         reader itself is documented in its own registry block and commit message
+         rather than restated here
+Commit   8ab2b31
