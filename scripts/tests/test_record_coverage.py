@@ -27,6 +27,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 CODE_PATHS = [
+    # the passive reader added on 2026-10-12. Listed from the day it exists: a
+    # file outside this list is a file whose fixes no commit has to account for,
+    # and the ocut layer is where a renamed host field would go unnoticed.
+    "scripts/ocut_db.py",
+    "scripts/ocut-sync.py",
     "plugin/skill-tracker.js",
     "scripts/opencode_compat.py",
     "scripts/skill_db.py",
