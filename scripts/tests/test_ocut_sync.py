@@ -181,6 +181,23 @@ def make_config(root: Path, mcp=None, plugins=None, providers=None):
     return cfg
 
 
+@pytest.fixture(autouse=True)
+def no_real_host_config(monkeypatch, tmp_path):
+    """No test may read the machine it runs on.
+
+    The MCP server list and the inventory come from ``~/.config/opencode``, so a
+    test that forgets to pass ``host_config`` would be green here and red on a
+    runner with no such file — which is exactly what happened on the first push of
+    this file (CI 3.11: `servers=0`, `mcp_usage` empty, IndexError). Pointing the
+    default at an empty directory turns that into a loud failure in the test
+    itself, on every machine, instead of a difference between machines.
+    """
+    absent = tmp_path / "no-such-config-home"
+    monkeypatch.setattr(db, "HOST_CONFIG_DIR", absent)
+    monkeypatch.setattr(db, "HOST_DB", tmp_path / "no-such-host.db")
+    return absent
+
+
 @pytest.fixture
 def host(tmp_path):
     """A host database with one session, one message, and the parts around them."""
@@ -300,7 +317,9 @@ def test_tool_calls_land_in_tool_calls_and_their_specialised_table(host, tracker
              tool="context7_query-docs", state={"input": {"query": "docs"}})
     conn.commit()
     conn.close()
-    run(host, tracker)
+    cfg = tracker.parent / "cfg"
+    make_config(cfg, mcp={"context7": {"url": "https://x"}})
+    sync.run(db_path=tracker, host_db=host, host_config=cfg)
     assert len(rows(tracker, "tool_calls")) == 4
     assert [r["skill"] for r in rows(tracker, "skill_usage")] == ["tdd"]
     spawn = rows(tracker, "agent_usage")[0]
