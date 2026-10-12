@@ -3,6 +3,18 @@
 与 [README.md](README.md)（功能）、[README.zh-CN.md](README.zh-CN.md)（详尽参考）配套的**运行**文档：该查什么、按什么顺序查、健康长什么样、以及哪些是故意不修的。
 英文版：[MAINTENANCE.md](MAINTENANCE.md)。
 
+长篇维护资产的索引在
+[`docs/maintenance/README.md`](docs/maintenance/README.md)——版本矩阵、宿主接口清单与实测数据；
+仓库内的工作规则在 [`AGENTS.md`](AGENTS.md)。本文件是**运行清单**而不是指向它们的路由：它的编号
+小节是从 `AGENTS.md`、两个 README 以及上面那些文档引用过来的稳定锚点，所以改一个编号等于改名。
+不要把 `docs/maintenance/` 里的表格抄到这里——被抄写的事实正是会漂移的东西。
+
+| 文档 | 什么时候读 |
+|---|---|
+| [`compatibility.md`](docs/maintenance/compatibility.md) | OpenCode、Textual 或 Python 版本动了，或某个 pin 需要重新验证时 |
+| [`opencode-interface.md`](docs/maintenance/opencode-interface.md) | 新增或改名一个宿主依赖时 |
+| [`measurements.md`](docs/maintenance/measurements.md) | 要重述某个体积、速率或时长时 |
+
 ## 0. 最后一次实测的机器事实
 
 机器身份（OpenCode、Bun、解释器、textual）在

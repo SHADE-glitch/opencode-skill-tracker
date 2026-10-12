@@ -7,6 +7,20 @@ and what is deliberately left broken.
 
 Chinese version: [MAINTENANCE.zh-CN.md](MAINTENANCE.zh-CN.md).
 
+The long-form maintenance assets are indexed at
+[`docs/maintenance/README.md`](docs/maintenance/README.md) — the version matrix, the
+host-interface list and the measurements — and the rules for working in this repository live in
+[`AGENTS.md`](AGENTS.md). This file is the **operating checklist** rather than a pointer to them:
+its numbered sections are stable anchors cited from `AGENTS.md`, both READMEs and the documents
+below, so renumbering one is a rename. Do not copy a table out of `docs/maintenance/` into here —
+a duplicated fact is the thing that drifts.
+
+| Document | Read it when |
+|---|---|
+| [`compatibility.md`](docs/maintenance/compatibility.md) | An OpenCode, Textual or Python version moved, or a pin needs re-verifying |
+| [`opencode-interface.md`](docs/maintenance/opencode-interface.md) | Adding or renaming a host dependency |
+| [`measurements.md`](docs/maintenance/measurements.md) | Restating a size, a rate or a duration |
+
 ## 0. Facts about the machine this was last verified on
 
 Machine identity (OpenCode, Bun, interpreters, textual) is in
