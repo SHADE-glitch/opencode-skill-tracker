@@ -64,7 +64,7 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 
 ## 📥 安装
 
-### 一键安装
+### 📦 一键安装
 
 ```bash
 git clone https://github.com/SHADE-glitch/opencode-usage-tracker.git
@@ -98,7 +98,7 @@ skillt             # 启动交互式 TUI
 
 > 确保 `~/.local/bin` 在 `PATH` 里。若不在，把 `export PATH="$HOME/.local/bin:$PATH"` 加进你的 shell 配置。
 
-### 手动安装
+### 🛠️ 手动安装
 
 同一件事，逐条写出——适合你想把仓库放到别处时：
 
@@ -121,7 +121,7 @@ ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
 
 先移除任何已存在的真实 `~/.config/opencode/scripts` 或 `~/.config/opencode/skill-tracker` 目录（先备份），否则 `ln -sfn` 会把链接嵌进它里面。
 
-### 仅无头安装
+### 📟 仅无头安装
 
 不需要 Textual、不需要 venv——只要记录器和 CLI：
 
@@ -140,7 +140,7 @@ ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
 
 统一入口是 `skillt`。
 
-### 交互式 TUI
+### 🖥️ 交互式 TUI
 
 ```bash
 skillt
@@ -234,7 +234,7 @@ Data 页另有按钮：备份、压缩（VACUUM）、导出、**健康 Health**�
 
 > 删除类操作**必须**先在 Skills 页用 `j`/`k` 选中一行。在其它页面按 `d` 只会提示「请先切到 Skills 页」，不会弹确认框——这是刻意设计，防止误删隐藏表格里的第一行。
 
-### 无头子命令（不需要 textual）
+### ⚡ 无头子命令（不需要 textual）
 
 ```bash
 skillt insight [--days N] [--min-uses N] [--limit N] [--json]
@@ -269,7 +269,7 @@ skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
 参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
 所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。
 
-### 旧版 CLI（委托给 `skill-stats.py`）
+### 🕰️ 旧版 CLI（委托给 `skill-stats.py`）
 
 ```bash
 skillt stats | top [N] | show <skill> | recent [N] | delete <skill> | clear | backup | vacuum
@@ -334,7 +334,7 @@ README，`scripts/tests/test_settings_documented.py` 就把构建判红——正
 和代码本身。而隐私不变量（纯本地、无网络、不存消息正文）根本不提供开关：给它一个开关
 就是给它一个被关掉的机会。
 
-### 环境变量总表
+### 🌱 环境变量总表
 
 本项目读的每一个环境变量都在这一张表里，两份文档都要有：
 `scripts/tests/test_settings_documented.py` 会**从源码里枚举**环境读取的写法，再逐个来
@@ -391,7 +391,7 @@ OpenCode 运行
 - **读取方**：`skillt` 的所有命令。`health` / `mcp` / `plugins` 以只读方式打开数据库，绝不修改。
 - **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里，而且**只装 tracker 自己的数据**。skill、MCP、插件计数（`skill_usage` / `mcp_usage` / `plugin_usage`）是**三张独立的表**，互不影响。
 
-### 数据库
+### 🗄️ 数据库
 
 #### 表
 
@@ -440,7 +440,7 @@ sqlite3 ~/.local/share/opencode/skill-usage.db \
 
 ## 💾 备份
 
-### 手动备份
+### 💾 手动备份
 
 ```bash
 skillt backup        # 旧版 CLI：备份到 DB 同目录
@@ -449,7 +449,7 @@ skillt backup        # 旧版 CLI：备份到 DB 同目录
 或 TUI 里按 `b` / Data 页「备份」按钮。备份用 `VACUUM INTO` 生成一致性快照。
 无论走哪条路径（旧版 CLI、TUI、`auto-backup`），生成的文件都会 `chmod 0600`。
 
-### 自动备份与保留策略
+### ⏳ 自动备份与保留策略
 
 ```bash
 skillt auto-backup --dry-run   # 先看会做什么
@@ -467,7 +467,7 @@ skillt auto-backup             # 真正执行
   - 同名（同一秒）冲突会**报错而不是覆盖**；
   - 有 `.lock` 文件防止并发运行（锁超过 10 分钟视为过期，可被接管）。
 
-### 用 systemd timer 定时备份与轮转日志（可选，需你手动启用）
+### ⏰ 用 systemd timer 定时备份与轮转日志（可选，需你手动启用）
 
 单元文件在 `~/.config/opencode/skill-tracker/systemd/`。service 里跑**两件**维护活：`auto-backup`（上面那套备份保留）与 `rotate-log --yes`（插件日志，M17）——日志没有别的清扫者，而没人排队的轮转就等于永远不会发生。也可以直接 `./install.sh --with-timer`（默认仍不装：写 systemd 单元是本项目目录之外的改动）。启用步骤：
 
@@ -487,7 +487,7 @@ loginctl enable-linger "$USER"
 
 > 单元里的 `ExecStart` 使用**绝对路径**（systemd user 的 PATH 默认不含 `~/.local/bin`）。
 
-### 恢复
+### ♻️ 恢复
 
 ```bash
 # 1. 停掉正在使用该库的 OpenCode 会话（避免边写边恢复）
@@ -528,23 +528,23 @@ skillt doctor
 
 以下问题在审计中确认存在。此前几轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等）；一轮又修掉了 **M1 / M7 / M8 / M9**（下文标注"已修复"）。**本轮（对采集与界面的全面实测）修掉了：dashboard 三张表 Enter 无效、Plugins 页对 `@scope/name` 型插件 Enter 无效、Recent 时间线对含 `:` 的名字 Enter 静默失效、导出泄露历史提示词、`on_mount` 开库无保护、一次失败让半屏数据停在旧值、以及测试对本机 skills 目录的依赖**；并给 `doctor` 加了 `capture.freshness` / `log.errors` / `env.opencode_version` 三项，新增 `skillt scrub-metadata`。其余如实记录、**本次不修**（M14–M18 为本轮新登记）。多数是边界情况，不影响日常使用。
 
-### 数据与时间
+### 🕒 数据与时间
 
 - **M1 按天分桶曾使用 UTC（已修复）。** 旧版 `今日`、`按天趋势` 以 UTC 计算，在 UTC+8 下本地 00:00–08:00 的记录会被算进**前一天**（最多 8 小时/天的错配）。现改为按**本地日历天**分桶（`date(timestamp,'localtime')`）。时间窗口本身（`-N days`）一直是滚动窗口，未受影响。
 - **M2 纯读命令以读写方式打开 DB。** `insight`/`export`/`doctor` 用读写连接（`health` 已改为只读）。另外 `open_db(readonly=True)` 在**路径不存在**时会创建一个空库而不是报错。
 - **M3 迁移的隐式提交。** `ensure_schema` 里的 `executescript` 会隐式提交当前挂起的事务；返回值里 `created_base` 从不置位、`created_versions` 恒为 `True`（仅影响该字典的语义，不影响实际建表）。
 
-### 备份
+### 💾 备份
 
 - **M4 备份权限窗口。** `VACUUM INTO` 完成**之后**才 `chmod 0600`，存在极短的宽松权限窗口；若 VACUUM 失败，可能留下**未清理的半成品文件**（需手工删除）。
 - **M19 两种备份的存放位置不同，保留策略只覆盖其中一个（已修复）。** 旧版里 `auto-backup`（定时器走的那条）写进 `BACKUP_DIR`（`~/.local/share/opencode/backups/`）并按 30 每日 + 12 每月清理，而 `skillt backup`、TUI 的 `b`、以及 `scrub-metadata --yes` / `cleanup-selftest --yes` 前自动写的回滚备份用的是 `backup_db()` 的默认路径——**写在数据库旁边**。那些文件永远不会被保留策略碰到，而且 `doctor backups.latest` 只扫 `BACKUP_DIR`，于是"备份存在"和"体检说没有备份"同时成立。默认路径现已改为 `BACKUP_DIR`，并由 `test_default_backup_lands_in_the_retention_directory` 钉住。此前散落在外的旧文件仍需手工收拢：`mv ~/.local/share/opencode/skill-usage-backup-*.db ~/.local/share/opencode/backups/`。
 
-### 界面
+### 🖥️ 界面
 
 - **M5 TUI 大库会假死。** `VACUUM`/备份/导出/刷新在 **UI 线程同步执行**，库很大时会短暂无响应。
 - **M10 TUI 退出码。** `app.run()` 未包 `try/finally`，致命错误后进程退出码仍可能是 0。
 
-### 插件
+### 🧩 插件
 
 - **M7 git 子进程泄漏（已修复）。** 旧版 `resolveBranch` 的 500ms 超时**不杀 git 子进程、也不清定时器**，在坏挂载点上每次会泄漏一个进程。现改用 `Bun.spawn` + `AbortController`：超时会真正终止子进程（exit 143），并在 `finally` 里 `clearTimeout`。
 - **M8 未做容量上限（已修复）。** `branchByDir` / `pendingSkillPerms` 现与 `sessionCtx` / `callCtx` 一样走 `setCapped`（上限 `MAP_CAP`），不再随进程生命周期增长。另：`skill_db.h()` 仍是死代码（0 调用）。
@@ -553,11 +553,11 @@ skillt doctor
 - **M12 插件清单和归属只在初始化时解析一次。** 静态扫描尽力从插件源码识别工具/命令：读包入口文件，再**跟着它自己 import 的相对路径模块跳一层**（有上界：3 个跳转、每个 256 KiB——发布出去的 `main` 常常只是几百字节的转发壳，真正的注册在它 import 的 chunk 里）；工具 id 取 `tool: {` 里**最浅的有键那一层**，再深就是某个工具自己的 `args: { query: … }`，不是工具。新增、升级、改名插件或它注册的工具/命令后，必须**重启 OpenCode** 才会刷新。工具无法归属时记录为 `(unknown)`；命令无法明确归属时**不记录**（失败即关闭，避免把 `/init` 等内置命令误记成插件）。每一行还记下**是哪份配置声明了它**（`global` / `localdir` / `project`）：后一次启动再见不到的 `global`/`localdir` 行会被删掉，所以页面上那一列说的是"启动时加载了什么"，不再是"这个库建好以来曾经见过什么"；`project` 行不在别处删——换个目录启动的会话本来就看不见它。
 - **M13 内置工具 allowlist 与 OpenCode 1.18.34 对齐并硬编码**（2026-10-03 用 `curl /experimental/tool/ids` 对 `opencode serve --pure`（不加载任何插件）实测；这十四个 id 与 1.18.33 完全一致，只是把版本标注往前挪了）。** 如果 OpenCode 升级后新增了内置工具，而 tracker 尚未更新，它可能被当作 `(unknown)` 插件工具记录；可用 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` 覆盖 allowlist，或等待 tracker 更新。
 
-### 编码
+### 🔤 编码
 
 - **M6 非 UTF-8 locale 乱码（已缓解）。** `--cli` 与 TUI 启动时会把 `stdout`/`stderr` 重设为 UTF-8（`errors="replace"`），因此**不再**抛 `UnicodeEncodeError`。但 `█ ⚠ … Δ` 等字符在极端 locale 下仍可能显示为替代字符；设 `LANG=C.UTF-8` 可完全避免。
 
-### 本轮审计新增（M14–M18）
+### 🆕 本轮审计新增（M14–M18）
 
 - **M14 历史行里可能仍有用户提示词原文（写入与导出已封住；库里数据已清理，备份文件仍有）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`）。2026-10-01 已用 `skillt scrub-metadata --yes` 清掉生产库里命中的 **40 行**（skill 17 / mcp 10 / plugin 13，用量行保留、`error` 文本 46 条保留）。**但清理之前形成的备份文件里仍是原文**——包括本次 `--yes` 之前自动写的那份回滚备份。2026-10-01 已把 3 个仍含原文的散落备份删除，并对生产库做了 VACUUM；`grep` 你的原话在 tracker 的所有文件里已经搜不到。任何时候都可以重跑 `skillt scrub-metadata` 验证：应当报告 0 行命中。
   scrubber 知道的另一个自由文本键——权限 `title`——**现在根本不再被读取**：2026-10-09 起写入端一个都不写，
@@ -574,7 +574,7 @@ skillt doctor
 
 - **M20 `denied` 行在 OpenCode 1.18.33 上不可能出现。** 拒绝事件确实会送到 tracker——走事件总线的 `permission.asked` 再接 `permission.replied`（字段是 `requestID` 与 `reply: "reject"`，被拒的调用在 `tool.callID`，id 在 `id`；2026-10-01 实测），现在也能被正确记录。但宿主只对五个权限类别设门（`edit`、`bash`、`webfetch`、`doom_loop`、`external_directory`），**这五类都不是本 tracker 度量的对象**：skill、MCP 工具、插件工具都不询问直接执行，被拒的 `bash` 又是刻意不记录的。所以这个版本上任何表都不会出现 denied。旧代码还监听 `permission.updated`、读 `permissionID`/`response`——1.18.33 从不发这些名字，该错配已修，并由 `test_permission_rejection_writes_a_denied_row` 用真实形状钉住；剩下的这条是**宿主边界**，不是 tracker 缺陷。
 
-### 插件自测（重要）
+### 🧪 插件自测（重要）
 
 - **`__selftest()` 必须使用隔离数据库。** 自测会在库里插入 `call-test-*` 合成行。现在它会在**打开任何数据库之前**检查环境变量：
   - 未设置 `OPENCODE_SKILL_TRACKER_DB`，或
@@ -590,7 +590,7 @@ skillt doctor
 
 - **自测现在连日志一起隔离。** 它会写自己的 `skill-tracker-selftest.log`，位置就在那个临时库旁边——除非你用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定了别的路径（那样就尊重你的选择）。在此之前，一次**手工跑的失败自测**会把 `[err] selftest FAIL` 写进 `~/.config/opencode/logs/skill-tracker.log`，也就是 `skillt doctor` 读的那份日志，于是 `log.errors` 会长期把它们当成插件故障来报。现在成功的运行也会留下自己的两行（`selftest start` / `selftest done: N/N passed`），而且只留在自己的文件里。
 
-### 插件导出契约（重要）
+### 📜 插件导出契约（重要）
 
 - **`plugin/skill-tracker.js` 只能通过 `export default { id, server }` 暴露插件工厂。**
   OpenCode 1.18.32 的加载器会把插件模块里**每一个导出函数都当作插件工厂**来调用，只有 default 导出是含 `server` 的对象时才会停止遍历：
@@ -609,7 +609,7 @@ skillt doctor
   看到 `path=file://.../plugin/skill-tracker.js` 即为插件加载失败。
 - 相关回归测试：`scripts/tests/test_plugin.py` 里的 `test_loader_does_not_enumerate_exports`（复刻加载器逻辑，需要 `bun`）。
 
-### 同名 skill（潜在）
+### ⚠️ 同名 skill（潜在）
 
 - `skills.name` **没有唯一约束**（`path` 才有）。当前 37 个 skill 的名称全部唯一，所以暂未触发。
 - 若将来出现两个 SKILL.md 同名：
@@ -617,7 +617,7 @@ skillt doctor
   - 但 `delete_skill` 按 `name` 删除，会**同时删掉同名项**的记录。删除前请确认名称唯一。
   - 开源 skill 从上游重新同步后可能出现重名，届时请注意。
 
-### 状态语义
+### 🚦 状态语义
 
 - **event 的 `error` 可单向覆盖已记录的 `success`。** 这是刻意的修正：若一次 skill 调用先被 `tool.execute.after` 记为 success，随后 event 报错，则状态会被纠正为 `error`；反向（success 覆盖 error/denied）**不会**发生，`denied` 也不会被覆盖。event 的错误文本不会并入 `metadata`。
 

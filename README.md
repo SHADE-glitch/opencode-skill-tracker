@@ -65,7 +65,7 @@ interactive TUI needs [Textual](https://textual.textualize.io/)
 
 ## 📥 Install
 
-### Out of the box
+### 📦 Out of the box
 
 ```bash
 git clone https://github.com/SHADE-glitch/opencode-usage-tracker.git
@@ -102,7 +102,7 @@ skillt             # launch the interactive TUI
 > Make sure `~/.local/bin` is on your `PATH`. If it is not, add
 > `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
 
-### Manual install
+### 🛠️ Manual install
 
 Same thing, spelled out — useful if you prefer to place the repo elsewhere:
 
@@ -127,7 +127,7 @@ Remove any pre-existing real `~/.config/opencode/scripts` or
 `~/.config/opencode/skill-tracker` directory first (back it up), otherwise
 `ln -sfn` would nest a link inside it.
 
-### Headless-only install
+### 📟 Headless-only install
 
 No Textual, no venv — just the recorder and the CLI:
 
@@ -145,7 +145,7 @@ subcommand works.
 
 ## 🧭 Usage
 
-### Interactive TUI
+### 🖥️ Interactive TUI
 
 ```bash
 skillt
@@ -282,7 +282,7 @@ the page doubling in height. The confirm dialog is `width: 100%, max-width: 60`,
 which keeps it inside the screen at every width; at 36 columns its two buttons still
 fit, and that is as narrow as this was tested.
 
-### Headless subcommands (no Textual needed)
+### ⚡ Headless subcommands (no Textual needed)
 
 ```bash
 skillt insight [--days N] [--min-uses N] [--limit N] [--json]
@@ -368,7 +368,7 @@ Argument validation: `--days ≥ 1`, `--min-uses ≥ 0`, `--limit ≥ 1`,
 headless subcommand also works when stdout is **not** a TTY (pipes,
 redirection), emitting plain text or JSON.
 
-### Legacy CLI (delegates to `skill-stats.py`)
+### 🕰️ Legacy CLI (delegates to `skill-stats.py`)
 
 ```bash
 skillt stats | top [N] | show <skill> | recent [N] | delete <skill> | clear | backup | vacuum
@@ -472,7 +472,7 @@ OpenCode runtime
   the build instead of silently recording nothing. Numbers and policy that *this*
   tool chose are not there.
 
-### Environment variables
+### 🌱 Environment variables
 
 Every name this project reads, in one table, on both sides of the documentation —
 `scripts/tests/test_settings_documented.py` enumerates the environment reads out of
@@ -508,7 +508,7 @@ did not exist while six variables shipped undocumented.
 | `TMPDIR` | inherited: where `__selftest()` creates its throwaway database (default `/tmp`) |
 | `TERM` | inherited: the TUI refuses to start on an empty or `dumb` terminal rather than painting garbage |
 
-### Database
+### 🗄️ Database
 
 - `skills` — one row per `SKILL.md`. `path` is `UNIQUE`; `name` is **not**.
   Migration adds `content_hash` for version tracking.
@@ -580,7 +580,7 @@ skillt auto-backup             # do it
   **same directory**, so retention reaches them too (it used to write beside the
   database, where nothing would prune or report them — see M19).
 
-### Daily timer (optional)
+### ⏰ Daily timer (optional)
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -605,7 +605,7 @@ Neither job bounds the **database rows**. Usage rows are kept forever unless
 nobody should make on a schedule they did not choose; and the database *file* only
 shrinks under `skillt vacuum`.
 
-### Restore
+### ♻️ Restore
 
 ```bash
 # 1. stop any OpenCode session using the DB
@@ -824,7 +824,7 @@ The full audit — M1 through M24, with reproduction notes — lives in
 - `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
   deletes by name, so if two skills ever share a name, both sets of records go.
 
-### Plugin export contract (important)
+### 📜 Plugin export contract (important)
 
 `plugin/skill-tracker.js` must expose its factory **only** via
 `export default { id, server }`:
@@ -851,7 +851,7 @@ grep 'failed to load plugin' ~/.local/share/opencode/log/opencode.log | tail
 Regression test: `test_loader_does_not_enumerate_exports` in
 `scripts/tests/test_plugin.py` (replicates the loader logic; requires `bun`).
 
-### Self-test isolation
+### 🧪 Self-test isolation
 
 `__selftest()` inserts synthetic `call-test-*` rows. It checks the environment
 **before opening any database** and throws `Selftest requires isolated database`
@@ -900,7 +900,7 @@ opencode-usage-tracker/
 └── skill-tracker/systemd/        # optional auto-backup timer + service
 ```
 
-### Development
+### 🧑💻 Development
 
 ```bash
 python3 -m pytest scripts/tests -q                       # standard library only; the TUI
