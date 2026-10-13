@@ -1,6 +1,6 @@
 <p align="right"><a href="README.md">English</a> | <a href="README.zh-CN.md"><b>简体中文</b></a></p>
 
-# 🎯 OpenCode Skill + MCP + Plugin Tracker (`skillt`)
+# 🎯 OpenCode 用量追踪器（`ocut`）
 
 ![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -8,43 +8,53 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
-记录并查询 OpenCode 里每个 skill、**MCP 工具和插件工具/命令**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
-采集有两种方式——**实时**由 OpenCode 插件 hook 工具生命周期，或**被动**同步 OpenCode 自己的数据库——数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
+`ocut` 告诉你 OpenCode 实际是怎么被用的：每一次工具调用、每个 skill 与子 agent、每个
+MCP 工具、每一步模型的 token、以及每个会话——谁被调用、什么时候、有没有跑完、耗时多久、
+属于哪个项目。
 
-> **本仓库的安装方式见 [README.md](README.md)（英文）。** 本仓库是唯一来源，
-> `~/.config/opencode/{plugin/skill-tracker.js,scripts,skill-tracker}` 与
-> `~/.local/bin/skillt` 都是**指回本仓库的软链接**，执行 `./install.sh` 一键完成。
-> 下文按**安装后的布局**描述；TUI 虚拟环境推荐放在 `./.venv`，旧的
-> `~/.local/share/opencode/skillt-venv` 仍可用（启动器会自动回退）。
->
-> 仅在 Linux 上测试，开发与验证环境为 Ubuntu 26.04；其他发行版/平台未验证。
+它是一个**被动读取器**。OpenCode 把自己的会话存进一个 SQLite 文件
+（`~/.local/share/opencode/opencode.db`）；`ocut` 把这个文件索引进自己的库
+（`~/.local/share/opencode-usage-tracker/usage.db`），**从不写回** OpenCode 的目录。
+可选的插件 hook 只补上宿主无法暴露的那一项——一次工具调用属于哪个插件。所有数据都在本地：
+不联网、不上传、不记录消息正文。
 
 ---
 
 ## 🤔 为什么
 
-OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具调用钩子来间接识别 skill 使用：
+OpenCode 已经把你需要的东西落盘了——只是那个形状是为「恢复会话」而设的，不是为回答
+「我到底在用哪些 skill」而设的。
 
-- OpenCode 把 skill 暴露为一个名为 `skill` 的工具（入参 `{ name }`）；
-- 插件 `skill-tracker.js` 监听 `tool.execute.before` / `tool.execute.after` / `permission.ask` / `command.execute.before` / `event`；
-- 识别到工具名称为 `skill` 时写入 `skill_usage`；识别到已配置的 MCP 服务时写入 `mcp_usage`；其它非内置工具写入 `plugin_usage`；
-- 插件命令用 `command.execute.before` 记录，但没有对应的完成 hook，所以状态保持 `unknown`；无法明确归属的插件命令不记录；
-- `skillt` 负责查询、统计、导出、备份、体检。
+- 每次工具调用都是 `opencode.db` 里的一条 `tool` part，无论工具是什么：内置工具、`skill`
+  工具、启动子 agent 的 `task` 工具、还是某个 MCP 服务的工具。
+- 每一步模型是 `step-finish` part，带着那一步的 token 与 cost；模型挂在它的**父 message**
+  上，不在这一步里。
+- 会话、项目、目录是 `session` 表里的行。
+- **装了什么**——skills、agents、slash 命令、MCP 服务、插件——在配置目录
+  （`~/.config/opencode`）里，不在数据库里。
 
-**MCP 工具走的是同一套钩子。** 所有注册的工具（内置的和 MCP 的）都经过同一个包装器，
-因此 MCP 调用会和 skill 一样触发这些 hook。MCP 工具 id 形如 `{server}_{tool}`
-（例如 `basic-memory_read_note`）；由于服务名和工具名都可能含下划线，插件用
-**已配置服务列表做最长前缀匹配**来切分，而不是简单 `split("_")`。
+`ocut` 把上面这些**只读**读出来，变成面板和报表。它刻意**不做**两件事：
+
+- **绝不写 OpenCode 的数据库或配置。** 宿主库以 `mode=ro` 打开并设 `PRAGMA query_only = ON`，
+  所以本项目的 bug 也无法让这句话变成假的。
+- **绝不存消息或工具的散文。** 一条 `tool` part 带着 `output`、`title`、`metadata`、`error`；
+  一条 `text`/`reasoning` part 装着你的提示词和模型的回答；一条会话行带着 OpenCode 从你
+  第一条消息生成的 `title`。这些**一个都不读**。落进 `usage.db` 的只有标识符、状态、时长、
+  token 数与计数。
 
 设计约束（刻意遵守）：
 
-- **不修改 OpenCode 源码**，只用公开的 Plugin Hook；
-- **不要求在 SKILL.md 里加任何脚本或埋点**；
-- 只记录结构化元数据（skill 名、状态、耗时、项目路径、session、模型/agent/分支），**不记录 secrets、不记录完整消息**；
-- MCP 调用**只记参数名，绝不记参数值**（`Object.keys()`，不读取属性）；
-- 插件归属在初始化时通过已安装插件的静态扫描尽力解析；解析失败的工具归为 `(unknown)`，不猜具体插件；
-- 默认排除监控插件自身和 `opencode-notifier`，但仍在插件清单中标为 `skipped`；
-- 单个插件文件 + 一个共享数据层 + 一个入口命令，尽量少依赖。
+- **不修改 OpenCode 源码**——一个被动读取器加一个公开的插件 hook；
+- **不要求在 `SKILL.md` 里加任何埋点**；
+- 一个属于 tracker 自己的数据库 + 一个入口 + 一个可选 hook，尽量少依赖。
+
+### 🧩 被动读取器唯一看不见的东西
+
+OpenCode 把插件的工具记在工具自己的名字下，没有任何东西标明是哪个插件；对插件的**命令**则
+完全不记。所以单靠 `ocut` 永远无法归属一次插件调用。可选的 `plugin/ocut-hook.js` 补上这道缝：
+加载时静态扫描每个已安装插件的源码，找出它注册的工具 id 和命令 id；在它能归属的一次调用上，
+往一个本地 JSONL sidecar 追加一条记录，由 `ocut sync` 摄取。这个 hook 是 `plugin_usage` 的
+**唯一**写入方，而且它从不打开 OpenCode 的数据库。
 
 ---
 
@@ -52,13 +62,14 @@ OpenCode 目前**没有专门的 skill hook**。本工具通过通用的工具�
 
 | | |
 |---|---|
-| 操作系统 | Linux——开发与验证环境为 Ubuntu 26.04；其他发行版**未验证** |
-| OpenCode | 1.18.x——内置工具 allowlist 对齐 1.18.34；权限载荷形状在 1.18.33 上实测，此后未再测（M20） |
-| Python | CLI 与 TUI 需要 3.11+（已在 3.11、3.13、3.14 上测试） |
-| Bun | 随 OpenCode 一起提供——用于运行插件；只有插件自测才需要它 |
+| 操作系统 | Linux——开发与验证环境为 Ubuntu；其他发行版**未验证** |
+| OpenCode | 1.18.x——本项目读取其数据库与配置的宿主（见 [compatibility](docs/maintenance/compatibility.md)） |
+| Python | CLI 与 TUI 需要 3.11+；CI 在 **3.11 与 3.14** 上跑测试 |
+| Textual | `textual>=8.2,<9`——只有交互式 TUI 需要，由 `install.sh` 装进 venv |
 | `uv` | 可选，但推荐用来创建 venv；普通的 `python3 -m venv` 同样可行 |
 
-无头子命令（`insight`、`health`、`doctor`、`export`、`sync`、`mcp`、`plugins`、`auto-backup`）**只需要 Python 标准库**。交互式 TUI 需要 [Textual](https://textual.textualize.io/)（`textual>=8.2,<9`），由 `install.sh` 装进 venv。
+所有无头子命令（`sync`、`stats`、`tools`、`health`、`export`、`backup`、`restore`、
+`format`……）**只需要 Python 标准库**。hook 跑在 OpenCode 自己的 Bun 运行时里，不需要另装任何东西。
 
 ---
 
@@ -72,29 +83,28 @@ cd opencode-usage-tracker
 ./install.sh
 ```
 
-然后**重启 OpenCode** 让它加载插件，并验证：
+然后**重启 OpenCode** 让它加载 hook，并验证：
 
 ```bash
-skillt doctor      # PASS / WARN / FAIL 报告；有 FAIL 时退出码为 1
-skillt insight     # 用量摘要——不需要 TUI 即可运行
-skillt             # 启动交互式 TUI
+ocut health    # 库能读吗？宿主库找得到吗？
+ocut sync      # 把 OpenCode 目前写下的索引一遍
+ocut           # 启动交互式 TUI（八个 tab）
 ```
 
 `install.sh` 是幂等的。它会：
 
-1. 创建 `./.venv` 并把 `requirements.txt` 装进去；
-2. 把四个安装位置替换成**指回本仓库的软链接**，因此在这里 `git pull` 就能更新线上安装：
+1. 创建 `./.venv` 并把 `requirements.txt`（textual）装进去；
+2. 把**两个**安装位置链回本仓库，因此在这里 `git pull` 就能更新线上安装：
 
    | 安装位置 | 指向 |
    |---|---|
-   | `~/.config/opencode/plugin/skill-tracker.js` | `plugin/skill-tracker.js` |
-   | `~/.config/opencode/scripts` | `scripts/` |
-   | `~/.config/opencode/skill-tracker` | `skill-tracker/` |
-   | `~/.local/bin/skillt` | `bin/skillt` |
+   | `~/.config/opencode/plugin/ocut-hook.js` | `plugin/ocut-hook.js` |
+   | `~/.local/bin/ocut` | `bin/ocut` |
 
-   如果某个位置已经有真实文件或目录，脚本会**拒绝覆盖**并告诉你该把什么挪走。加 `--force` 才会替换。
+   `bin/ocut` 从它自己所在的仓库解析 `scripts/` 目录，所以脚本从不被复制到用户路径。如果某个
+   位置已经有真实文件或目录，脚本会**拒绝覆盖**并告诉你该把什么挪走；加 `--force` 才会替换。
 
-3. 跑一次 `skillt doctor` 并打印后续步骤。
+3. 跑一次 `ocut health` 并打印后续步骤。
 
 > 确保 `~/.local/bin` 在 `PATH` 里。若不在，把 `export PATH="$HOME/.local/bin:$PATH"` 加进你的 shell 配置。
 
@@ -110,399 +120,241 @@ cd opencode-usage-tracker
 uv venv --python 3.13 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 
-# 2. 把安装位置指向本仓库
-#    （目录链接上的 -n：不要在已存在的目录里再建一个链接）
+# 2. 把两个安装位置指向本仓库
 mkdir -p ~/.config/opencode/plugin ~/.local/bin
-ln -sf  "$PWD/plugin/skill-tracker.js" ~/.config/opencode/plugin/skill-tracker.js
-ln -sfn "$PWD/scripts"                 ~/.config/opencode/scripts
-ln -sfn "$PWD/skill-tracker"           ~/.config/opencode/skill-tracker
-ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
+ln -sf "$PWD/plugin/ocut-hook.js" ~/.config/opencode/plugin/ocut-hook.js
+ln -sf "$PWD/bin/ocut"            ~/.local/bin/ocut
 ```
-
-先移除任何已存在的真实 `~/.config/opencode/scripts` 或 `~/.config/opencode/skill-tracker` 目录（先备份），否则 `ln -sfn` 会把链接嵌进它里面。
 
 ### 📟 仅无头安装
 
-不需要 Textual、不需要 venv——只要记录器和 CLI：
+不需要 Textual、不需要 venv——只要读取器和报表：
 
 ```bash
-mkdir -p ~/.config/opencode/plugin ~/.local/bin
-ln -sf  "$PWD/plugin/skill-tracker.js" ~/.config/opencode/plugin/skill-tracker.js
-ln -sfn "$PWD/scripts"                 ~/.config/opencode/scripts
-ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
+mkdir -p ~/.local/bin
+ln -sf "$PWD/bin/ocut" ~/.local/bin/ocut
 ```
 
-之后直接跑 `skillt` 会打印如何创建 venv；其它子命令都能用。
+之后 `ocut` 的每个子命令都会回退到系统 `python3`；只有启动裸 TUI 才需要 venv。你也可以用
+`OCUT_VENV` 把启动器指向自己的 venv。
 
 ---
 
 ## 🧭 使用
 
-统一入口是 `skillt`。
-
 ### 🖥️ 交互式 TUI
 
 ```bash
-skillt
+ocut
 ```
 
-需要真正的终端（`stdin`/`stdout`/`stderr` 三者都必须是 TTY，且 `TERM` 不能为空或 `dumb`）。
-页面：**Dashboard / Skills / MCP / Plugins / Agents / Recent / Categories / Data**（Data 永远在最后）。
-
-**Dashboard 顶部的 6 张卡片**（名字在下、数字在上）：
-
-| 卡片 | 含义 |
-|---|---|
-| `Skills` | 库里已知的 skill 总数（`skills` 表行数） |
-| `Skill calls` | 累计 skill 调用次数（`skill_usage` 行数） |
-| `MCP calls` | 累计 MCP 工具调用次数（`mcp_usage` 行数） |
-| `Plugin calls` | 累计插件调用次数（`plugin_usage` 行数） |
-| `Today (all)` | 今天（本地日历天）三类调用总数 |
-| `Skill success` | skill 总体成功率 |
-
-卡片下方有图例行，把 `Today (all)` 按三类拆开，并显示**观察样本**（N 个 session、D 天）；三类计数**分开统计**，`Skill calls` 永远不会把 MCP/插件流量算进去。
-
-`Last 7 days` 是三个**横向并排**的小图——skill、MCP、plugin 调用各一张，每张按自己的峰值缩放（MCP/插件量级通常小一个数量级，共用峰值会被压平）。每一行**固定 20 字符**、三张图**高度钉死一致**，所以三者永远落在**同一条水平线**上：以前计数不加补白，只要某张图出现大数就只有它自己折行，那一张的日子就和另外两张错开了。窄于 70 列时行就放不下了（实测：70 列格子恰为 20 宽，66 列只剩 18/19/19），此时三张一起裁切，而不是各切各的。超过 5 位的数字会被压缩（`123456` → `123k`），这正是行宽能保持恒定的原因。下面是三个 Top-10 表：**Top Skills**、**Top MCP tools**、**Top Plugins**。
-
-**MCP 页**每个 `(server, tool)` 组合一行，显示调用次数、30 天调用、session 数、成功率、平均耗时、最近使用时间。Skills / MCP / Plugins 三张表**排序和过滤框各自独立**——`s` 只切换当前页的排序，`Enter` 打开该行的详情页。**Recent 页**把三类调用合成一条统一时间线，`Enter` 会按行类型跳到对应的 skill/MCP/插件详情页。切换到某一页时只重读**当前页**（`r` 才重读所有页），因此每页各自显示自己的 `data as of HH:MM:SS`，而不是一个全局时间戳。
-
-切页是瞬时的，没有动画。Textual 会在每次切页时让 tab 栏下划线滑动 0.3 秒，实测（44 个 skill 的数据库）这占了 Dashboard→Skills 一次切换约 500 ms 里的 ~305 ms——比「页面自身重读（~70 ms）」加「Textual 布局/渲染地板（~125 ms）」还多——所以 app 关闭了动画（`animation_level = "none"`），下划线改为瞬间到位，同一次切换降到约 190 ms。
-
-**Plugins 页**会把「注册过但一次都没被调用」的界面也列出来：`total` 取的是「OpenCode 启动时扫到的注册项」与「有用量的项」的**并集**，所以那里的 `0` 意思是没人用过这个工具，**不是** tracker 漏采。页脚会说明当前有几行处于这种状态。在这种行上按 `Enter` 只会提示「没有历史」，不会推开一个空白详情页；`skillt plugins --json` 则把两件事分成 `registered` 与 `ever_called` 两个字段给出，消费方也没法把它们揉成一个 0。
-
-**Agents 页**回答「这些活是哪个 agent 干的」：一行一个 agent，把调用按种类拆成
-`Skill` / `MCP` / `Plugin` / `Total` / `Success rate` / `Last used`，调用多的排前面。
-**先读页脚再信这张表**：这里记的是那一行的 session **首次**上报的 agent，不是跑掉这次调用的
-agent——`metadata` 只写一次、永不更新，所以在它的 session 报出 agent 之前落库的调用会永远停在
-`(unknown)`。这个桶连同它的计数一起显示出来，不藏（见 M23）。这一页上 `s` 是**故意**什么都不做的：
-它只有一种排序，往下落到 `else` 会在你站在 Agents 页时悄悄改掉 Skills 的排序。
-
-`Spawned` 与 `Ran as` 排在 `Total` 后面，而且**故意不算进 `Total`**。它们是两件事、不是一个数：
-`Spawned` 是这个 agent **启动**了几个子 agent，`Ran as` 是这个名字**被别人当子 agent 跑过**几次
-（这类行带 `⟨sub⟩` 标记）。一个子 agent 如果整轮只在跑 shell 和改文件，它哪里都不会有用量行——
-内置不是本 tracker 测的东西（M13）——所以启动记录是它唯一能出现的地方，这也是它值得一行、
-而不是只进脚注的原因。这种行的 `Success rate` 按**运行次数**算（那是它唯一有的结果），
-但 `Total` 在每一行上都仍然只等于 skill + MCP + plugin，包括 Total 为 0 的那些。
-
-某个名字不在 `Ran as` 里，说的是它**自 OpenCode 上次启动以来**没跑过，不是「从没跑过」：
-`subagent_usage` 从写入端存在的那一刻才开始记（M24）。要找回更早的历史得去读 OpenCode 自己的
-`opencode.db`（那里 `task` 的 `subagent_type` 与两个会话 id 都齐），本轮**明确不做**——理由与
-后果写进 `MAINTENANCE.zh-CN.md` §8 的暂缓表，好让「没实现」和「没决定」以后还分得开。坐在这件工具
-旁边的两个只读邻居（`skillt agentos`、`skillt claude-mem`）已在 2026-10-12 退役（D-053）；
-这个库之外的东西，现在一样都不再读取。
-
-**Plugins 页**每个 `(plugin, kind, item)` 组合一行，显示调用次数、成功率、平均耗时、最近使用时间；页面上方是 **Inventory**：初始化时扫描到的插件清单，每条带上工具/命令数量、**最后被看到的时刻**，以及它是被哪一份配置声明的（`global` / `localdir` / `project`）——只有全局配置和本地插件目录那两类会在每次启动时被刷新，某次启动没再见到的就会被删掉，所以这一列现在说的是"启动时加载了什么"，不再是"这个库建好以来曾经见过什么"。来自某个项目配置的清单单独一行，因为换个目录启动的会话看不见它。插件工具归属失败时显示 `(unknown)`；插件命令只在扫描明确归属时记录。
+需要真正的终端（`stdin`/`stdout`/`stderr` 三者都必须是 TTY）。页面：
+**Dashboard / Tools / Skills / Agents / Plugins / MCP / Tokens / Usage**（八个 tab，顺序如上）。
+tab 栏与页脚就是全部按键面：
 
 | 按键 | 作用 |
 |---|---|
-| `Tab` | 切换页面 |
-| `↑` `↓` / `j` `k` | 移动光标 |
-| `Enter` | 查看选中行的详情页 |
-| `/` | 跳到 Skills 页并聚焦搜索框 |
-| `s` / `ctrl+s` | 切换排序（次数 ↓ / 最近使用 ↓ / 成功率 ↓ / 名称 ↑） |
-| `Esc` | 清空搜索并取消聚焦 |
-| `r` / `ctrl+r` | 刷新 |
 | `q` | 退出 |
-| `d` | 删除**当前在 Skills 页选中**的 skill（需二次确认） |
-| `b` `e` `v` | 备份 / 导出 / 压缩（VACUUM） |
+| `r` | 刷新——先跑一次增量同步，再重载当前屏 |
+| `s` | 切换自动同步（那个 30 秒的后台索引器） |
+| `tab` | 下一个 tab |
+| `shift+tab` | 上一个 tab |
+| `enter` / 双击 | 打开选中行的详情屏 |
+| `escape` / `q` | 从推入的详情屏返回 |
 
-> 搜索框获得焦点时，普通字母会被输入框吃掉。为此 `ctrl+s`（排序）与 `ctrl+r`（刷新）**始终可用**，不必先按 `Esc`。
+**Dashboard** 是三行面板。第一行是头条计数与 token 合计，每个标签都印在它的数字旁边：
 
-Data 页另有按钮：备份、压缩（VACUUM）、导出、**健康 Health**、清空 usage。删除 skill 的入口**只**在 Skills 页。
+| 面板 | 标签 |
+|---|---|
+| Usage | `Tool calls`、`Skills`、`Agents`、`MCP`、`Plugins inst.` |
+| Tokens | `Requests`、`Input`、`Output`、`API Total`、`Prompt Total` |
+| Cache | `Cache read`、`Cache write`、`Hit rate` |
+| Runtime | `Completed`、`Failed`、`Avg tool time`、`Sessions`、`Projects` |
 
-上面的按键表是给人看的那一份；**Data 页自己也会从代码里打印同一份承诺**。
-`MainScreen.key_help()` 列出 Footer 藏起来的全部绑定（`show=False`：`j` `k` `d` `b` `v` `e`
-`ctrl+r` `ctrl+s`），由 `BINDINGS` 生成——新增一个绑定就自动多一行，删掉一个绑定也不会留下一句没人按得到的说明。
-`test_a_new_binding_documents_itself_in_the_help` 会临时加一个绑定，并要求它出现在帮助里。
+下面坐着 `Top models` 与 `Top tools` 两个排行榜，以及一张 `Calls per day` 趋势图。
+`Plugins inst.` 数的是**已安装**的东西，绝不是「用过的」——被动读取器没有任何证据说明某个插件
+或命令真的跑过。
 
-有三件事现在由页面自己说出来，因为它们过去都会被读成「这个工具坏了」：
+**Tools / Skills / Agents / Plugins / MCP** 五个 tab 一行一个实体，列出调用次数、成功数、
+平均耗时与最近使用；在某行按 `enter` 打开该实体的最近调用历史。**Tokens** tab 是宿主自己
+每步记录汇总出的按模型 token 合计，**Usage** tab 是你所选窗口的请求日志。每个 tab 各自保留
+自己的时间窗口（`7d` 这类预设，或一段自定义区间），改一个 tab 的窗口不会动另一个。
 
-- **空表格会说清是哪一种空。** 什么都还没记下来（`press r to re-read`，写入器在下一次调用时补一行）、
-  搜索把每一行都滤掉了（`N skills hidden`，清空搜索框就能看到），或者 skills 目录里本来就没有东西——
-  这种情况下还会把那个目录的路径打出来，否则「没有 skill」和「我找错了地方」在这里长得一模一样。
-- **一页的状态块只有一种颜色。** 表格下面每一行都是一个完整的 `[dim]` 区间，
-  不会再出现半明半暗、看不出哪句才是说明的排版。
-- **比终端还宽的表格会承认自己宽。** `→` 能把最右那几列滚进视野；过去缺的从来不是滚动，
-  而是「还有几列在屏幕外」这句话，现在状态行会说。
-
-**终端宽度。** 以下数字是在指定宽度上实测的，不是从 CSS 上读出来的。卡片网格比屏幕窄 4 列，
-而 Textual 分配余数时并不平均分，所以要按**最窄那张卡**来判断：六列并排需要 **111** 列，
-三列需要 **57** 列，两列是底线——低于 **40** 列时最长的那个标签（`Skill success`，13 列）会折行，
-这是刻意选的结果，而不是让本来就滚动的仪表板再长高一倍。
-确认框是 `width: 100%, max-width: 60`，任何宽度下都不会顶出屏幕；36 列时两个按钮仍然放得下，
-而 36 列就是测到此为止的宽度。
-
-> 删除类操作**必须**先在 Skills 页用 `j`/`k` 选中一行。在其它页面按 `d` 只会提示「请先切到 Skills 页」，不会弹确认框——这是刻意设计，防止误删隐藏表格里的第一行。
+hook 记下的插件调用其 status 是 NULL——工具 after-hook 不带状态，命令则根本没有 after-hook——
+所以插件行的状态列显示 `-`，不是 `0`。
 
 ### ⚡ 无头子命令（不需要 textual）
 
 ```bash
-skillt insight [--days N] [--min-uses N] [--limit N] [--json]
-skillt export  [--out FILE] [--pretty] [--force] [--skills-only]
-skillt sync    [--dry-run] [--prune-orphans] [--json]
-skillt health  [--json] [--limit N]
-skillt mcp     [--json] [--limit N]
-skillt plugins [--json] [--limit N]
-skillt auto-backup [--dry-run] [--json]
-skillt doctor  [--json] [--freshness-days N]
-skillt cleanup-selftest [--yes]
-skillt scrub-metadata [--yes] [--json] [--limit N]
-skillt prune-usage [--keep-days N] [--keep-versions N] [--yes] [--json]
-skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
-skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
+ocut sync    [--full] [--quiet] [--db PATH] [--host-db PATH] [--host-config PATH] [--plugin-events PATH]
+ocut stats   [--kind K] [--db PATH]
+ocut tools   [--limit N]
+ocut skills  [--limit N]
+ocut agents  [--limit N]
+ocut mcp     [--limit N]
+ocut plugins
+ocut models  [--limit N]
+ocut show    <tool|skill|agent|mcp> <name> [--limit N]
+ocut recent  [--limit N]
+ocut inventory [--kind K]
+ocut export
+ocut health
+ocut backup
+ocut restore [NAME]
+ocut format  [--write]
 ```
 
-- `insight`：最常使用 / 增长最快 / **从未使用** / 长期未使用 / 失败率最高，并附观察样本（session 数与天数）。
-- `export`：导出 JSON（0600）；不指定 `--out` 则打印到 stdout。
-- `sync`：重新扫描 `SKILL.md`，把内容变更记录进 `skill_versions`；`--dry-run` 只统计不写。
-- `health`：把每个 skill 分成 **活跃（≤30 天）/ 沉寂（30–90 天）/ 未使用（>90 天或从未）**，并给出风险标记与建议。会显示**观察样本**（N 个 session、D 天）；样本不足 **20 个 session 或 14 天**时只输出一行"数据不足"，不给剪枝建议——在样本足够之前，"0 次使用"没有意义。**只读、只建议、绝不自动删除。**
-- `mcp`：MCP 工具使用情况——按 server 汇总，再列出调用最多的工具（次数、成功率、最近使用）。**只读。**
-- `plugins`：插件清单（来源、版本、工具/命令面、排除状态、`scope` 与最后被看到的时刻）以及按插件/类型/项目汇总的用量。**只读。** `--json` 输出 `inventory` 与 `items` 两组数据。
-- `auto-backup`：在专用目录里创建备份并按保留策略清理旧备份（见「备份」章节）。
-- `doctor`：体检，输出 PASS/WARN/FAIL；**有 FAIL 时退出码为 1**。除结构性检查（库、skills、插件文件、环境、备份）外，还检查**采集链路本身**：`capture.freshness`（**三张表分别**报最新一条距今多少天，例如 `skill_usage 0.0d · mcp_usage 2.2d · plugin_usage 0.0d`，阈值 `--freshness-days`，默认 7；从没记过行的流报 `no rows`，不算停滞；`OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` 可以把某条流排除在判定之外，但它仍会被打印并标注 `(excluded)`）、`log.errors`（插件日志里 `[err]` 行的数量与最后一条）、`env.opencode_version`（当前 OpenCode 版本 vs 内置工具 allowlist 所对齐的版本，见 M13）、`backups.scheduled`（`skillt-auto-backup.timer` 在用户 systemd 里到底有没有启用——**一份很新的备份文件说明不了下一份会不会来**，而这两件事曾在真机上真的分开过）。这四项**只 WARN、不 FAIL**——安静一周不是故障。
-- `cleanup-selftest`：清除 `__selftest()` 遗留的合成行（`project_path = /tmp/selftest-proj`）。默认 dry-run，`--yes` 才真删（先试跑一次确认有行可删，再自动备份后删除）。
-- `scrub-metadata`：把 `metadata` 里不该留的**自由文本键**（`summary`、`title`）从历史行中剥掉。**行本身保留**——用量是这张库的意义所在，泄露的文本不是。默认 dry-run 列出命中行，`--yes` 才改（先备份，改完再 checkpoint WAL，让文本真的从磁盘上消失——见 M14）。背景见 M14。
+- `sync`：把 OpenCode 的数据库索引进 tracker 自己的库。`--full` 从头重建（重建前先做快照）；
+  `--quiet` 是 TUI 后台 worker 跑的模式。它是增量的：rowid 游标消费新的 `part` 行，而 `session`
+  每次整表重读，因为宿主会重写它的 rollup。
+- `stats`：所有类别的总览——会话、项目、工具调用、skill / agent / MCP 调用、**已安装**的插件与
+  命令、模型步数与 token。
+- `tools` / `skills` / `agents` / `mcp`：某一类别的表。`plugins` 是「已安装 ∪ 已使用」的并集，
+  并带上归属插件的版本与声明路径。
+- `models`：宿主自己 `step-finish` 记录汇总出的按模型 token 合计，外加最近若干步。`Total` 是宿主
+  自报的那一步总量（如果它给了）；cache read/write 单独显示，**不**算进它里面。
+- `show <kind> <name>`：某个实体的最近调用。`recent`：最近的任意工具调用。`inventory`：装了什么、
+  有什么可用。
+- `export`：把每个视图与表 dump 成 JSON。
+- `health`：只读报告——库路径、宿主库与配置、解析后的设置、schema 版本、每个同步游标对照宿主自己的
+  计数、已索引的合计，以及这个命令存在的意义——`unparsed` 计数。一次「什么都没认领」的运行照样会
+  打印 "done"；`health` 是格式变化变得可见的地方。
+- `backup` / `restore`：给库做快照，或列出并恢复一份快照（见[备份](#-备份)）。
+- `format`：打印 OpenCode 格式依赖面，从解析器的注册表读出。`--write` 刷新 `docs/maintenance/`
+  里那个生成块。
 
-- `rotate-log`：管住插件自己日志的生长（M17）。它是**改名**而不是清空：从活文件里走的每一行都还在 `skill-tracker.log.<UTC 时间戳>` 里，因为那些行正是 `doctor log.errors` 要读的证据。上界是 `log.max_bytes`，而 `doctor` 读同一份日志时用的是**同一个解析后的值**（`TRACKER_LOG_BYTES_CAP` 只是它的出厂默认），所以主人把这个数调大，读写两边一起动，不会一头先动；`log.keep_files` 是保留几代轮转，超出的才删——而且只删**这个形状的名字**，绝不动邻居的日志（这条命令根本不接受路径参数）。活文件被重新创建成**空文件**而不是"没有文件"：文件不存在时 `doctor` 会对一个运行正常的插件 WARN「插件没初始化过」。重建**不带 `O_TRUNC`**：写入端逐行 `appendFileSync`，改名与重建之间可能正好落进来一行。默认 dry-run；备份 timer 用 `--yes` 跑它。**不需要数据库**——新机器上日志比数据库先出现。同一秒内的第二次轮转拿到 `-2` 后缀，而不是覆盖上一代（备份那边同名冲突是报错，这里必须继续）。
-- `prune-usage`：**本项目里唯一会删掉已记录历史的一条命令**。默认关：`retention.usage_days` 与 `retention.max_skill_versions` 都是 `0`，只要有一个是 0 就没有任何东西被排入删除。它先列出要删的行，只有加 `--yes` 才真删，而 `--yes` 先写一份备份、备份失败就中止；整个删除是**一个事务**。dry-run 报的数与真删的数出自同一条 SELECT，所以那是测量不是预测。时间戳解析不出来的行**保留**并计为 `undated`——"早于 N 天"是对一个我们并没有的日期的断言。`subagent_usage` 永远不在删除集合里：那些行是事件而非调用，启动记录是子 agent 跑过的唯一见证（M24）。删行只是释放页，文件要等 `skillt vacuum` 才变小。
-
-参数校验：`--days ≥ 1`、`--min-uses ≥ 0`、`--limit ≥ 1`、`--freshness-days ≥ 1`；非法值直接报错并以退出码 2 结束。
-所有无头子命令在 **stdout 非 TTY**（如管道、重定向）时也能正常运行，输出为纯文本/JSON。
-
-### 🕰️ 旧版 CLI（委托给 `skill-stats.py`）
-
-```bash
-skillt stats | top [N] | show <skill> | recent [N] | delete <skill> | clear | backup | vacuum
-skillt help
-```
-
-- 这些命令保持向后兼容：命令名、位置参数（如 `top 3`）与 `--json` 字段都没有变化。
-- `top` / `recent` 的条数既可用位置参数（`top 3`），也可用 `--limit 3`，两者等价。
-- `show <skill> --limit N` 控制历史条数（默认 20）。
-- `backup [FILE]` 生成 `VACUUM INTO` 快照，权限 `0600`。
-- 唯一可见的变化是**输出文案改为英文**（便于统一日志与脚本解析）。
-
----
+全局取值参数（`--db`、`--kind`、`--limit`、`--host-db`、`--host-config`、`--plugin-events`）可以
+放在子命令**之前或之后**：`ocut --limit 5 tools` 与 `ocut tools --limit 5` 等价。命令名绝不会
+被误当成某个参数的值。
 
 ## ⚙️ 设置
 
-**零配置是一种被支持的配置。** 每个键都有默认值，而默认值**就是**屏幕上现在显示的行为：
-插件、CLI、TUI 都不需要任何配置即可工作；在你自己创建之前，那个文件根本不存在。
+**零配置是一种被支持的配置**：没有文件时每个键都取默认值，什么都不会被创建。设置文件是
+**`~/.config/ocut/config.toml`**（用 `OCUT_CONFIG` 改路径；`XDG_CONFIG_HOME` 会被尊重），
+用标准库的 `tomllib` 读取。
 
-**优先级：命令行参数 → 配置文件 → 环境变量 → 默认值。** 配置文件是
-`~/.local/share/opencode/skillt-config.json`——tracker 自己的数据目录，**不是**
-`~/.config/opencode/`（那是 OpenCode 的）。请用命令改，别手改，因为命令会校验取值，
-并且会告诉你每个值是从哪一层来的：
+**优先级：环境变量 → 文件 → 默认值。**
 
-```bash
-skillt config list                    # 每个键：值、来源、以及它管什么
-skillt config get view.days
-skillt config set view.days 45
-skillt config unset view.days
-skillt config explain view.min_uses   # 默认值、下限、参数名、环境变量名、中英说明
-skillt config path
-skillt config list --json
-```
+| 键 | 默认 | 环境变量 | 管什么 |
+|---|---|---|---|
+| `top_n` | `5` | `OCUT_TOP_N` | Dashboard 的 Top models / Top tools 列几行 |
+| `log_limit` | `100` | `OCUT_LOG_LIMIT` | Usage tab 的请求行数 |
+| `detail_limit` | `200` | `OCUT_DETAIL_LIMIT` | 历史 / 模型响应屏的行数 |
+| `name_cap` | `28` | `OCUT_NAME_CAP` | 表格单元格渲染多宽，超过就把名字裁掉 |
+| `refresh_secs` | `5` | `OCUT_REFRESH_SECS` | TUI 重绘定时器 |
+| `sync_secs` | `30` | `OCUT_SYNC_SECS` | TUI 自动同步定时器 |
 
-| 键 | 默认 | 参数 | 环境变量 | 管什么 |
-|---|---|---|---|---|
-| `view.days` | `30` | `--days` | `OPENCODE_SKILL_TRACKER_VIEW_DAYS` | 无头报告（`insight`、`export`）覆盖多少天历史。交互页面的排版钉死在固定窗口上（7 天趋势、30 天合计），**不会**被它拉长 |
-| `view.limit` | `10` | `--limit` | `OPENCODE_SKILL_TRACKER_VIEW_LIMIT` | `skillt insight` 每张排名表列多少行。交互表格全部列出、靠滚动看 |
-| `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | Recent 时间线列出多少条事件。更早的事件仍在库里，这里只改屏幕装多少 |
-| `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | 一个 skill 至少被调用多少次才进入 `skillt insight` 的建议范围 |
-| `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | 最新一条记录超过多少天，`doctor` 就提示采集可能停了 |
-| `log.max_bytes` | `4194304` | `--max-bytes` | `OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES` | 插件自己的日志长到多少字节后由 `skillt rotate-log` 挪走。**读写两端共用这一个解析后的值**（`TRACKER_LOG_BYTES_CAP` 只是它的默认）：活日志里有 `doctor` 看不见的一行就是静默丢失。下限 1024——再小就会每写一行轮转一次 |
-| `log.keep_files` | `5` | `--keep-files` | `OPENCODE_SKILL_TRACKER_LOG_KEEP_FILES` | 除当前那份外保留多少个轮转日志。轮转是**改名**，行不会消失；这个数字决定那段历史往回留多久 |
-| `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0`=关闭：什么都不删。** 早于这么多天的用量行进入 `skillt prune-usage` 的删除集合；这条命令先列出来，只有加 `--yes` 才删，而 `--yes` 会先写备份 |
-| `retention.max_skill_versions` | `0` | `--keep-versions` | `OPENCODE_SKILL_TRACKER_RETENTION_MAX_SKILL_VERSIONS` | **`0`=关闭。** 每个 skill 最多保留多少条 `skill_versions`——按**最新**的 N 条留，所以保留策略不会吃掉当前内容。这张表每次内容变化多一行、从不减少 |
-环境变量名是**按规则推导**的：键转大写、`.` 换成 `_`、前缀 `OPENCODE_SKILL_TRACKER_`。
-所以不存在第二份需要人工同步的清单；而只要有键、参数或默认值没写进**任何一份**
-README，`scripts/tests/test_settings_documented.py` 就把构建判红——正是这份缺失的闸门
-放任六个环境变量裸奔过。
-
-**被拒绝的取值会被说出来，不会被藏成默认值。** 文件里写 `"view.days": "thirty"`，屏幕
-当然还是 30，但 `skillt config list` 会把这一项的来源印成 `config file (rejected)` 并附
-原因，`skillt doctor` 的 `config.file` 也会 WARN 同一件事。静默回退是让设置层失去可信度
-的方式。
-
-**解析不了的文件绝不会被重写。** 对着一个坏了、或含未知键的文件执行 `skillt config set`
-会以退出码 2 拒绝，而不是拿"碰巧能解析的那几行"重建整个文件：你的笔误就是证据本身，
-而它只有一行要改。键的形式是 `组.名`，只有一层；无法识别的键会被点名后忽略，
-`skillt config set view.dayz 7` 会回答最接近的真键名。
-
-设置**刻意不管**两件事：采集什么、保留多久——那是下一张表的 `OPENCODE_SKILL_TRACKER_*`
-和代码本身。而隐私不变量（纯本地、无网络、不存消息正文）根本不提供开关：给它一个开关
-就是给它一个被关掉的机会。
+读不了的文件是**错误**，不是回退：未知键、TOML 解析失败、类型不对、或取值越界，都是硬失败，
+并点名那个路径（或变量）和那个键。改了 `config.toml` 却被静默忽略，是这一层能产生的最坏结果。
 
 ### 🌱 环境变量总表
 
-本项目读的每一个环境变量都在这一张表里，两份文档都要有：
-`scripts/tests/test_settings_documented.py` 会**从源码里枚举**环境读取的写法，再逐个来
-这张表对账。
-
 | 变量 | 作用 |
 |---|---|
-| `OPENCODE_SKILL_TRACKER_DB` | 覆盖数据库路径（写入端） |
-| `OPENCODE_SKILL_TRACKER_CONFIG` | 设置文件的路径（**只读侧**；默认 `~/.local/share/opencode/skillt-config.json`） |
-| `OPENCODE_SKILL_TRACKER_CONFIG_DIR` | OpenCode 配置树（默认 `~/.config/opencode`）——**两侧都用**：写入端记录它看到的 skills，读取端扫同一棵树。只有一侧认这个变量时，改过位置的配置会表现为"一个 skill 都没装"的空页面，而库里明明有数据 |
-| `OPENCODE_SKILL_TRACKER_SKILLS_DIR` | skills 目录（默认 `$CONFIG_DIR/skills`），写入端与读取端都是 |
-| `OPENCODE_SKILL_TRACKER_PACKAGES_DIR` | 静态扫描去哪儿找 npm 插件源码（默认 `~/.cache/opencode/packages`） |
-| `OPENCODE_SKILL_TRACKER_PLUGINS` | 逗号分隔的插件 spec 清单；**一旦设置（哪怕是空）就跳过"从 OpenCode 配置里读已安装插件"**。走这条路时不做 inventory 清理：这份覆盖说明不了机器上到底装了什么 |
-| `OPENCODE_SKILL_TRACKER_PLUGIN_EXCLUDE` | 逗号分隔的 spec，追加在默认排除项（tracker 自身、`opencode-notifier`）之后 |
-| `OPENCODE_SKILL_TRACKER_TOOL` | skill 工具的名字（默认 `skill`），给改过名的宿主用 |
-| `OPENCODE_SKILL_TRACKER_MCP_SERVERS` | 逗号分隔的 MCP server 名；**一旦设置（哪怕为空）就跳过自动探测** |
-| `OPENCODE_SKILL_TRACKER_MCP_DISABLE` | `1` 只关 MCP 记录，skill 记录照旧 |
-| `OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE` | `1` 只关插件工具/命令记录 |
-| `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE` | `1` 不再记录"启动过子 agent"（内置 `task` 工具），另外三条流不受影响 |
-| `OPENCODE_SKILL_TRACKER_DISABLE` | `1` 整个插件停用 |
-| `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` | 替换内置工具 allowlist（钉在 OpenCode 1.18.34，见 M13） |
-| `OPENCODE_SKILL_TRACKER_LOG` | 插件自己的日志文件（默认 `~/.config/opencode/logs/skill-tracker.log`，也就是 `skillt doctor` 读的那份）。`__selftest()` **忽略默认值**，把行写到它的临时库旁边——一次失败的自测不该进主人的错误计数 |
-| `OPENCODE_SKILL_TRACKER_DEBUG` | `1` 在插件日志里打开逐次调用调试行 |
-| `OPENCODE_SKILL_TRACKER_BACKUP_DIR` | `VACUUM INTO` 备份写到哪儿、保留策略清理哪儿（默认 `~/.local/share/opencode/backups`） |
-| `OPENCODE_SKILL_TRACKER_STREAMS` | 读侧：允许 `doctor` 判定为"停滞"的流清单（默认三条全判）。被排除的流照样打印，并标注 `(excluded)` |
-| `SKILLT_SCRIPTS` | 覆盖启动器使用的 `scripts/` 目录 |
-| `SKILLT_VENV` | 让启动器指向某个 venv 目录或 python 可执行文件 |
-| `SKILLT_CONFIG_DIR` | 仅安装脚本：要链接进去的 OpenCode 配置目录（默认 `~/.config/opencode`），用来在沙箱里试装 |
-| `SKILLT_BIN_DIR` | 仅安装脚本：`skillt` 启动器链到哪儿（默认 `~/.local/bin`） |
-| `SKILLT_SYSTEMD_DIR` | 仅安装脚本，且只在 `--with-timer` 时生效：用户单元复制到哪儿（默认 `~/.config/systemd/user`） |
-| `HOME` | 继承而来，不是旋钮：上面每个默认路径都由写入端用它的拼出来，设它等于把整棵树搬走，除非某个变量已经把它钉住 |
-| `TMPDIR` | 继承而来：`__selftest()` 在哪创建它的临时库（默认 `/tmp`） |
-| `TERM` | 继承而来：终端是空或 `dumb` 时，TUI 拒绝启动，而不是画一屏乱码 |
+| `OCUT_DB` | tracker 数据库（默认 `~/.local/share/opencode-usage-tracker/usage.db`） |
+| `OCUT_OPENCODE_DATA` | OpenCode 的数据目录（默认 `~/.local/share/opencode`） |
+| `OCUT_OPENCODE_CONFIG` | OpenCode 的配置目录（默认 `~/.config/opencode`）——读取端与 hook **两侧**都用 |
+| `OCUT_HOST_DB` | 要读的宿主数据库（默认 `<数据目录>/opencode.db`） |
+| `OCUT_HOOK_EVENTS` | 插件用量 sidecar（默认 `~/.local/share/opencode-usage-tracker/plugin-events.jsonl`）——hook 与 `ocut sync` **两侧**都用 |
+| `OCUT_CONFIG` | 设置文件（默认 `~/.config/ocut/config.toml`） |
+| `XDG_CONFIG_HOME` | 默认设置路径的基目录 |
+| `OCUT_HOOK_DISABLE` | `1` 完全关掉 hook |
+| `OCUT_HOOK_PACKAGES` | hook 静态扫描去哪儿找 npm 插件源码（默认 `~/.cache/opencode/packages`） |
+| `OCUT_SCRIPTS` | 覆盖启动器使用的 `scripts/` 目录 |
+| `OCUT_VENV` | 让启动器指向某个 venv 目录**或** python 可执行文件 |
+| `OCUT_CONFIG_DIR` | 仅安装脚本：要链接进去的 OpenCode 配置目录（默认 `~/.config/opencode`） |
+| `OCUT_BIN_DIR` | 仅安装脚本：`ocut` 启动器链到哪儿（默认 `~/.local/bin`） |
+| `HOME` | 继承而来，不是旋钮：上面每个默认路径都由它拼出来 |
 
 ---
 
 ## 🔬 工作原理
 
+`ocut` **只读** OpenCode 自己的状态，把需要的东西复制进自己的数据库；绝不写回 OpenCode。
+
 ```
-OpenCode 运行
-   │  tool.execute.before/after, permission.ask, event   (skill 与 MCP 共用)
-   ▼
-~/.config/opencode/plugin/skill-tracker.js      (Bun 运行时, bun:sqlite)
-   │  写入
-   ▼
-~/.local/share/opencode/skill-usage.db          (SQLite, WAL, 0600)
-   │  读取
-   ├── skillt                → skill-tui.py      (Textual TUI, 需要 venv)
-   ├── skillt stats|top|...  → skill-stats.py    (旧版 CLI, 行为向后兼容)
-   └── skillt insight|health|doctor|mcp|...  → skill-tui.py --cli  (无 textual 也能跑)
+OpenCode 自己的状态（只读——从不以写入方式打开）
+  ~/.local/share/opencode/opencode.db    session · message · part
+  ~/.config/opencode/                    已安装的 skills · agents · commands · mcp · plugin
+        │
+        │  ocut sync   → scripts/ocut-sync.py   （以 mode=ro 打开宿主）
+        ▼
+~/.local/share/opencode-usage-tracker/usage.db   （SQLite——tracker 自己的库）
+        │
+        │  读取
+        ├── ocut                 → scripts/ocut-tui.py    （Textual TUI，八个 tab，需要 venv）
+        ├── ocut stats|tools|…   → scripts/ocut-stats.py  （无头报表，仅标准库）
+        └── ocut backup|restore|format
+
+  ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
+        ▲  只由 plugin/ocut-hook.js 写入，由 ocut sync 摄取
 ```
 
-- **写入方**：只有插件（OpenCode 运行时）。所有写入都用 `UNIQUE(session_id, call_id)` 去重 + `ON CONFLICT` upsert。
-- **读取方**：`skillt` 的所有命令。`health` / `mcp` / `plugins` 以只读方式打开数据库，绝不修改。
-- **共享数据层**：`scripts/skill_db.py`，被 `skill-tui.py` 与测试共用；schema、迁移、查询、导出、备份都在这里，而且**只装 tracker 自己的数据**。skill、MCP、插件计数（`skill_usage` / `mcp_usage` / `plugin_usage`）是**三张独立的表**，互不影响。
+- **来源——只读。** OpenCode 的 `opencode.db`（`session`、`message`、`part`）以及
+  `~/.config/opencode` 下已安装的清单。宿主库以 `mode=ro` 打开并设 `PRAGMA query_only = ON`，
+  文件不存在是错误，不是「空成功」。
+- **同步。** `ocut sync` 把需要的东西复制进 tracker 自己的库；`--full` 从头重建（重建前先快照）。
+- **存储。** `~/.local/share/opencode-usage-tracker/usage.db`——tracker 自己的 SQLite，只由
+  `ocut` 写入，WAL 模式、5 秒 busy timeout。
+- **读取方。** `ocut` 的所有命令。TUI 需要 Textual（venv）；无头报表只需要标准库。
 
 ### 🗄️ 数据库
 
-#### 表
+表：`tool_calls`、`model_calls`、`skill_usage`、`agent_usage`、`mcp_usage`、`plugin_usage`、
+`plugin_surface`、`sessions`、`inventory`、`unparsed`、`sync_state`。
+视图：`v_tools`、`v_skills`、`v_agents`、`v_mcp`、`v_plugins`。
 
-- **`skills`**：每个 SKILL.md 一行。`path` 有 `UNIQUE` 约束；`name` **没有**唯一约束。
-  迁移时新增 `content_hash` 列（内容哈希，用于版本追踪）。
-- **`skill_usage`**：每次调用一行。`UNIQUE(session_id, call_id)` 保证幂等去重。
-  `status ∈ {success, error, denied, ask, unknown}`；`trigger_type ∈ {tool_call, event_detected, permission_denied, manual}`。
-  `metadata` 是 JSON 文本（model / agent / branch，已由插件清洗）；消息正文与标题从不读取，因此不可能被存进来。
-- **`mcp_usage`**：每次 MCP 工具调用一行，按 `(server_name, tool_name)` 区分。
-  与 `skill_usage` 同样的 `UNIQUE(session_id, call_id)` 去重，同样的 status / trigger_type 取值。
-  `tool_name = '*'` 表示只知道 server、不知道具体工具（权限拒绝路径）。
-  `arg_names` 是调用**参数名**组成的 JSON 数组——参数**值**从不读取，因此不可能被存进来。
-- **`plugin_usage`**：每次插件工具/命令调用一行，按 `(plugin_name, kind, item_name)` 汇总，使用同样的 `UNIQUE(session_id, call_id)` 去重。插件工具的未知归属显示为 `(unknown)`；插件命令 `trigger_type = command_call` 且状态通常是 `unknown`。
-- **`plugin_inventory`**：插件初始化扫描清单，一行一个插件，保存版本、来源、静态发现的 tools/commands、`skipped` 排除标记，以及 `scope`——这一行是被哪份配置声明的（`global` / `localdir` / `project` / 早期遗留为 NULL，按 `global` 处理）。`loadPlugins()` 结束时删掉 `global`/`localdir` 里本次没再见到的行；`project` 行不删（换个目录启动的会话看不见它）。清空 usage 不会动这张表。
-- **`subagent_usage`**：宿主每启动一个子 agent 一行，按 `(parent_session_id, call_id)` 去重。只有标识符与时长：`subagent`、`child_session_id`、`status`、`trigger_type`、`duration_ms`。**不存**任务原文、描述、title、子 agent 的回报与报错（见 M24）。同一次启动可能被 hook 路径和事件路径各看到一次，冲突规则只补第一次没填上的字段、不覆盖已有值，所以还是一行。
-- **`skill_versions`**：内容哈希历史，`UNIQUE(skill_name, content_hash)`。
+- `tool_calls`：每条 `tool` part 一行，无论工具是什么。`category` 是
+  `builtin | skill | agent | mcp`；`status` 是宿主自己的 `state.status` 原样。
+- `skill_usage`：`skill` 工具的调用；skill 名读自 `state.input.name`，那是本项目允许看的两个
+  参数名之一。
+- `agent_usage`：`task` 工具的调用（启动了一个子 agent），按 `state.input.subagent_type` 归类。
+- `mcp_usage`：MCP 工具调用，按名字（`<server>_<tool>`）对照宿主配置里列出的服务解析，
+  **最长前缀**优先。
+- `model_calls`：每条 `step-finish` part 一行；token 与 cost 在这里，模型来自父 message。
+- `sessions`：每个 OpenCode 会话一行（含子会话），带宿主自己的按会话 rollup。`sessions` 与
+  `model_calls` 是同一测量的两个粒度，**绝不相加**。
+- `inventory`：装了什么，读自宿主的目录与配置：skills、agents、commands、MCP 服务、插件、
+  provider，以及每个插件注册的工具 id。
+- `plugin_usage`：hook 看到的每次插件工具/命令调用一行。这是唯一一张数据来自宿主库之外的表。
+- `plugin_surface`：每个插件加载时注册的工具与命令 id，由 hook 上报；`ocut sync` 在文件系统重写
+  之后把它折回 `inventory`。
+- `sync_state`：读取器跟踪的每张宿主表一行：rowid 游标，加上宿主自己的 `count(*)`/`max(rowid)`，
+  以及一个 `note`——被裁剪或重新编号的表在这里说话。游标会在批次里第一条非终态的 `running`
+  tool part 处**回退**，好让在行插入之后才结束的调用被重读；回退有上限，所以一个被中断的会话不会
+  永远钉住游标。
+- `unparsed`：索引器看到但用不了的记录，按 reason 归类。这是「OpenCode 持久化格式变了」的运行时信号。
 
-#### 视图
-
-- `v_skill_totals`：每个 skill 的 total / success / errors / denied / last_used。
-- `v_skill_last30`：近 30 天使用次数。
-- `v_skill_history`：把 `metadata` 里的字段展开成列，便于查询。
-- `v_mcp_totals`：每个 `(server, tool)` 的 total / success / errors / denied / last_used。
-- `v_mcp_last30`：近 30 天调用次数。
-- `v_mcp_history`：MCP 版的历史视图，额外带 `arg_names`。
-- `v_plugin_totals` / `v_plugin_last30` / `v_plugin_history`：插件用量总计、近 30 天和历史视图。
-
-插件来源和归属是**初始化时的一次性静态扫描**：入口文件加上它相对 import 的那一层；工具 id 取 `tool: {` 里**最浅的有键那一层**（再深就是某个工具自己的 `args`，不是工具）。新增、升级、改名插件或其命令/工具面后，需要重启 OpenCode 才会刷新清单；扫描无法解析的工具只记 `(unknown)`，无法明确归属的命令直接不记。
-
-#### 运行参数
-
-- `journal_mode = WAL`（读写可并发），`busy_timeout = 5000`，`synchronous = NORMAL`。
-- 文件权限 `0600`；备份目录 `0700`。
-- `source`（personal / open-source）是**派生值**，由 `category` 实时计算，**不落库**，避免重复存储。
-
-#### 直接查询示例
+直接查询：
 
 ```bash
-sqlite3 ~/.local/share/opencode/skill-usage.db \
-  "SELECT skill_name, total, success, errors, last_used FROM v_skill_totals ORDER BY total DESC LIMIT 10;"
-sqlite3 ~/.local/share/opencode/skill-usage.db \
-  "SELECT server_name, tool_name, total, errors FROM v_mcp_totals ORDER BY total DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT tool_name, calls, errors FROM v_tools ORDER BY calls DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT skill, calls, last_ts FROM v_skills ORDER BY calls DESC LIMIT 10;"
 ```
 
 ---
 
 ## 💾 备份
 
-### 💾 手动备份
-
 ```bash
-skillt backup        # 旧版 CLI：备份到 DB 同目录
+ocut backup            # 现在做一份快照
+ocut restore           # 列出可用快照
+ocut restore NAME      # 恢复其中一份（先关掉 TUI）
 ```
 
-或 TUI 里按 `b` / Data 页「备份」按钮。备份用 `VACUUM INTO` 生成一致性快照。
-无论走哪条路径（旧版 CLI、TUI、`auto-backup`），生成的文件都会 `chmod 0600`。
+- 快照写到 `~/.local/share/opencode-usage-tracker/backups/`，命名
+  `usage-YYYYMMDD-HHMMSS-<reason>.db`，用 SQLite 的在线备份 API 生成——不是文件拷贝，因为在
+  WAL 下最新的已提交帧可能还在 `-wal` 里，拷出来的主文件会是一份陈旧的库。
+- 保留最新的 `BACKUP_KEEP`（5）份托管快照；更旧的按 mtime 清理，不按名字，因为同一秒可能落下好几份。
+- `ocut sync --full`、schema 版本升级、`ocut restore` 都会**先**做一份快照，所以每一步破坏性操作
+  都可撤销。
+- 恢复会保住原来那份库：它在替换前先给在用的文件做快照，所以一次错误的恢复本身也可逆。
+- 库旁边手工做的 `usage.db.bak-*` 会作为可恢复来源列出，但**永不**被清理——本工具没创建它们，
+  也就无权删除。
 
-### ⏳ 自动备份与保留策略
-
-```bash
-skillt auto-backup --dry-run   # 先看会做什么
-skillt auto-backup             # 真正执行
-```
-
-- 备份写入 `~/.local/share/opencode/backups/`（0700），命名固定为 `skill-usage-backup-YYYYMMDD-HHMMSS.db`；所有备份路径都指向这一个目录（M19）。
-- **这个保留策略只管备份文件**，不管库里的行。用量行会永远留着，除非设了 `retention.usage_days` 并跑 `skillt prune-usage --yes`；而 `.db` 文件本身要 `skillt vacuum` 才会变小。
-- 保留策略：**最近 30 个每日**（每天留最新一个）+ **最近 12 个月每月**（每月留最新一个），其余删除。
-- 安全护栏：
-  - 只处理**名称完全匹配** `skill-usage-backup-<8位日期>-<6位时间>.db` 的文件；
-  - 只动这个专用目录，绝不碰主库、导出文件或手工副本；
-  - 不删除**年龄小于 120 秒**的文件；
-  - 名称解析失败的文件**永不删除**；
-  - 同名（同一秒）冲突会**报错而不是覆盖**；
-  - 有 `.lock` 文件防止并发运行（锁超过 10 分钟视为过期，可被接管）。
-
-### ⏰ 用 systemd timer 定时备份与轮转日志（可选，需你手动启用）
-
-单元文件在 `~/.config/opencode/skill-tracker/systemd/`。service 里跑**两件**维护活：`auto-backup`（上面那套备份保留）与 `rotate-log --yes`（插件日志，M17）——日志没有别的清扫者，而没人排队的轮转就等于永远不会发生。也可以直接 `./install.sh --with-timer`（默认仍不装：写 systemd 单元是本项目目录之外的改动）。启用步骤：
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp ~/.config/opencode/skill-tracker/systemd/skillt-auto-backup.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now skillt-auto-backup.timer
-
-# 查看状态 / 触发一次
-systemctl --user list-timers skillt-auto-backup.timer
-systemctl --user start skillt-auto-backup.service
-
-# 让定时器在未登录时也能运行（可选，通常需要）
-loginctl enable-linger "$USER"
-```
-
-> 单元里的 `ExecStart` 使用**绝对路径**（systemd user 的 PATH 默认不含 `~/.local/bin`）。
-
-### ♻️ 恢复
-
-```bash
-# 1. 停掉正在使用该库的 OpenCode 会话（避免边写边恢复）
-# 2. 先保住当前库
-cp ~/.local/share/opencode/skill-usage.db ~/.local/share/opencode/skill-usage.db.before-restore
-# 3. 用备份覆盖
-cp ~/.local/share/opencode/backups/skill-usage-backup-YYYYMMDD-HHMMSS.db \
-   ~/.local/share/opencode/skill-usage.db
-# 4. 清理可能残留的 WAL/SHM（它们属于旧库）
-rm -f ~/.local/share/opencode/skill-usage.db-wal ~/.local/share/opencode/skill-usage.db-shm
-# 5. 校验
-skillt doctor
-```
-
-备份是标准 SQLite 文件，也可以直接用 `sqlite3` 打开做逐表比对。
+**没有 systemd timer**：备份是手动的、只在破坏性操作之前。`ocut backup` 是一个刻意的动作。
 
 ---
 
@@ -510,116 +362,45 @@ skillt doctor
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `skillt: not an interactive terminal` / `skillt: TERM is unset or 'dumb'` | `stdin`/`stdout`/`stderr` 未全部为 TTY，或 `TERM` 为空/`dumb`。改用无头命令：`skillt insight`、`skillt health`、`skillt doctor`。 |
-| `skillt: TUI venv not found` | 建 venv：`uv venv --python 3.13 ~/.local/share/opencode/skillt-venv && uv pip install --python ~/.local/share/opencode/skillt-venv/bin/python textual`。 |
-| 统计里没有新数据 | 插件只在 OpenCode 运行时写入。先看 OpenCode 运行日志里的 `failed to load plugin`：若出现 `skill-tracker.js`，说明插件加载失败（见「已知限制 → 插件导出契约」），hook 根本没注册，而不是技能没被调用。再确认 `skillt doctor` 里 `plugin.exists` / `plugin.hooks` 为 PASS。 |
-| `failed to load plugin path=list error="Plugin export is not a function"` | 某个**项目级** `.opencode/opencode.json` 的 `plugin` 数组里写了不是插件的 npm 包名（例如 `"list"`）。删掉该条目即可；`path=list` 表示来源是配置里的插件列表而非 `plugin/` 目录。 |
-| `doctor` 报 `db.wal` FAIL | 库文件损坏或不是 SQLite。用 `sqlite3 ... "PRAGMA integrity_check;"` 确认，必要时从备份恢复。 |
-| 时间对不上（差几小时） | 已修复（M1）：按天分桶现用**本地日历天**。修复前写入的旧记录仍按当时的时间戳存储。 |
-| 输出乱码 / `UnicodeEncodeError` | 见 M6：非 UTF-8 locale。设 `LANG=C.UTF-8` 或 `LC_ALL=C.UTF-8`。 |
-| `backups.latest` WARN | 还没跑过 `auto-backup`，或最近 7 天没备份。先用 `skillt auto-backup --dry-run` 看它打算做什么，或直接 `skillt auto-backup` 存一份。 |
-| `backups.scheduled` WARN（`not-found` / `disabled`） | **没有任何排班在准备下一次备份或下一次日志轮转**——定时器单元没装，或者被谁关掉了。这一行和 `backups.latest` 的 PASS 同时出现时，那个 PASS 只说明磁盘上还留着一个旧文件。要上弦就 `./install.sh --with-timer`（装用户 systemd 单元是**刻意做成 opt-in** 的），要么就接受这两件事都是手动的、自己定期跑。 |
-
-日志：插件把错误写到 `~/.config/opencode/logs/`（由 OpenCode 管理）。
+| `no database at … — run: ocut sync` | tracker 库还没建。跑 `ocut sync`。 |
+| `no OpenCode database at …` | `ocut` 找不到 `~/.local/share/opencode/opencode.db`。确认 OpenCode 跑过，或用 `OCUT_HOST_DB` 指过去。 |
+| 插件用量一直空 / 某个插件显示 `0 uses` | 插件用量**只**由 hook 记录，且只在 OpenCode 重启之后。确认 `~/.config/opencode/plugin/ocut-hook.js` 存在（它是个软链接）、重启 OpenCode、并检查 `OCUT_HOOK_DISABLE` 没被设。`0 uses` 的意思是「hook 没记下任何东西」，不是「这个插件没被用过」。 |
+| `ocut: this database is older than this build` | 库早于当前 schema。跑 `ocut sync` 把它前滚。 |
+| `ocut health` 出现 `UNPARSED` 行 | 读取器遇到了它不认识的记录类型或字段——通常在 OpenCode 升级之后。reason 字符串会点名它；见 [compatibility](docs/maintenance/compatibility.md)。 |
+| `ocut health` 报 `settings NOT READ` | `~/.config/ocut/config.toml` 有未知键、TOML 坏了、或取值越界。消息会点名那个键。 |
+| TUI 拒绝启动 | 它需要真正的终端和带 textual 的 venv。跑 `./install.sh`，或把 `OCUT_VENV` 指向一个带 textual 的 python。 |
 
 ---
 
 ## 🚧 已知限制
 
-以下问题在审计中确认存在。此前几轮修掉了界面 / 参数 / 编码相关的几项（M6、Data 页删除入口、参数校验、排序等）；一轮又修掉了 **M1 / M7 / M8 / M9**（下文标注"已修复"）。**本轮（对采集与界面的全面实测）修掉了：dashboard 三张表 Enter 无效、Plugins 页对 `@scope/name` 型插件 Enter 无效、Recent 时间线对含 `:` 的名字 Enter 静默失效、导出泄露历史提示词、`on_mount` 开库无保护、一次失败让半屏数据停在旧值、以及测试对本机 skills 目录的依赖**；并给 `doctor` 加了 `capture.freshness` / `log.errors` / `env.opencode_version` 三项，新增 `skillt scrub-metadata`。其余如实记录、**本次不修**（M14–M18 为本轮新登记）。多数是边界情况，不影响日常使用。
+下面这份清单覆盖 **M1–M12**。
 
-### 🕒 数据与时间
-
-- **M1 按天分桶曾使用 UTC（已修复）。** 旧版 `今日`、`按天趋势` 以 UTC 计算，在 UTC+8 下本地 00:00–08:00 的记录会被算进**前一天**（最多 8 小时/天的错配）。现改为按**本地日历天**分桶（`date(timestamp,'localtime')`）。时间窗口本身（`-N days`）一直是滚动窗口，未受影响。
-- **M2 纯读命令以读写方式打开 DB。** `insight`/`export`/`doctor` 用读写连接（`health` 已改为只读）。另外 `open_db(readonly=True)` 在**路径不存在**时会创建一个空库而不是报错。
-- **M3 迁移的隐式提交。** `ensure_schema` 里的 `executescript` 会隐式提交当前挂起的事务；返回值里 `created_base` 从不置位、`created_versions` 恒为 `True`（仅影响该字典的语义，不影响实际建表）。
-
-### 💾 备份
-
-- **M4 备份权限窗口。** `VACUUM INTO` 完成**之后**才 `chmod 0600`，存在极短的宽松权限窗口；若 VACUUM 失败，可能留下**未清理的半成品文件**（需手工删除）。
-- **M19 两种备份的存放位置不同，保留策略只覆盖其中一个（已修复）。** 旧版里 `auto-backup`（定时器走的那条）写进 `BACKUP_DIR`（`~/.local/share/opencode/backups/`）并按 30 每日 + 12 每月清理，而 `skillt backup`、TUI 的 `b`、以及 `scrub-metadata --yes` / `cleanup-selftest --yes` 前自动写的回滚备份用的是 `backup_db()` 的默认路径——**写在数据库旁边**。那些文件永远不会被保留策略碰到，而且 `doctor backups.latest` 只扫 `BACKUP_DIR`，于是"备份存在"和"体检说没有备份"同时成立。默认路径现已改为 `BACKUP_DIR`，并由 `test_default_backup_lands_in_the_retention_directory` 钉住。此前散落在外的旧文件仍需手工收拢：`mv ~/.local/share/opencode/skill-usage-backup-*.db ~/.local/share/opencode/backups/`。
-
-### 🖥️ 界面
-
-- **M5 TUI 大库会假死。** `VACUUM`/备份/导出/刷新在 **UI 线程同步执行**，库很大时会短暂无响应。
-- **M10 TUI 退出码。** `app.run()` 未包 `try/finally`，致命错误后进程退出码仍可能是 0。
-
-### 🧩 插件
-
-- **M7 git 子进程泄漏（已修复）。** 旧版 `resolveBranch` 的 500ms 超时**不杀 git 子进程、也不清定时器**，在坏挂载点上每次会泄漏一个进程。现改用 `Bun.spawn` + `AbortController`：超时会真正终止子进程（exit 143），并在 `finally` 里 `clearTimeout`。
-- **M8 未做容量上限（已修复）。** `branchByDir` / `pendingSkillPerms` 现与 `sessionCtx` / `callCtx` 一样走 `setCapped`（上限 `MAP_CAP`），不再随进程生命周期增长。另：`skill_db.h()` 仍是死代码（0 调用）。
-- **M9 重试静默失效（已修复）。** 旧版 `initDone = true` 在 `init()` 完成**之前**置位，任何早退都会让后续重试静默 no-op。现在 `initDone` 仅在 schema 创建成功后置位，并发调用由 `initInFlight` 去重，失败后仍可重试。
-- **M11 MCP 服务列表只在插件初始化时解析一次。** 新增或改名一个 MCP 服务后，必须**重启 OpenCode** 它的调用才会被记录；在那之前这些调用是**不可见**的（只是被跳过，**不会**记错）。检测**失败即关闭**：若一个服务都识别不出来，宁可不写，也不去猜哪些工具是 MCP。只记**参数名**、绝不记参数值。
-- **M12 插件清单和归属只在初始化时解析一次。** 静态扫描尽力从插件源码识别工具/命令：读包入口文件，再**跟着它自己 import 的相对路径模块跳一层**（有上界：3 个跳转、每个 256 KiB——发布出去的 `main` 常常只是几百字节的转发壳，真正的注册在它 import 的 chunk 里）；工具 id 取 `tool: {` 里**最浅的有键那一层**，再深就是某个工具自己的 `args: { query: … }`，不是工具。新增、升级、改名插件或它注册的工具/命令后，必须**重启 OpenCode** 才会刷新。工具无法归属时记录为 `(unknown)`；命令无法明确归属时**不记录**（失败即关闭，避免把 `/init` 等内置命令误记成插件）。每一行还记下**是哪份配置声明了它**（`global` / `localdir` / `project`）：后一次启动再见不到的 `global`/`localdir` 行会被删掉，所以页面上那一列说的是"启动时加载了什么"，不再是"这个库建好以来曾经见过什么"；`project` 行不在别处删——换个目录启动的会话本来就看不见它。
-- **M13 内置工具 allowlist 与 OpenCode 1.18.34 对齐并硬编码**（2026-10-03 用 `curl /experimental/tool/ids` 对 `opencode serve --pure`（不加载任何插件）实测；这十四个 id 与 1.18.33 完全一致，只是把版本标注往前挪了）。** 如果 OpenCode 升级后新增了内置工具，而 tracker 尚未更新，它可能被当作 `(unknown)` 插件工具记录；可用 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` 覆盖 allowlist，或等待 tracker 更新。
-
-### 🔤 编码
-
-- **M6 非 UTF-8 locale 乱码（已缓解）。** `--cli` 与 TUI 启动时会把 `stdout`/`stderr` 重设为 UTF-8（`errors="replace"`），因此**不再**抛 `UnicodeEncodeError`。但 `█ ⚠ … Δ` 等字符在极端 locale 下仍可能显示为替代字符；设 `LANG=C.UTF-8` 可完全避免。
-
-### 🆕 本轮审计新增（M14–M18）
-
-- **M14 历史行里可能仍有用户提示词原文（写入与导出已封住；库里数据已清理，备份文件仍有）。** 更早的版本把会话摘要写进 `metadata.summary`，其中包含**用户提示词原文**。写入处已删除、`__selftest` 也断言不再写入、`export` 现在只输出白名单键（`tool/call_id/agent/model/branch/source/error`）。2026-10-01 已用 `skillt scrub-metadata --yes` 清掉生产库里命中的 **40 行**（skill 17 / mcp 10 / plugin 13，用量行保留、`error` 文本 46 条保留）。**但清理之前形成的备份文件里仍是原文**——包括本次 `--yes` 之前自动写的那份回滚备份。2026-10-01 已把 3 个仍含原文的散落备份删除，并对生产库做了 VACUUM；`grep` 你的原话在 tracker 的所有文件里已经搜不到。任何时候都可以重跑 `skillt scrub-metadata` 验证：应当报告 0 行命中。
-  scrubber 知道的另一个自由文本键——权限 `title`——**现在根本不再被读取**：2026-10-09 起写入端一个都不写，
-  新发生的拒绝事件不可能再带回来，名单里留着 `title` 只为处理历史行。
-  另一个容易漏掉的事实：**删掉值不等于删掉字节**。WAL 模式下被替换的旧内容会留在 `-wal` 文件里直到 checkpoint，所以 `--yes` 结束时执行 `wal_checkpoint(TRUNCATE)`；库正忙时会明确告知，此时关掉 OpenCode 再跑一次 `skillt vacuum`。检查方法见 MAINTENANCE §3。
-- **M15 没跑完的调用完全不留痕。** 用量行只在 `tool.execute.after` 或 `message.part.updated` 落地；`tool.execute.before` 仅把开始时间放在内存里。因此被中断、崩溃、或 after 钩子没触发的调用**一行都不会写**——不是记错，是**看不见**。`trigger_type` 的含义是"哪条路径先写入了这行"，不是"这个调用是怎么被发现的"。
-- **M16 一次 git 失败会把该目录的 branch 永久缓存成 null。** `branchByDir` 缓存失败结果以避免热循环重复 fork（M7/M8 的取舍），直到 `vcs.branch.updated` 事件或进程退出才刷新。实测生产库里 598 行中 571 行 `branch` 为 null（主因是这些会话的工作目录本身不是 git 仓库，但一次 500ms 超时会把真仓库也钉成 null）。
-- **M17 插件日志会一直长。** `~/.config/opencode/logs/skill-tracker.log` 每次 init/dispose 各加一行（2026-10-09 实测 74.4 行/天；重测的命令在 [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §4，「离上界还有多远」的算术也在那里），而它同时是 `doctor log.errors` 唯一的错误来源——**日志被删掉等于错误历史被删掉**。**两侧现在都上了界。** 读取端只从文件**开头**数前 `log.max_bytes`（默认 4 MiB，这个上界是本项目自己选的数），并在结论里写明"只覆盖前 N 字节，是下限不是总数"；写入端由 `skillt rotate-log` 在**同一个数**（一个设置，两边各自解析后再用，不是两处约定）处改名，保留 `log.keep_files` 份轮转。仍要说清的是历史的形状：除非装了备份 timer（`./install.sh --with-timer`），轮转是手动动作——而没人轮转的日志，一旦被上界截断，就不再是证据了。
-- **M22（2026-10-12 撤回，D-053）** 原文：claude-mem 的数字来自别人的 schema，而且它们只是数字。那个读取端已经跟着 `skillt claude-mem` 一起没了。它教下的东西留下，而适用对象现在是宿主自己的文件与那份日志：外来的字段按名字**和**类型读；一个可能装着散文的外来取值**只数、不读**（`SKILL.md` 的正文与日志行里的消息文本各贡献一个形状、一个计数，绝不贡献原文）；解析不了的行计入 `unparsed`，不会被悄悄丢掉；带字节上限的扫描要写明 `truncated`，此时数字是下界不是总量。本项目若再去读一个外来**库**，这些规则得连同它自己的守卫一起回来，并点名写进 `AGENTS.md`。
-- **M23 Agents 页统计的是某一行的 session **首次**上报的 agent，不是跑掉这次调用的那个 agent。** 三张用量表的 upsert 都写成 `metadata = COALESCE(existing, excluded)`，谁先写进这一行的 JSON 就永远冻在这儿；而 `agent` 只在更晚的 `chat.message` 里才到。于是在它的 session 报出 agent 之前落库的调用会**永远**是 `(unknown)`——`(unknown)` 量的是**采集顺序**，不是「无主的调用」。它连同自己的计数一起显示，为的就是这张表不能被读成「这些 agent 干了这些」。2026-10-03 的两份备份实测：619 行与 664 行里，没有 agent 的是 0 行，所以正常机器上这个桶是空的；写下来是因为它**从页面上推导不出来**。
-- **M24 子 agent 里没用到「被测工具」时，它的工作是看不见的。** `task` 是内置工具，而内置是刻意不测的（M13），所以一条启动记录就是「它跑过」的唯一证据：宿主被要求用哪个名字、它拿到哪个子会话、有没有跑完、跑了多久。由此有两件事要钉住。其一，Agents 页的 `Spawned` 数的是**启动次数**，绝不并入 `Total`——否则同一列今天叫「调用」、明天叫「调用加事件」。其二，名字来自宿主的 `subagent_type` 参数，只有**长得像一个标签**才准入（`SUBAGENT_LABEL_RE`：不含空格、不含路径、至多 40 字符）；这是**形状**判定，不是「散文探测器」，不合格的值会被计成 `(unnamed)` 而不是打印出来。同一段载荷里的任务原文、一句话描述、title、子 agent 的回报与报错字符串，一行都不进表——写入端除了这几个标识符字段外不点任何字段名。这条流在旧库上起点是空的：表要等下一个会迁移的入口（`skillt`、`sync`、`doctor`）跑过才出现，而正在运行的 OpenCode 要**重启**才会加载新的写入端，所以在这些之前开始的会话里 `Spawned` 会显示 0。想关掉就设 `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1`；至于宿主对内置工具究竟会触发 hook 还是事件——这里**不赌**，两条路都写，由 `(parent_session_id, call_id)` 决定只留一行。同一条边界也让一行可以是「缺席」而不是「错」：`Ran as` 说不含写入端存在之前跑过的子 agent。要恢复那段历史技术上很干净——OpenCode 自己的 `opencode.db`里每条 `task` 都带着 `subagent_type` 和两个会话 id——但这里**刻意不做**，因为它会给本项目加一个正在被写的外来库；这个取舍记在 §8 暂缓表里，让「没实现」和「没决定」以后还看得出来。
-- **M21（2026-10-12 撤回，D-053）** 原文：顾问的单次预算是抄来的默认值。tracker 没法跨那道缝读 `AOS_TIMEOUT_MS`，所以"是否超预算"用的是 AgentOS 文档里的默认值 1200ms，除非用 `OPENCODE_SKILL_TRACKER_AOS_TIMEOUT_MS` 覆盖。顾问的读取端跟着那条命令一起走了，于是再也没有一道缝需要跨过去抄。但它警告过的那个形状仍然是规则：**从别人的默认值取来的上界会安静地失效**，所以任何外来取值都要写在读它的人看得见的地方——M13 干的就是这件事。
-- **M18 后到的错误文本可能被丢弃。** 三条 UPSERT 都用 `metadata = COALESCE(已存在, 新来的)`：若 `after` 钩子先写了一行、随后事件路径带着真正的报错文本到达，`status` 会被纠正为 `error`（单调规则），但 `metadata.error` **不会**被补进去。承载去重不变量，本轮不动。
-
-- **M20 `denied` 行在 OpenCode 1.18.33 上不可能出现。** 拒绝事件确实会送到 tracker——走事件总线的 `permission.asked` 再接 `permission.replied`（字段是 `requestID` 与 `reply: "reject"`，被拒的调用在 `tool.callID`，id 在 `id`；2026-10-01 实测），现在也能被正确记录。但宿主只对五个权限类别设门（`edit`、`bash`、`webfetch`、`doom_loop`、`external_directory`），**这五类都不是本 tracker 度量的对象**：skill、MCP 工具、插件工具都不询问直接执行，被拒的 `bash` 又是刻意不记录的。所以这个版本上任何表都不会出现 denied。旧代码还监听 `permission.updated`、读 `permissionID`/`response`——1.18.33 从不发这些名字，该错配已修，并由 `test_permission_rejection_writes_a_denied_row` 用真实形状钉住；剩下的这条是**宿主边界**，不是 tracker 缺陷。
-
-### 🧪 插件自测（重要）
-
-- **`__selftest()` 必须使用隔离数据库。** 自测会在库里插入 `call-test-*` 合成行。现在它会在**打开任何数据库之前**检查环境变量：
-  - 未设置 `OPENCODE_SKILL_TRACKER_DB`，或
-  - 该变量解析后等于默认生产路径
-  则直接抛出 `Selftest requires isolated database`。请始终这样跑自测：
-
-  ```bash
-  OPENCODE_SKILL_TRACKER_DB=/tmp/st-selftest-$$.db \
-    bun -e 'import("~/.config/opencode/plugin/skill-tracker.js").then(m => m.__selftest())'
-  ```
-
-  如果历史上被污染过，用 `skillt cleanup-selftest --yes` 清理。
-
-- **自测现在连日志一起隔离。** 它会写自己的 `skill-tracker-selftest.log`，位置就在那个临时库旁边——除非你用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定了别的路径（那样就尊重你的选择）。在此之前，一次**手工跑的失败自测**会把 `[err] selftest FAIL` 写进 `~/.config/opencode/logs/skill-tracker.log`，也就是 `skillt doctor` 读的那份日志，于是 `log.errors` 会长期把它们当成插件故障来报。现在成功的运行也会留下自己的两行（`selftest start` / `selftest done: N/N passed`），而且只留在自己的文件里。
-
-### 📜 插件导出契约（重要）
-
-- **`plugin/skill-tracker.js` 只能通过 `export default { id, server }` 暴露插件工厂。**
-  OpenCode 1.18.32 的加载器会把插件模块里**每一个导出函数都当作插件工厂**来调用，只有 default 导出是含 `server` 的对象时才会停止遍历：
-
-  ```js
-  export default { id: "skill-tracker", server: skillTrackerPlugin };
-  ```
-
-- **不要新增具名 `export function`**（`parseFrontmatter` / `sanitize` / `__selftest` 已经是这样导出的，仅供测试与手动自测使用）。如果 default 退回成裸函数 `export default fn`，加载器就会去遍历这些具名导出——`__selftest` 的隔离守卫会 `throw`，导致**整个插件加载失败、所有 hook 都不注册、`skill_usage` 永远是空的**。
-- 排查方式：加载失败**不会**写进本插件自己的日志，只会出现在 OpenCode 的运行日志里：
-
-  ```bash
-  grep 'failed to load plugin' ~/.local/share/opencode/log/opencode.log | tail
-  ```
-
-  看到 `path=file://.../plugin/skill-tracker.js` 即为插件加载失败。
-- 相关回归测试：`scripts/tests/test_plugin.py` 里的 `test_loader_does_not_enumerate_exports`（复刻加载器逻辑，需要 `bun`）。
-
-### ⚠️ 同名 skill（潜在）
-
-- `skills.name` **没有唯一约束**（`path` 才有）。当前 37 个 skill 的名称全部唯一，所以暂未触发。
-- 若将来出现两个 SKILL.md 同名：
-  - TUI 的 Skills 表以 `path` 作行 key，**不会崩溃**；
-  - 但 `delete_skill` 按 `name` 删除，会**同时删掉同名项**的记录。删除前请确认名称唯一。
-  - 开源 skill 从上游重新同步后可能出现重名，届时请注意。
-
-### 🚦 状态语义
-
-- **event 的 `error` 可单向覆盖已记录的 `success`。** 这是刻意的修正：若一次 skill 调用先被 `tool.execute.after` 记为 success，随后 event 报错，则状态会被纠正为 `error`；反向（success 覆盖 error/denied）**不会**发生，`denied` 也不会被覆盖。event 的错误文本不会并入 `metadata`。
+- **M1** OpenCode 自己的数据库是**事实来源**。`ocut` 只看得见宿主写下的东西；宿主从没为某次调用
+  写下 `part`，它就是不可见，而不是被记错。
+- **M2** 宿主数据库与配置只读、**从不写入宿主**——以 `mode=ro` 打开并设 `PRAGMA query_only = ON`。
+  因此 `ocut` 无法修复或回填宿主，只能索引它。
+- **M3** 插件用量需要那个可选的 hook **以及**一次 OpenCode 重启。在那之前 `plugin_usage` 是空的，
+  Plugins 页上的 `0 uses` 意思是**没有任何记录**，不是「没用过」。
+- **M4** hook 的归属是一次尽力而为的**静态扫描**，扫每个插件的源码。扫描解析不出某个插件的面时，
+  它就什么都不记——这是诚实的，因为猜一个归属比缺一行更糟。新增或改名的插件需要重启。
+- **M5** 插件调用的 `ts` 是 **hook 自己的时钟**，不是宿主的；它的 status 是 NULL——工具的 after-hook
+  不带状态，命令则根本没有 after-hook。
+- **M6** 当 OpenCode 的持久化格式变了，读取器把这条记录计成 `unparsed` 而不是去猜。升级之后
+  `ocut health` 的 `UNPARSED` 行跳变，说明格式变了，不是你不用某个工具了。
+- **M7** 从不存消息或工具的散文。part 的 `output`、`title`、`metadata`、`error`，`text`/`reasoning`
+  正文，以及会话 `title`，读取器都不点它们的名字；落库的只有标识符、状态、时长与计数。**消息正文**
+  永不落盘。
+- **M8** 每步的 `model_calls` 与宿主的按会话 rollup `sessions` 是同一测量的两个粒度。它们并排显示，
+  **绝不相加**。
+- **M9** MCP 调用按名字对照宿主自己的配置归属，**最长前缀**优先。没有哪个已配置服务认领的工具名不会
+  被猜进某个服务；它保持 `builtin`，并作为「server 形状但无主」被报出来。
+- **M10** 插件用量 sidecar 有上限、靠**截断**轮转（8 MiB）。读取器发现文件比游标短，就从开头重读——
+  幂等，因为每条记录都以自己的 id 为键。
+- **M11** Plugins 页是**已安装**与「有用量」的并集，按名字作键。装过但没用的插件显示 0 计数；有用量
+  但没有 inventory 行的插件照样出现。
+- **M12** 备份是手动的、只在破坏性操作之前。**没有 systemd** timer 了；保留策略只留最新五份托管快照，
+  从不碰手工副本。
 
 ---
 
@@ -627,54 +408,39 @@ skillt doctor
 
 | 路径 | 作用 |
 |---|---|
-| `~/.config/opencode/plugin/skill-tracker.js` | OpenCode 插件，唯一的写入方（**不要改捕获逻辑**） |
-| `~/.config/opencode/scripts/skill_db.py` | 共享数据层（schema/迁移/查询/导出/备份），**只装 tracker 自己的数据** |
-| `~/.config/opencode/scripts/opencode_compat.py` | **上游契约（Python 侧唯一副本）**：OpenCode 自己选的名字（hook 名、事件类型、载荷字段路径、它的目录布局、版本 pin）。写入端在 `plugin/skill-tracker.js` 的 `CONTRACT` 块里有对应的另一份，`test_compat.py` 按值比对两者。本工具自己定的数字与策略不放这里 |
-| `~/.config/opencode/scripts/skill-tui.py` | TUI + `--cli` 无头子命令 |
-| `~/.config/opencode/scripts/skill-stats.py` | 旧版 CLI（命令/参数向后兼容，只读） |
-| `~/.config/opencode/scripts/tests/` | pytest 测试 |
-| `docs/maintenance/`（只在仓库里，不安装） | 三份参考：`compatibility.md`（每条说法属于哪个 OpenCode 版本）、`opencode-interface.md`（本项目按名字读取的每一个宿主名词）、`measurements.md`（本仓库里任何一体积 / 速率 / 时长背后的那条命令） |
-| `~/.config/opencode/skill-tracker/` | **本目录**：文档 + systemd 单元 |
-| `~/.local/bin/skillt` | 统一入口（bash 分发器；`skill-tracker` 是它的软链接） |
-| `~/.local/share/opencode/skill-usage.db` | 主数据库（WAL 模式，0600） |
-| `~/.local/share/opencode/backups/` | 备份专用目录（0700），`auto-backup`、`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份**都写这里**（M19 已修，之前有两条路径写到了库旁边） |
-| `~/.local/share/opencode/skillt-venv/` | 给 TUI 用的 Python 虚拟环境（含 textual） |
+| `bin/ocut` | bash 分发器（位置无关，靠软链接自解析） |
+| `plugin/ocut-hook.js` | 唯一一个可选 OpenCode 插件——写 sidecar，从不打开宿主库 |
+| `scripts/ocut_db.py` | 共享数据层：schema、设置、查询、快照 |
+| `scripts/ocut-sync.py` | 被动读取器：宿主库 → tracker 库 |
+| `scripts/ocut-tui.py` | Textual TUI（八个 tab） |
+| `scripts/ocut-stats.py` | 无头报表（仅标准库） |
+| `scripts/tests/` | pytest 测试 |
+| `docs/maintenance/` | 四份参考：`compatibility.md`（每条说法属于哪个版本）、`opencode-interface.md`（按名字读取的每个宿主名词）、`measurements.md`（任何体积 / 速率 / 时长背后的命令）、`opencode-format.md`（`ocut format` 生成） |
+| `~/.local/share/opencode-usage-tracker/usage.db` | 主数据库（WAL 模式） |
+| `~/.local/share/opencode-usage-tracker/plugin-events.jsonl` | 插件用量 sidecar |
 
-> **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：
-> 每日 / 每周 / 每月该查什么、把 tracker 与 `opencode.db` 对账的方法、每条不变量对应哪个测试、
-> 以及哪些缺陷是**刻意不修**的（别顺手改回去）。它后面那三份参考是活得比一次编辑更久的部分。
+> **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：该查什么、每条不变量
+> 对应哪个测试、以及哪些缺陷是**刻意不修**的（别顺手改回去）。它后面那三份参考是活得比一次编辑更久的部分。
 
 ---
 
 ## 🧹 卸载
 
-按粒度从轻到重：
-
 ```bash
-# 1) 只清空使用记录，保留 skills 列表
-skillt clear                      # 旧版 CLI（需确认）
-# 或 TUI Data 页「清空 usage」按钮
+rm ~/.local/bin/ocut
+rm ~/.config/opencode/plugin/ocut-hook.js
 
-# 2) 删除某个 skill 的全部记录（usage + 版本 + skills 行）
-skillt delete <name>              # 旧版 CLI
-# 或 TUI：切到 Skills 页 → j/k 选中 → 按 d → 确认
+# venv（如果你装过）
+rm -rf .venv
 
-# 3) 清除 __selftest 遗留的合成行
-skillt cleanup-selftest           # dry-run
-skillt cleanup-selftest --yes     # 真删（自动先备份）
+# 数据——删前先备份
+rm ~/.local/share/opencode-usage-tracker/usage.db*
+rm -rf ~/.local/share/opencode-usage-tracker/backups
+rm ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
 ```
 
-完全移除本工具：
-
-```bash
-rm ~/.local/bin/skillt ~/.local/bin/skill-tracker
-rm ~/.config/opencode/plugin/skill-tracker.js
-rm -rf ~/.config/opencode/scripts ~/.config/opencode/skill-tracker
-rm -rf ~/.local/share/opencode/skillt-venv
-# 数据（谨慎，删前先备份）
-rm ~/.local/share/opencode/skill-usage.db*
-rm -rf ~/.local/share/opencode/backups
-```
+`ocut` 除了 `install.sh` 那一个软链接之外，从不往 `~/.config/opencode` 写任何东西，所以删掉那个
+链接和启动器就是一次完整卸载。
 
 ---
 
@@ -683,12 +449,11 @@ rm -rf ~/.local/share/opencode/backups
 欢迎提交 Issue 与 Pull Request。提交前请确保测试全绿：
 
 ```bash
-python3 -m pytest scripts/tests -q     # 仅标准库；TUI 测试会被跳过
+python3 -m pytest scripts/tests -q     # 仅标准库；TUI 测试需要 textual
 ```
 
-改动请保持聚焦；若改动了已记录的行为，请**同时**更新 `README.md` 与
-`README.zh-CN.md` —— `scripts/tests/test_readme.py` 会校验中文文档覆盖了全部
-已知限制（M1–M24）。
+改动请保持聚焦；若改动了已记录的行为，请**同时**更新 `README.md` 与 `README.zh-CN.md`——
+`scripts/tests/test_readme.py` 会校验两份 README 载有同样的限制、同样的 tab 与同样的按键。
 
 ---
 

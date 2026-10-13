@@ -14,507 +14,239 @@ This repository is public.
 
 ## What this is
 
-An OpenCode plugin plus a CLI/TUI that records **skill, MCP tool and plugin
-usage** into a local SQLite database, plus one builtin exception: that a
-**subagent** was started (`subagent_usage`, identifiers only — see the rule
-below). Three layers, in dependency order:
+`ocut` — a **passive reader** of OpenCode's own SQLite database plus one optional plugin
+hook, and the CLI/TUI that report over the result. Three layers, in dependency order:
 
-1. `plugin/skill-tracker.js` — the **only writer**. Runs inside OpenCode's Bun
-   runtime. Listens on `tool.execute.before` / `tool.execute.after` /
-   `permission.ask` / `command.execute.before` / `event` / `chat.message` /
-   `chat.params` / `dispose`, all of them registered through one `CONTRACT` block.
-   Every registered tool goes through the same wrapper, so MCP and plugin tools
-   are captured alongside skills; an MCP tool id is `{server}_{tool}` and is
-   resolved against the configured server list by longest-prefix match. Plugin
-   surfaces are best-effort statically scanned once at init (the entry file plus
-   one hop into its relative imports; tool ids are the keys at the shallowest
-   level of the `tool: { … }` object); unresolved tools
-   become `(unknown)`, while unresolved commands are dropped fail-closed.
-2. `scripts/skill_db.py` — the shared data layer (schema, migrations, queries,
-   export, backup). Imported by both the TUI and the tests. It holds **only** the
-   tracker's own data.
-3. `scripts/skill-tui.py` (Textual TUI + `--cli` headless subcommands) and
-   `scripts/skill-stats.py` (legacy CLI). Read-only apart from explicit
-   `delete` / `clear` / `backup` / `vacuum`.
+1. `scripts/ocut-sync.py` — the **indexer**. Opens OpenCode's own
+   `~/.local/share/opencode/opencode.db` `mode=ro` with `PRAGMA query_only = ON` and copies
+   what it needs into the tracker's own database. It reads three host tables (`session`,
+   `message`, `part`), classifies each `tool` part (a builtin, the `skill` tool, the `task`
+   tool, or an MCP server's tool), and reads each `step-finish` part's tokens. A record it
+   cannot use is counted in `unparsed`, never dropped. The OpenCode format registry at the
+   top of the file is the single list of host names it depends on; `ocut format` prints it.
+2. `scripts/ocut_db.py` — the shared data layer: the schema (`TABLES_SQL` + `VIEWS_SQL`), the
+   settings registry (`DEFAULTS`, `ENV_NAMES`, `_BOUNDS`, `load_config`), the queries, and
+   the snapshot/restore helpers. Imported by the indexer, the CLI and the TUI.
+3. `scripts/ocut-tui.py` (the eight-tab Textual TUI) and `scripts/ocut-stats.py` (the
+   headless reports). Read-only over the tracker database.
 
-OpenCode's own `opencode.db` is **not** a data source for this project: it holds the
-subagent history our writer predates, and reading a live foreign database for it was
-considered and declined (MAINTENANCE §8).
+`plugin/ocut-hook.js` is the **only** thing outside the reader that writes anything, and it
+writes only its own sidecar (`~/.local/share/opencode-usage-tracker/plugin-events.jsonl`).
+OpenCode names no plugin behind a tool call and records nothing for a command, so the hook
+scans each installed plugin's source at load and appends `surface` and `call` records; it
+never opens OpenCode's database, never writes under `~/.config/opencode`, and never reads a
+tool's arguments, output or any message text.
 
-`bin/skillt` is a bash dispatcher that resolves its own location through
-symlinks and execs one of the above.
-
-`scripts/opencode_compat.py` is **not** a fourth layer: it is the single place
-where OpenCode's own names are written down (hook ids, event types, payload field
-paths, the host's directory layout, the version pins, the derived `source` and
-`status` vocabularies). Everything else in the project refers to it.
-
-`scripts/settings.py` is **not** a configuration system either: it is one registry
-of numbers this project already used, each with a default, a floor, a flag and a
-two-language explanation. `skillt config` reads and writes it, `bin/skillt` passes
-the resolved values down, and no module consults the environment for one of these
-again. It is separate from `opencode_compat.py` because the two answer different
-questions — *what does the host call this?* versus *what number does the owner
-want?* — and an OpenCode upgrade must never be able to change an owner's setting.
+`bin/ocut` is a bash dispatcher that resolves its own location through symlinks and execs one
+of the above; global value flags may sit before or after the subcommand.
 
 ## Commands
 
 ```bash
-python3 -m pytest scripts/tests -q                                   # L0
-.venv/bin/python -m pytest scripts/tests -q                          # the same suite, venv interpreter
-OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist python3 -m pytest scripts/tests -q   # L0, hermetic
-bash -n bin/skillt                                                   # syntax-check the dispatcher
-./install.sh                                                         # create .venv + link install locations
+python3 -m pytest scripts/tests -q                     # standard library only; TUI files skip
+.venv/bin/python -m pytest scripts/tests -q            # the same suite, venv interpreter
+bash -n bin/ocut                                       # syntax-check the dispatcher
+./install.sh                                           # create .venv + link install locations
+ocut sync                                              # index the host database
+ocut health                                            # the aggregate: cursors, unparsed, totals
 ```
 
-Three commands, one tier: the third proves the suite never reaches this machine's
-real skills directory. `requirements.txt` is `textual`, so **an interpreter without
-textual installed skips the TUI files** — on this host both interpreters carry
-8.2.8 and all of it runs, so the venv command is not a stronger tier and neither
-one proves the other passed. Run both anyway: the shipped `pyproject.toml` pins
-`textual>=8.2,<9`, and an interpreter that silently skips half the suite is how a
-green local run stops meaning anything. Never write a case count into this file:
-the suite prints it.
+`requirements.txt` is `textual`, so **an interpreter without textual skips the TUI files** —
+on this host both interpreters carry it and all of it runs, so the venv command is not a
+stronger tier and neither one proves the other passed. Run both anyway. Never write a case
+count into this file: the suite prints it.
 
-Single file: `python3 -m pytest scripts/tests/test_sort.py -q`.
+Single file: `python3 -m pytest scripts/tests/test_ocut_sync.py -q`.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every `push` and `pull_request`, on
-`ubuntu-latest` with a Python matrix of **3.11 and 3.14** — the floor
-(`pyproject.toml` `requires-python`) and the README's declared upper bound. It
-installs `requirements.txt` and `requirements-dev.txt`, then runs the gate:
+`.github/workflows/ci.yml` runs on every `push` and `pull_request`, on `ubuntu-latest` with a
+Python matrix of **3.11 and 3.14** — the floor (`pyproject.toml` `requires-python`) and the
+README's declared upper bound. It installs `requirements.txt` and `requirements-dev.txt`,
+then runs the gate:
 
 ```bash
 python3 -m pytest scripts/tests -q
 ```
 
-That command installs `requirements.txt` first, which is textual, so **CI runs the
-TUI files too** — they are not a local-only tier. What CI does not run is everything
-gated on a binary or an install it does not have: the `requires_bun` tests (the
-runner has no bun) and `test_dispatcher.py` (it skips unless `~/.local/bin/skillt`
-exists). That is the whole difference between a CI count and a local one — the last
-run ends with a pile of skips while this machine records the same suite with none —
-so compare the two logs rather than assuming a tier is missing, and never copy either
-total into a document (a CI count and a local count differ by the host's binaries, not
-by what the suite contains).
-The suite must stay green: a red build is a stop, not a warning, and it is
-the same check you run locally. Read the result after every push:
-`gh run view <id> --log`.
+That command installs `requirements.txt` first, which is textual, so the TUI files run there
+too — they are not a local-only tier. What CI does not run is anything gated on a binary the
+runner lacks; compare the two logs rather than assuming a tier is missing, and never copy
+either total into a document (a CI count and a local count differ by the host's binaries, not
+by what the suite contains). The suite must stay green: a red build is a stop, not a warning.
+Read the result after every push: `gh run view <id> --log`.
 
-**CI covers what has been pushed, and nothing else.** There is no `paths-ignore`, so a commit that
-stays on this machine has never been seen by CI — measured 2026-10-10, the previous green run's
-`headSha` (read with `gh run view <id> --json headSha,conclusion`) was the round's *starting*
-commit, which left 38 commits of work with zero CI coverage until the push. So "the suite is green
-here" and "CI is green" are two claims, never one by proxy. The gap between their numbers is
-*counted*, not assumed: `requires_bun` (27) + the whole of `test_dispatcher.py` (23) are the
-runner's 50 skips, and the runner's passes plus those skips equal this machine's total. Commands
-and dated readings: [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §10.
+**CI covers what has been pushed, and nothing else.** There is no `paths-ignore`, so a commit
+that stays on this machine has never been seen by CI. "The suite is green here" and "CI is
+green" are two claims, never one by proxy.
 
-The checkout must fetch full history (`fetch-depth: 0`): the record-coverage
-test walks `git log <anchor>..HEAD` back to the coverage anchor, which a
-shallow clone cannot resolve.
+The checkout must fetch full history (`fetch-depth: 0`): the record-coverage test walks
+`git log <anchor>..HEAD` back to the coverage anchor, which a shallow clone cannot resolve.
 
 **CI maintenance:**
 
-- **Keep CI in step with the code.** Update `.github/workflows/ci.yml` in the *same change* that
-  makes it stale — never as a later cleanup.
-- **New or renamed tests need no CI edit** as long as CI runs the suite command
-  (`python3 -m pytest scripts/tests`); it does, so it picks them up automatically. Only touch CI if
-  the *command itself* changes.
-- **Environment changes** — a new dependency, a Python version bump, or a new system tool — mean
+- **Keep CI in step with the code.** Update `.github/workflows/ci.yml` in the *same change*
+  that makes it stale — never as a later cleanup.
+- **New or renamed tests need no CI edit** as long as CI runs the suite command; it does.
+- **Environment changes** — a new dependency, a Python version bump, a new system tool — mean
   updating the workflow's setup/install steps.
-- **Renamed or moved code**: the record-coverage test watches a declared list of code paths. If a
-  watched path moves, update that list; the test goes red until you do.
-- **After a refactor**, confirm CI still exercises the real code and the declared paths still cover
-  it. A green CI that no longer touches the changed code is worse than a red one.
-- **A new verification tier** (e.g. a live/TUI layer) — decide explicitly whether CI runs it; do not
-  add it silently.
-- If what CI runs changes, update this section too. CI is a signal, not a gate, until branch protection
-  is enabled — read the result after every push. `gh run watch <id> --exit-status` gives the verdict as
-  an exit code (0 = success), which is how these runs were read; `gh run view <id> --json headSha,conclusion`
-  says **which commit** it judged.
-- **A dated one: `ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19**, read off the runner's own warning
-  on 2026-10-10. If CI turns red around that date with nothing local changed, suspect the image before the
-  code; pinning `runs-on: ubuntu-24.04` is the fallback, and it is a workflow change this section must
-  then record. The same run also warns that `actions/checkout@v4` / `actions/setup-python@v5` are being
-  forced onto Node 24 — harmless today, and the reason a future CI edit may bump those two.
+- **Renamed or moved code**: the record-coverage test watches a declared list of code paths.
+  If a watched path moves, update that list; the test goes red until you do.
+- **A dated one: `ubuntu-latest` migrates to a new Ubuntu release periodically.** If CI turns
+  red around such a date with nothing local changed, suspect the image before the code;
+  pinning `runs-on` is the fallback, and it is a workflow change this section must record.
 
 ## Release / version
 
-The package version lives in `pyproject.toml` (`version = "0.1.0"` today) and is
-the only version source. Bump it when what is published changes — for a release,
-not for an ordinary commit.
+The package version lives in `pyproject.toml` and is the only version source. Bump it when
+what is published changes — for a release, not for an ordinary commit.
 
-It is **separate from `SCHEMA_VERSION`** in `skill_db.py` and from the export
-document's `schema_version`: those are *data* versions, bumped when the database
-schema or the export shape changes. The package version tracks the release of
-the code; the schema versions track the data. Never conflate them.
+It is **separate from `SCHEMA_VERSION`** in `ocut_db.py`: that is a *data* version, bumped
+when the database schema or a view changes. The package version tracks the release of the
+code; the schema version tracks the data. Never conflate them.
 
 ## Hard rules
 
-- **Plugin export contract.** `plugin/skill-tracker.js` must expose its factory
-  only as `export default { id, server }`. OpenCode 1.18.32 invokes *every*
-  exported function in a plugin module as a factory and stops only when the
-  default export is an object carrying `server`. Adding a named `export
-  function` — or regressing the default export to a bare function — makes the
-  loader call `__selftest`, whose isolation guard throws, which aborts the whole
-  plugin load and silently stops all recording. Covered by
-  `test_loader_does_not_enumerate_exports` in `scripts/tests/test_plugin.py`.
-- **Do not change the capture logic in the plugin** without tests. Writes are
-  deduplicated by `UNIQUE(session_id, call_id)` + `ON CONFLICT` upsert; that
-  invariant is load-bearing.
-- **A foreign *file* is read as counts, never as content.** Anything outside this
-  project's own database belongs to somebody else: `~/.config/opencode/skills` and the
-  host's config are opened read-only, and the plugin log the host appends to is
-  scanned from the **start** under a byte cap — a tail is blind to the early part, and
-  when the cap bites the result says `truncated` so its counts read as floors, not
-  totals. A line that matches no known shape lands in `unparsed` instead of vanishing,
-  and a foreign field contributes only what is label-shaped: `SKILL.md` frontmatter
-  yields `name` and the `source`/`category` derived from its path, never the body.
-  Guards: `test_scan_sync.py`, `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`,
-  `test_the_rotation_cap_is_the_number_the_reader_reads`.
-    **What died with the neighbours (2026-10-12, D-### below):** the claude-mem ledger
-    reader, the AgentOS advisor reader, and with them `_short_label`, `_numbers_only`,
-    `_project_loop`, `_count_only`, `CLAUDE_MEM_FORBIDDEN_FILES` and the rule that a
-    foreign *store* is opened with `mode=ro` and never through `open_db()` — that
-    helper falls back to read-write and creates a missing file, which would hand a
-    foreign store to a "read-only" reader. The rule outlives its subjects: the first
-    foreign **store** this project reads again must come back under it, with its own
-    check named in the invariant table.
-- **No HTTP and no subprocess on the repaint path.** A keystroke (throttled by
-  `REFRESH_STALE_AFTER_S`), a tab activation and `r` all re-render, so one network
-  wait there freezes the interface for the same reason app timers are banned —
-  different mechanism, identical failure.
-  `test_no_http_is_reachable_from_the_tui_refresh_path` pins it by arming three
-  standard-library doors (`urllib.request.urlopen`, `http.client.HTTPConnection`,
-  `socket.create_connection`), requiring that each stub actually answered, and then
-  visiting every page, `s` and `r`: no door may answer. `socket.socket` is
-  deliberately **not** patched — asyncio's own selector loop builds its self-pipe
-  through it, so patching that makes the harness fail rather than the app, which is an
-  instrument error and not a finding. The two `subprocess.run` calls in this file are
-  `doctor`'s host questions (`opencode --version`, `systemctl --user is-enabled`); they
-  are reachable only from the headless commands, and
-  `test_the_timer_check_never_fails_and_never_shells_out_uninvited` keeps them there.
-- **A setting is a registry entry or it does not exist.** `scripts/settings.py` is
-  the only place a knob is declared: default, floor, flag, and an explanation in
-  both languages, or `test_every_key_carries_an_explanation_in_both_languages` and
-  `test_every_setting_is_documented_in_both_readmes` fail. Precedence is one rule and
-  it is not negotiable: **flag > config file > environment > default**
-  (`test_precedence_is_flag_then_file_then_env_then_default`). The file is
-  `~/.local/share/opencode/skillt-config.json` — never anything under
-  `~/.config/opencode/**`, which is the host's: TOML there is read-only for us and a
-  writer would eat its comments. Env names are *derived* from the key
-  (`OPENCODE_SKILL_TRACKER_` + key with `.` → `_`), so a new key brings its own
-  override and cannot be forgotten. A rejected value is reported as rejected rather
-  than disguised as a default, and a file that does not parse is never rewritten —
-  `skillt config set` refuses to overwrite the one artifact a user hand-edited.
-  Zero-config must keep working: with no file, nothing is created and every number
-  is the default (`test_no_config_file_is_the_normal_case_and_changes_nothing`).
-- **Anything that deletes is off by default, dry-run first, and cannot be reached by
-  an accident.** `retention.usage_days` and `retention.max_skill_versions` ship at 0,
-  and at 0 `skillt prune-usage` performs **no write at all** — proven by comparing the
-  database bytes, not by trusting the flag (`test_the_knobs_ship_off`,
-  `test_off_means_the_plan_says_nothing_and_no_write_happens`). The plan is computed by
-  SELECT and the delete removes exactly what that plan counted
-  (`test_dry_run_counts_exactly_what_the_delete_removes`); `--yes` takes a backup
-  before it touches a row; a row that cannot be dated is never deleted, because
-  "older than N days" is a claim that row cannot support; `subagent_usage` is not a
-  usage stream and is excluded **by name**. Log rotation is the same shape:
-  dry-run unless `--yes`, a **rename** rather than a truncation (the lines that leave
-  the live path are the evidence `doctor` reads), pruning restricted to filenames this
-  command itself produced, the live file re-created without `O_TRUNC` because the
-  writer appends and a line can land between the two, and the rotation cap being *the
-  same number the reader reads* — both take the **resolved** `log.max_bytes`, so an
-  owner who raises it moves the rotator and the reader together
-  (`test_the_reader_bound_moves_with_the_writer_bound`; the first version compared each
-  side to the shipped default instead, which is why an override could separate them).
-  The systemd timer stays
-  opt-in: `install.sh --with-timer`, and every systemd write sits inside that guard
-  (`test_installing_the_timer_is_still_opt_in`, checked by the mutating *actions*, not
-  by words). Because it is opt-in, its *absence* has to be visible rather than assumed
-  healthy: `doctor`'s `backups.scheduled` asks `systemctl --user is-enabled` and WARNs
-  on anything but `enabled` — including "cannot ask" — since a fresh backup **file**
-  and a live **schedule** are two different facts and only the second one produces the
-  next backup (`test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`
-  asserts they may disagree; the unit name is pinned to what `install.sh` copies by
-  `test_the_timer_check_asks_about_the_unit_install_sh_installs`).
-- **The privacy promise is enforced at the writer, not at the reader.** No message
-  body, no prompt text, and no session `title` — the host derives a title from the
-  user's first message, so storing it would store the message. `metadata.title` is
-  not written by any path any more (`test_the_writer_never_names_a_permission_title`),
-  which is what makes M14's "should report 0 rows" hold going forward instead of
-  only for the rows scrubbed. `error` stays: it is the one free-text field with a
-  reader. Nothing may add a metadata key without naming it in the compat allowlist
-  and in the README, and nothing may add a network or telemetry dependency, or a
-  dependency that puts message content on disk.
-- **What the interface prints about itself is derived from the code that does it.**
-  The Data page's key list comes from `MainScreen.BINDINGS`
-  (`test_a_new_binding_documents_itself_in_the_help`), the six card labels come from
-  `MainScreen.CARD_LABELS` (the grid arithmetic needs the longest one), an empty table's
-  explanation comes from `_empty_note()` on the page's own status line, and a colour
-  comes from a CSS class against a theme token, never from an imperative assignment.
-  Layout claims are **measured at a size** (`run_test(size=(48, 20))`), never read off
-  the CSS — the CSS said the card grid was 2 columns narrower than the terminal and the
-  layout said 4, which put the breakpoints two columns early. Two traps this exists to
-  avoid: a widget that has not been laid out reports `region.width == 0` (assert it
-  non-zero before concluding anything from a geometry comparison, and paint the
-  width-dependent status through `call_after_refresh`), and a `DataTable` *does* scroll
-  its trailing columns, so a narrow table is a discoverability problem, not a data
-  problem — measure `virtual_size.width` against `region.width` before "fixing" it.
-- **A guard is provoked with a string, not with the repository.** When a check can be
-  handed mutated input, take that path: editing a tracked file to make a test go red leaves
-  the document broken for the length of every run, survives an interrupted run, and fights
-  any other agent editing the same table. `test_an_invariant_row_that_names_a_missing_check_is_caught`
-  is the shape — `_invariant_row_mismatches(text)` receives the mutated text, nothing is written
-  (this rule was written the other way in `6a244c1` and corrected in `b9eb105`, D-052). Where a
-  file really must be edited, the restore is byte-exact, asserted by re-reading, and the
-  `__pycache__` entry is purged first — a same-second, same-length edit is otherwise served
-  from a stale `.pyc` and the red-check proves nothing.
-  **A directory rename is the same trap with no edit at all** (2026-10-12, D-059): the cache key
-  is mtime + size, and renaming the repository changes neither, so pytest's rewriting caches
-  (`*-pytest-*.pyc`, written under the old name) keep being served and their baked-in filename
-  names a directory that no longer exists — every skip line, traceback and `-rs` path then
-  reads `../opencode-skill-tracker/…` after the rename. Purge `scripts/**/__pycache__` and
-  `.pytest_cache` after any rename, and treat a path in test output as evidence only after that:
-  the suite can be genuinely green while every path it prints is a lie.
-- **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`,
-  `__pycache__/`, `.pytest_cache/`, `.venv/`. See `.gitignore`.
+- **OpenCode's own database and config are never written.** `scripts/ocut-sync.py`'s
+  `open_source()` opens `file:<host>?mode=ro` with `PRAGMA query_only = ON` and raises when
+  the file is missing rather than creating an empty one. The tracker's own `usage.db` is the
+  only database this project writes. Guards: `test_the_host_database_is_never_opened_for_writing`,
+  `test_open_source_refuses_to_create_a_host` (`scripts/tests/test_ocut_sync.py`).
+- **The privacy promise is enforced at the reader, not at the reader's caller.** A `tool`
+  part's `output`, `title`, `metadata` and `error`; a `text`/`reasoning` body; a session
+  `title` (OpenCode derives it from the user's first message, so storing it would store the
+  message) — none is read. Only identifiers, statuses, durations and counts land in the
+  database. Nothing may add a field read or a metadata key without naming it in the format
+  registry and the README, and nothing may add a network or telemetry dependency.
+  Guard: `test_no_prose_field_is_copied_out_of_the_host`.
+- **The plugin-usage sidecar is the only input that is ours, and the hook is its only
+  writer.** `plugin/ocut-hook.js` must export its factory **only** as
+  `export default { id, server }`; a named export makes OpenCode call it as a factory and
+  aborts the whole plugin load, stopping plugin recording silently. `OCUT_HOOK_DISABLE=1`
+  turns it off; `OCUT_HOOK_EVENTS` moves the sidecar and the hook and `ocut sync` must agree.
+  The sidecar is capped (8 MiB) and rotated by truncation; the reader detects a file shorter
+  than its cursor and re-reads from the start. Guards: `test_default_export_is_the_loader_contract_and_nothing_else`,
+  `test_disable_turns_the_hook_into_a_no_op`, `test_a_truncated_sidecar_is_reread_from_the_start`.
+- **A record the reader cannot use is counted, never dropped.** An unknown part type, an
+  unparseable JSON blob, a missing usage field and an unparseable sidecar line each land in
+  `unparsed` by reason. This is the runtime signal that OpenCode's format moved; `ocut sync`
+  prints it and `ocut health` lists it, including the zero case. Guards:
+  `test_an_unknown_part_type_is_counted_per_type`,
+  `test_a_json_blob_that_does_not_parse_is_counted_not_skipped`,
+  `test_an_unparseable_sidecar_line_is_counted_not_skipped`.
+- **Two token granularities are never summed.** `model_calls` is the per-step record;
+  `sessions` is the host's per-session rollup. They are one measurement at two levels, so the
+  interface shows them beside each other and never adds them.
+  Guard: `test_two_granularities_of_the_same_measurement_agree`.
+- **A schema or view change requires a `SCHEMA_VERSION` bump, and the bump clears the sync
+  cursors** so the new shape is re-read instead of trusted. A database written by a *newer*
+  build is left alone and reported as newer, never rewritten. There is deliberately no
+  migration chain: the host is the source of truth, so everything here is re-derivable by
+  `ocut sync --full`.
+- **Settings are one registry.** `ocut_db.py`'s `DEFAULTS` / `ENV_NAMES` / `_BOUNDS` is the
+  only place a knob is declared. Precedence is **environment > file > default** and is not
+  negotiable. The file is `~/.config/ocut/config.toml` — never anything under
+  `~/.config/opencode/**`, which is the host's. A rejected value is a hard error that names
+  the key, never a silent default; zero-config creates no file.
+- **Anything that deletes is a deliberate act.** `ocut sync --full`, a schema bump and
+  `ocut restore` each take a snapshot first; retention keeps the newest `BACKUP_KEEP` (5)
+  managed snapshots and never touches a hand-made `usage.db.bak-*` copy. There is no systemd
+  timer.
+- **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`, `__pycache__/`,
+  `.pytest_cache/`, `.venv/`. See `.gitignore`.
 - **Never commit the working reports.** `STATE.md`, `PROFILE.md`, `AUDIT.md`, `PLAN.md`,
   `VERIFY.md` live under `docs/reports/` and are ignored by a **non-anchored** `reports/`
-  rule, because this repository is public and those files carry real paths, measured row
-  counts and byte sizes of a personal machine. The pattern has no leading slash, so it
-  matches the directory at any depth — including `docs/reports/`. Proof, both directions:
-  `git check-ignore -v docs/reports/STATE.md` (must name the `.gitignore` line) and
-  `git ls-files docs/reports` (must print nothing).
-  `git add -f` on one of them is the only way to break this, so do not use `-f` here.
-- **Never commit secrets.** The plugin sanitizes secrets before storing them;
-  its self-test fixtures use synthetic values only. Keep it that way.
-- **MCP capture records argument *names* only, never values.** `mcpArgNames()`
-  calls `Object.keys()` and must never read a property. The MCP server list is
-  resolved once at init and detection fails closed (no servers → nothing
-  written). `OPENCODE_SKILL_TRACKER_MCP_DISABLE=1` is the kill switch.
-- **The one builtin that is recorded is `task`, and only as an event.** A
-  subagent spawn goes in `subagent_usage` — `subagent`, the two session ids,
-  `status`, `trigger_type`, `duration_ms` — and nothing else, because the same
-  payload carries the task in prose (`prompt`), a prose `description`, a prose
-  `title`, and the subagent's own prose report. `recordSubagentRun`,
-  `trackSubagentPart` and `subagentLabel` name no other field, and
-  `test_the_subagent_writer_never_names_a_text_field` scans those bodies to keep
-  that true while `__selftest` drives a task part whose text fields all carry a
-  sentinel. The name is admitted only if `SUBAGENT_LABEL_RE` accepts it (no
-  spaces, no path, ≤ 40 characters): a shape bound, not a prose detector. Do not
-  fold spawns into `Total`, do not add another builtin to this path without the
-  same field audit, and do not assume either write path (hook pair vs
-  `message.part.updated`) is the one the host fires — both write, and
-  `UNIQUE(parent_session_id, call_id)` decides.
-- **Plugin attribution is deliberately asymmetric.** Non-builtin tools fail
-  open to `(unknown)` when the static scan cannot resolve an owner; commands
-  fail closed because there is no builtin command allowlist. The default plugin
-  exclusions are the tracker itself (realpath-aware) and `opencode-notifier`.
-  The builtin tool allowlist is pinned to OpenCode 1.18.34 — refreshed by
-  reading `/experimental/tool/ids` off an `opencode serve --pure` instance,
-  never by reading the binary's TUI view registry, which lists four extra names
-  the host does not report as tool ids. Set
-  `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` after an OpenCode upgrade if needed.
-- **Permission payload shapes are measured, not assumed.** OpenCode 1.18.33
-  emits `permission.asked` (id at `id`, refused call at `tool.callID`) followed
-  by `permission.replied` (`requestID` + `reply`); the SDK types declare
-  `permission.updated` / `permissionID` / `response`, and coding to those names
-  made every real rejection write nothing. Both spellings are handled. Before
-  changing a permission handler, re-run the `/tmp` probe recipe in
-  `MAINTENANCE.md` §5 rather than trusting the SDK.
-- **Plugin inventory is init-time state, and every row says which config claimed
-  it.** A new/renamed plugin or surface needs an OpenCode restart to be discovered;
-  `plugin_inventory` is retained when usage is cleared. `scope` is
-  `global` / `localdir` / `project` (or `NULL`, from before the column, treated as
-  `global`), and the prune at the end of `loadPlugins()` deletes only
-  `global`/`localdir` rows this init did not see again — every session reads those
-  two, whereas a project's config is read only by sessions started in it. Never
-  prune on the basis of an `OPENCODE_SKILL_TRACKER_PLUGINS` override, and never
-  prune at all unless a global config file parsed: a broken or missing config looks
-  exactly like "no plugins installed".
-- **An OpenCode name is written once per language, and the two copies are
-  compared.** Python: `scripts/opencode_compat.py`. Writer: the `CONTRACT` block in
-  `plugin/skill-tracker.js` — hooks are registered as `[CONTRACT.HOOK_*]:
-  safe(CONTRACT.HOOK_*, …)` and bus events are switched on as
-  `case CONTRACT.EVENT_*:`, so each host string occurs exactly once, as a value.
-  `test_compat.py` compares the two sets by value; it cannot import across
-  languages, so it parses the block. Hook ids, event types, payload field paths,
-  `~/.config/opencode` layout, tool ids and the version pins come from these two
-  places; every other module refers to them. What does **not** belong there:
-  numbers and policy this project chose (byte caps, retention counts,
-  `BUSY_TIMEOUT_MS`, sanitiser limits, export allowlists, `BACKUP_RE`) — those stay
-  with the code that acts on them, or the module becomes a config dump and stops
-  reducing coupling. Provenance labels the database stores and the TUI prints
-  (`meta.source`, `triggerType ? "event" : "hook"`) are ours, not the host's, and
-  stay literal. When you add a read of a host field, add its declaration in the
-  same commit: the tests can prove a declared name is still present in the writer,
-  and cannot prove an undeclared read exists.
-- **The schema lives in two places and must not drift**: `TABLES_SQL` /
-  `VIEWS_SQL` in the plugin, and `SCHEMA_SQL` in `skill_db.py`. Nothing else
-  carries a copy — `skill-stats.py` imports `skill_db`, and the test fixtures
-  build their databases through `db.SCHEMA_SQL` / `db.ensure_schema()`.
-  `test_plugin_and_python_schema_do_not_drift` enforces plugin ↔ Python;
-  update both copies in the same commit.
-- **View changes need a version bump.** `CREATE VIEW IF NOT EXISTS` never
-  updates an existing view, so `ensure_schema()` drops and recreates the
-  views in `VIEW_NAMES` whenever `PRAGMA user_version` is below
-  `SCHEMA_VERSION`, then stamps it. Bump `SCHEMA_VERSION` whenever a view
-  definition changes, or existing databases keep the old view.
-- `__selftest()` requires `OPENCODE_SKILL_TRACKER_DB` to point somewhere other
-  than the production database; it refuses to run otherwise. It isolates its
-  **log** the same way: unless `OPENCODE_SKILL_TRACKER_LOG` names a path of its
-  own, `__selftest` redirects writes to `skill-tracker-selftest.log` beside that
-  temp database, because the documented hand-run recipe sets only the DB and a
-  failed selftest used to leave `[err] selftest FAIL` lines in the log
-  `skillt doctor`'s `log.errors` counts. The redirect is undone at both exits
-  (normal and aborted) — a selftest and a live session can share one module
-  instance, and leaving the override in place would hide every later real error.
-  Guards: `test_a_hand_run_selftest_never_writes_the_shared_plugin_log`,
-  `test_an_explicit_selftest_log_is_honoured_not_overridden`, and the selftest's
-  own `selftest never logs to the shared plugin log` assertion.
+  rule, because this repository is public and those files carry real paths and measured
+  counts of a personal machine. `git check-ignore -v docs/reports/STATE.md` must name the
+  `.gitignore` line, and `git ls-files docs/reports` must print nothing.
+- **Never commit secrets.** The hook records no arguments and no message text; its fixtures
+  use synthetic values only.
+- **A guard is provoked with a string, not with the repository.** When a check can be handed
+  mutated input, take that path: editing a tracked file to make a test go red leaves the
+  document broken for the length of every run. `test_an_invariant_row_that_names_a_missing_check_is_caught`
+  is the shape — `_invariant_row_mismatches(text)` receives the mutated text, nothing is
+  written.
 
 ## Invariants and how to check them
 
-There is no `INVARIANTS.md` on purpose: a second file listing the same promises is
-a second thing to keep in sync, and the drift between the two is the failure this
-project keeps finding. Each promise below names the check that holds it and the
-command that runs it, so "we have an invariant" is a claim you can execute rather
-than read. Run the row that covers what you touched; `python3 -m pytest scripts/tests`
-runs all of them, and the hermetic run below proves the suite never touched this
-machine's real files.
+There is no `INVARIANTS.md` on purpose: a second file listing the same promises is a second
+thing to keep in sync, and the drift between the two is the failure this project keeps
+finding. Each promise below names the check that holds it and the command that runs it, so
+"we have an invariant" is a claim you can execute rather than read. Run the row that covers
+what you touched.
 
 | The promise | What would break it | The check | Run it |
 |---|---|---|---|
-| Pure local, no network, nothing that stores message content | a new field read, an HTTP call on a repaint, a dependency that phones home | `test_no_http_is_reachable_from_the_tui_refresh_path`, `test_the_writer_never_names_a_permission_title`, `test_the_subagent_writer_never_names_a_text_field` | `python3 -m pytest scripts/tests -q -k "title or text_field or http"` |
-| The writer is the only writer, and it still loads | a named `export function`, a bare-function default, a schema edit in one copy only | `test_loader_does_not_enumerate_exports`, `test_default_export_is_server_module`, `test_plugin_and_python_schema_do_not_drift` | `python3 -m pytest scripts/tests -q -k "export or loader or drift or schema"` |
-| Every OpenCode name lives in one place per language | a handler that spells a host string again, a pin that no longer matches the writer | `test_compat.py` in full — value-compared against the `CONTRACT` block | `python3 -m pytest scripts/tests/test_compat.py -q` |
-| Views and schema roll forward instead of silently keeping the old definition | a `CREATE VIEW` edit without a `SCHEMA_VERSION` bump | `test_migration.py` | `python3 -m pytest scripts/tests/test_migration.py -q` |
-| Deleting rows or moving logs is opt-in, counted first, and backed up before it happens | a default that becomes "helpful", a dry-run that is a different query from the delete, a rotation that truncates | `test_row_retention.py` + `test_rotate_log.py` | `python3 -m pytest scripts/tests/test_row_retention.py scripts/tests/test_rotate_log.py -q` |
-| A schedule is reported as a schedule, never inferred from the file it produces | a `backups.latest` PASS masking a removed timer unit, a check that FAILs a machine for choosing not to install, a check that shells out on the repaint path, "cannot ask systemd" read as healthy | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`, `test_a_disabled_timer_is_named_as_disabled_not_as_missing`, `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`, `test_the_timer_check_never_fails_and_never_shells_out_uninvited`, `test_the_timer_check_asks_about_the_unit_install_sh_installs` | `python3 -m pytest scripts/tests/test_doctor.py -q -k "timer or scheduled or systemd"` |
-| The plugin log's reader and its rotator stop at the **same number** | a setting resolved by one side and defaulted by the other, which is how `doctor` starts reporting a floor as a total | `test_the_rotation_cap_is_the_number_the_reader_reads` (both commands, at the default *and* under an override), `test_the_reader_bound_moves_with_the_writer_bound` (spies on the actual read), `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill` | `python3 -m pytest scripts/tests -q -k "bound or rotation_cap or truncated or bounded"` |
-| A knob exists in one registry, documented in both languages, and zero-config still works | a setting that only reads the environment, a key added without an explanation, a writer under `~/.config/opencode` | `test_settings.py` + `test_settings_documented.py` | `python3 -m pytest scripts/tests/test_settings.py scripts/tests/test_settings_documented.py -q` |
-| The interface says what it actually does — keys, empty states, colours, widths | a hand-copied key list or label set, an imperative colour, a layout claim read off the CSS | the S8 guards: `test_a_new_binding_documents_itself_in_the_help`, `test_every_table_page_status_line_is_dimmed_throughout`, `test_the_card_grid_switches_where_the_layout_actually_fits`, `test_the_result_colour_is_a_theme_token_and_not_a_literal`, `test_tui_creates_no_app_timers`, `test_tui_disables_textual_animations` | `python3 -m pytest scripts/tests/test_tui.py -q -k "timer or animation or http or dimmed or help or card_grid or right_edge or theme_token"` |
-| Every number a panel prints comes from that pane's own window and its own query | a tab showing the Dashboard's window, a column swapped for a neighbouring one, a clipped name used as a row identity, one metric printed under two labels, a network door opened while the interface repaints | `scripts/tests/test_ocut_tui.py` — nine tests over a fixture built through the real indexer, so host rows, cursor, table and panel are one chain | `python3 -m pytest scripts/tests/test_ocut_tui.py -q` |
-| The span the picker draws is the span the pane then queries | a Monday-first month grid, a day click landing in the other card, the picker's own prefill read as a user edit, a parse error swallowed into "all time", a picked window leaking to every tab or offered to the tab that has no timestamps | `scripts/tests/test_ocut_calendar.py` — the chip table and the Sunday lead are derived inside the test, so neither can be restated by the product | `python3 -m pytest scripts/tests/test_ocut_calendar.py -q` |
-| The row a person selects opens the entity that row names, in the window the tab shows, exactly one screen deep | a `(server, tool)` row queried by tool alone, a header counting wider than the list under it, a second activation stacking a copy of the screen already open, an empty-state note routed as a row, a clipped name used as the row identity, a column plan that hides a column without naming it or the width that un-hides it | `scripts/tests/test_ocut_drill.py` — its fixture is the only place with two MCP servers sharing one tool name, and its values are longer than the cell cap on both sides of it | `python3 -m pytest scripts/tests/test_ocut_drill.py -q` |
-| The two languages say the same thing, including how many limitations there are | a one-language edit, a document that froze its `M1–M<n>` at the number of the day | `test_readme.py` (bilingual parity + `test_the_documented_limitation_range_is_the_range_the_gate_pins` + `test_readmes_document_every_key_the_screen_binds`) | `python3 -m pytest scripts/tests/test_readme.py -q` |
-| Every commit that touches shipped code is recorded, and the record is not a diary | a repair that exists only in a commit message, an entry that quotes no commit | `test_record_coverage.py` | `python3 -m pytest scripts/tests/test_record_coverage.py -q` |
-| The suite is hermetic | a test that reads `~/.config/opencode/skills` and passes because this machine happens to have rows — or a `doctor` check that asks `systemctl`, which passes *and stays* passing because the check's own `except Exception` swallows a guard that only raises | the same suite, pointed at a directory that does not exist; `never_query_the_hosts_service_manager` (conftest), provoked by `test_the_systemd_tripwire_bites_even_when_a_check_swallows_it` | `OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist python3 -m pytest scripts/tests -q` |
+| Pure local: the host database and config are read-only, and no prose is stored | a write to OpenCode's files, a prose field read, a network call while the interface paints | `test_the_host_database_is_never_opened_for_writing`, `test_no_prose_field_is_copied_out_of_the_host`, `test_no_http_is_reachable_while_the_tui_paints` | `python3 -m pytest scripts/tests -q -k "never_opened_for_writing or no_prose_field or no_http"` |
+| The hook is the only writer of `plugin_usage`, still loads, and can be disabled | a named export, a bare-function default, a call the hook cannot attribute | `test_default_export_is_the_loader_contract_and_nothing_else`, `test_the_hook_records_a_surface_and_only_plugin_owned_calls`, `test_disable_turns_the_hook_into_a_no_op` | `python3 -m pytest scripts/tests/test_ocut_hook.py -q` |
+| Schema and views roll forward instead of silently keeping the old definition | a view edit without a `SCHEMA_VERSION` bump, a newer database overwritten | `test_ocut_windows.py` | `python3 -m pytest scripts/tests/test_ocut_windows.py -q` |
+| A version bump clears the cursors, and a future database is left alone | a bump that keeps the old cursors, a newer database rewritten in place | `test_a_version_bump_clears_the_cursors_so_nothing_is_read_again`, `test_a_database_from_a_future_build_is_left_alone_and_says_so` | `python3 -m pytest scripts/tests/test_ocut_windows.py -q -k "version_bump or future_build"` |
+| A record the reader cannot use is counted, never dropped | an unknown part type or an unparseable blob silently skipped | `test_a_json_blob_that_does_not_parse_is_counted_not_skipped`, `test_an_unknown_part_type_is_counted_per_type`, `test_an_unparseable_sidecar_line_is_counted_not_skipped` | `python3 -m pytest scripts/tests/test_ocut_sync.py -q -k "counted_not_skipped or counted_per_type"` |
+| Settings are one registry: environment beats the file beats the default, and errors are loud | a value read only from the environment, a key added without a bound, a broken file silently ignored | `test_environment_beats_the_file_and_the_file_beats_the_default`, `test_an_unknown_key_is_refused_and_names_the_real_ones`, `test_a_file_that_does_not_parse_names_the_file` | `python3 -m pytest scripts/tests/test_ocut_settings.py -q -k "beats_the_default or unknown_key or does_not_parse"` |
+| Two granularities of the same measurement agree and are never added | a panel summing `model_calls` and `sessions`, one metric printed under two labels | `test_two_granularities_of_the_same_measurement_agree`, `test_no_panel_repeats_the_input_number_under_a_second_label` | `python3 -m pytest scripts/tests -q -k "two_granularities or repeats_the_input_number"` |
+| The window a tab shows is the window it queries, and a row opens the entity it names | a picked window leaking to every tab, a `(server, tool)` row queried by tool alone | `test_a_picked_window_lands_on_the_tab_that_asked_and_on_no_other`, `test_two_servers_sharing_a_tool_name_open_two_different_histories` | `python3 -m pytest scripts/tests/test_ocut_calendar.py scripts/tests/test_ocut_drill.py -q -k "lands_on_the_tab or sharing_a_tool_name"` |
+| The two languages say the same thing, including how many limitations there are | a one-language edit, a document that froze its `M1–M<n>` at the number of the day | `test_readmes_document_every_key_the_screen_binds`, `test_the_documented_limitation_range_is_the_range_the_gate_pins` | `python3 -m pytest scripts/tests -q` |
 
-Two of these are about documents, not code, and they are the ones an agent is most
-likely to break while "just" writing: **never copy an aggregate count into a doc**
-(the suite prints it, and a stale number reads as a claim about current state), and
-**never state a limitation range by hand** — `LIMITATIONS` in `test_readme.py` is the
-list, and the gate now refuses any document whose `M1–M<n>` disagrees with it.
+Two of these are about documents, not code, and they are the ones an agent is most likely to
+break while "just" writing: **never copy an aggregate count into a doc** (the suite prints
+it), and **never state a limitation range by hand** — `LIMITATIONS` in `test_readme.py` is
+the list, and the gate refuses any document whose `M1–M<n>` disagrees with it.
 
 The table checks its own columns: `test_every_invariant_rows_command_selects_the_checks_it_names`
-refuses a row whose `Run it` command cannot select a check its `The check` column names. It is
-there because two rows were wrong at once when it was written — `-k "timer or scheduled"` skipped
-the unreachable-systemd check and a `key_help` needle skipped the binding-help check — and both
-read perfectly well. A selector that quietly deselects is worse than no selector, because it is
-run and believed.
+refuses a row whose `Run it` command cannot select a check its `The check` column names. A
+selector that quietly deselects is worse than no selector, because it is run and believed.
 
 ## Conventions
 
-- **Code and user-facing output are English** (identifiers, comments,
-  docstrings, CLI/TUI text, `skill_db` health suggestions).
-- **Docs are bilingual**: `README.md` (English, the landing page) and
-  `README.zh-CN.md` (Chinese, the exhaustive reference), plus
-  `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
-  `scripts/tests/test_readme.py` asserts that **both** READMEs document every
-  limitation id in `LIMITATIONS` (that tuple is the list — do not state a range by
-  hand, `test_the_documented_limitation_range_is_the_range_the_gate_pins` refuses a
-  document whose `M1–M<n>` has frozen), that `README.zh-CN.md`
-  documents every section, that both maintenance checklists name the same checks,
-  commands and invariants, and that both key tables cover every key the screen
-  binds (`test_readmes_document_every_key_the_screen_binds`) —
-  update all four when behaviour changes, or the suite fails.
-- **A module reaches core state through the module object, never by value.** A name
-  copied in at import time ignores the suite's `monkeypatch.setattr(db, "HOME", …)`,
-  which is how a test would silently read this machine instead of its fixture.
-  `test_no_module_imports_names_by_value_from_the_core` pins it for every production
-  script. A scan that used to slice a section out of `skill_db.py` now reads the
-  reader's own file — when a section moves, the scan moves with it or it passes
-  vacuously.
-- **A hand-drawn bar is scaled against a peak that includes every value it
-  prints.** `bar()` multiplies `value / peak * width`, so a reference line that can
-  exceed the data's own maximum overflows the column — the one time this project drew
-  such a line (a 1200 ms per-call budget against values that really ran 0–20 ms) it
-  drew 1467 blocks. Fold the reference into the peak, and never hand `bar()` a `None`.
-  The caller that taught this went away on 2026-10-12; the arithmetic did not.
-- **Column widths are ours to compute, not Textual's to discover.**
-  `DataTable` re-measures auto-width columns in `_on_idle`, one message-pump
-  cycle after the rows arrive: the first frame renders every column exactly as
-  wide as its header, and each later frame shows the previous content's widths.
-  Every table this app populates must go through `fit_columns()` (the per-page
-  refresh does it via `_PAGE_TABLES`, the detail shell does it after
-  `populate()`), or names get cut to `froze`.
-- **No `set_interval`/`set_timer` in the TUI.** On textual 8.2.8, any app timer
-  created after the screens mount makes `run_test`'s teardown raise
-  `LookupError: <ContextVar name='active_app'>` (empty callback, App or Screen,
-  even after `timer.stop()`), and because that teardown belongs to the *app*, it
-  fails every test in the TUI file at once rather than the one that added the timer.
-  Refresh is
-  event-driven and per page: a keystroke (throttled by `REFRESH_STALE_AFTER_S`)
-  and a tab activation re-read only the active page, `r` and the first paint
-  re-read every page, and each page prints its own `data as of HH:MM:SS`.
-  `test_tui_creates_no_app_timers` pins it.
-- **Animations are off.** `SkillTUI.animation_level = "none"`. Textual slides the
-  tab-bar underline for 0.3 s on every switch (`Tabs._highlight_active`, at level
-  `"basic"` — so the global `"basic"` level does not remove it, only `"none"`
-  does); that is ~305 ms of a ~500 ms Dashboard→Skills switch on a 44-skill DB,
-  against ~190 ms with it off. `test_tui_disables_textual_animations` pins it.
-- **Never parse a row's identity out of its `key`.** Names contain the
-  separators: `@scope/pkg@1.0/tool`, `conductor:newTrack`, server names with
-  `_`. Each table registers `(kind, …parts)` in `app.row_targets` at render
-  time and Enter looks that up.
-- **Export allowlists metadata** (`EXPORT_METADATA_KEYS` in `skill_db.py`).
-  Older builds stored the user's prompt text as `metadata.summary`; the writer
-  is gone but rows in real databases are not (`skillt scrub-metadata`). The
-  export document is `schema_version = 6` (5 = `plugin_inventory.scope`,
-  6 = the `subagent_usage` key) — bump it with any shape change.
+- **Code and user-facing output are English** (identifiers, comments, docstrings, CLI/TUI
+  text).
+- **Docs are bilingual**: `README.md` (English landing page) and `README.zh-CN.md` (Chinese
+  reference), plus `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
+  `scripts/tests/test_readme.py` asserts that **both** READMEs document every limitation id
+  in `LIMITATIONS` (that tuple is the list — do not state a range by hand), that both
+  maintenance checklists name the same checks, commands and invariants, and that both key
+  tables cover every key the screen binds (`test_readmes_document_every_key_the_screen_binds`).
+- **A module reaches core state through the module object, never by value.** A name copied in
+  at import time ignores the suite's `monkeypatch.setattr`, which is how a test would
+  silently read this machine instead of its fixture.
+- **Column widths are ours to compute, not Textual's to discover.** A populated table is
+  sized in the same turn it is filled, or the first frame renders each column header-wide.
+- **No `set_interval`/`set_timer` in the TUI.** Refresh is event-driven and per page; an app
+  timer created after the screens mount can break `run_test`'s teardown for the whole file.
+- **Never parse a row's identity out of its `key`.** Names contain the separators
+  (`@scope/pkg@1.0/tool`, `conductor:newTrack`, server names with `_`); each table registers
+  the row's target separately and `enter` looks it up.
 - Commit messages are **English** and follow Conventional Commits (`feat:`, `docs:`,
   `chore:`, `fix:`), code before docs.
 - The test suite must be green before pushing. Tests locate files via
-  `Path(__file__).resolve()`, so they pass both from the repo and through the
-  symlinked install locations — do not replace those with hardcoded paths.
+  `Path(__file__).resolve()`, so they pass both from the repo and through the symlinked
+  install locations — do not replace those with hardcoded paths.
 
 ## Recording conventions
-- **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
-  feature is the product, not a droppable deviation — features are documented in the READMEs. The
-  exclusion lives in `scripts/tests/test_record_coverage.py` as one regex over the commit subject;
-  it is not a per-commit skip flag and must not become one.
+
+- **`feat` commits are out of scope, by class.** This is an original project with no
+  upstream, so a feature is the product, not a droppable deviation. The exclusion lives in
+  `scripts/tests/test_record_coverage.py` as one regex over the commit subject.
 - `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore`, cut by **who may demand a
-  revert**: bug → `fix`; measurable degradation only → `perf`; only my taste → `taste` (zero
-  obligation); no behaviour change, detects drift → `guard`; withdraws earlier work → `revert`;
-  cleanup owed nothing either way → `chore`.
-- A pair of entries that cancel out must both stay (`D-018` + `D-019`, `D-021`): the withdrawal is
-  the current state, and a record showing only the reverted-to version would misdirect an upgrade.
-- **Verification tiers** (named by what the claim needs, not by the tool): **L0** =
-  `python3 -m pytest scripts/tests` (no host, no live store), **L1** = a controlled fixture or the
-  `/tmp` probe recipe in `MAINTENANCE.md` §5 (a throwaway OpenCode/Textual surface), **L2** = a real
-  user session on an installed plugin.
-- `Symptom` names the mechanism, never the session: no prompt text, no command lines, no MCP
-  argument values, no paths from a real config. This repo's whole privacy stance is "counts, never
-  content" — the record is held to the same standard as the code.
-- Run the coverage check before committing docs: `python3 -m pytest scripts/tests/test_record_coverage.py`.
-  It is part of the suite, so `python3 -m pytest scripts/tests` already runs it.
+  revert**: bug → `fix`; measurable degradation only → `perf`; only my taste → `taste`; no
+  behaviour change, detects drift → `guard`; withdraws earlier work → `revert`; cleanup owed
+  nothing either way → `chore`.
+- **Verification tiers**: **L0** = `python3 -m pytest scripts/tests` (no host, no live
+  store); **L1** = a controlled fixture; **L2** = a real OpenCode session with the hook
+  installed.
+- `Symptom` names the mechanism, never the session: no prompt text, no command lines, no
+  paths from a real config. This repo's whole privacy stance is "counts, never content".
 
 ## Listed on the GitHub profile
 
-This repo is listed on the owner's profile front page (`SHADE-glitch/SHADE-glitch`). That page lives
-in a **separate repository and never updates itself** — when a fact it states about this repo
-changes, update the profile README in the same round. The profile's own `AGENTS.md` is the
-authoritative rulebook; its guard `scripts/check-profile.mjs` must keep passing.
+This repo is listed on the owner's profile front page (`SHADE-glitch/SHADE-glitch`). That page
+lives in a **separate repository and never updates itself** — when a fact it states about this
+repo changes, update the profile README in the same round.
 
 - **Rename / transfer / delete** — the profile link dies; fix the row.
-- **Purpose drift** — the profile's one-line description must still be true. The claims it copies —
-  *"no network, no message bodies"*, the local-SQLite scope — are **promises**: if one stops holding,
-  change the profile line that makes it.
+- **Purpose drift** — the profile's one-line description must still be true. The claims it
+  copies — *"no network, no message bodies"*, the local-SQLite scope — are **promises**.
 - **LICENSE change** — the profile's license badge must equal this repo's `LICENSE`.
-- **Version / runtime declaration change** — the matching badge must equal this repo's declaration.
-- **Freeze / archive / upstream-frozen** — say so on the profile; never leave a stale "maintained".
-- **Public ↔ private** — a repo that goes private must be **delisted** (only the two whitelisted
-  private apps may stay, and they are not this one).
+- **Version / runtime declaration change** — the matching badge must equal this repo's
+  declaration.
+- **Public ↔ private** — a repo that goes private must be **delisted**.

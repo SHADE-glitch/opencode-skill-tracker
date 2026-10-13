@@ -1,6 +1,6 @@
 <p align="right"><a href="README.md"><b>English</b></a> | <a href="README.zh-CN.md">简体中文</a></p>
 
-# 🎯 OpenCode Skill + MCP + Plugin Tracker (`skillt`)
+# 🎯 OpenCode usage tracker (`ocut`)
 
 ![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -8,42 +8,59 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
-Record and query how every skill, **every MCP tool** and **every plugin tool /
-command** in [OpenCode](https://opencode.ai) is actually used: what ran, when,
-whether it succeeded, how long it took, and in which project. Usage is captured two
-ways — **live**, by an OpenCode plugin that hooks the tool lifecycle as calls happen,
-or **passively**, by syncing OpenCode's own database — and everything lands in a
-single local SQLite file: no network, no upload, no conversation content.
+`ocut` shows how you actually use [OpenCode](https://opencode.ai): every tool call,
+every skill and subagent, every MCP tool, every model step and its tokens, and every
+session — what ran, when, whether it finished, how long it took, and in which project.
+
+It is a **passive reader**. OpenCode keeps its own sessions in a single SQLite file
+(`~/.local/share/opencode/opencode.db`); `ocut` indexes that file into its own database
+(`~/.local/share/opencode-usage-tracker/usage.db`) and never writes back to OpenCode's
+directories. One optional plugin hook fills the one gap the host cannot expose — which
+plugin a tool call belonged to. Everything stays local: no network, no upload, no
+message text.
 
 ---
 
 ## 🤔 Why
 
-OpenCode has no dedicated skill hook. This project recognises skill usage
-indirectly, through the generic tool hooks:
+OpenCode already persists what you need — but in a shape built for resuming sessions,
+not for answering "which of my skills do I actually use?".
 
-- OpenCode exposes skills as a tool named `skill` with input `{ name }`;
-- MCP tools are exposed as `{server}_{tool}` (e.g. `basic-memory_read_note`)
-  and go through the **same** generic tool wrapper, so they are observed
-  through the same hooks;
-- plugin-provided tools go through that wrapper too, and plugin commands fire
-  `command.execute.before`;
-- the plugin `skill-tracker.js` listens on `tool.execute.before` /
-  `tool.execute.after` / `permission.ask` / `command.execute.before` / `event` /
-  `chat.message`;
-- when the tool is `skill` the call is written to `skill_usage`; when it belongs
-  to a known MCP server it is written to `mcp_usage`; anything else that is
-  neither skill nor builtin is written to `plugin_usage`;
-- `skillt` queries, reports, exports, backs up and health-checks that data.
+- Every tool call is a `tool` part in `opencode.db`, whatever the tool is: a builtin,
+  the `skill` tool, the `task` tool that spawns a subagent, or an MCP server's tool.
+- Each model step is a `step-finish` part carrying that step's token counts and cost;
+  the model lives on its *parent message*, not on the step.
+- Sessions, their projects and their directories are rows in `session`.
+- What is *installed* — skills, agents, slash commands, MCP servers, plugins — lives in
+  the config home (`~/.config/opencode`), not in the database.
 
-Design constraints, deliberately kept:
+`ocut` reads all of that **read-only** and turns it into panels and reports. Two things
+it deliberately does *not* do:
 
-- **No OpenCode source changes** — public plugin hooks only.
+- **It never writes OpenCode's database or config.** The host database is opened
+  `mode=ro` and `PRAGMA query_only = ON`, so a bug in this project cannot make that
+  claim false.
+- **It never stores message or tool prose.** A tool part carries `output`, `title`,
+  `metadata` and `error`; a `text`/`reasoning` part carries your prompt and the model's
+  answer; a session row carries a `title` OpenCode derives from your first message.
+  None of those is read. Only identifiers, statuses, durations, token counts and counts
+  land in `usage.db`.
+
+Design constraints, kept on purpose:
+
+- **No OpenCode source changes** — a passive reader plus one public plugin hook.
 - **No instrumentation in `SKILL.md`** — nothing to add to your skills.
-- Only structured metadata is stored (tool name, status, duration, project
-  path, session, model/agent/branch). **No secrets, no message bodies.** For
-  MCP calls, only the argument *key names* are recorded — values are never read.
-- One plugin file + one shared data layer + one entry point, minimal deps.
+- One database of the tracker's own + one entry point + one optional hook, minimal deps.
+
+### 🧩 The one thing a passive reader cannot see
+
+OpenCode records a plugin's tool under the tool's own name, with nothing naming the
+plugin, and records nothing at all for a plugin *command*. So `ocut` alone can never
+attribute a plugin call. The optional hook `plugin/ocut-hook.js` closes that gap: at
+load it statically scans each installed plugin's source for the tool and command ids it
+registers, and on a call it can attribute it appends one record to a local JSONL sidecar
+that `ocut sync` ingests. The hook is the **only** writer of `plugin_usage`, and it never
+opens OpenCode's database.
 
 ---
 
@@ -51,17 +68,15 @@ Design constraints, deliberately kept:
 
 | | |
 |---|---|
-| OS | Linux — developed and verified on Ubuntu 26.04; other distributions are **unverified** |
-| OpenCode | 1.18.x — allowlist verified against 1.18.34; the permission payload shapes were measured on 1.18.33 and have not been re-measured since (M20) |
-| Python | 3.11+ for the CLI and TUI (tested on 3.11, 3.13, 3.14) |
-| Bun | bundled with OpenCode — used to run the plugin; only needed for the plugin self-test |
+| OS | Linux — developed and verified on Ubuntu; other distributions are **unverified** |
+| OpenCode | 1.18.x — the host whose database and config this project reads (see [compatibility](docs/maintenance/compatibility.md)) |
+| Python | 3.11+ for the CLI and TUI; CI runs the suite on **3.11 and 3.14** |
+| Textual | `textual>=8.2,<9` — needed by the interactive TUI only, installed into a venv by `install.sh` |
 | `uv` | optional but recommended for creating the venv; plain `python3 -m venv` also works |
 
-The headless subcommands (`insight`, `health`, `doctor`, `export`, `sync`,
-`mcp`, `plugins`, `auto-backup`) need **only the Python
-standard library**. The
-interactive TUI needs [Textual](https://textual.textualize.io/)
-(`textual>=8.2,<9`), installed into a venv by `install.sh`.
+Every headless subcommand (`sync`, `stats`, `tools`, `health`, `export`, `backup`,
+`restore`, `format`, …) needs **only the Python standard library**. The hook runs inside
+OpenCode's own Bun runtime and needs nothing installed separately.
 
 ---
 
@@ -75,38 +90,38 @@ cd opencode-usage-tracker
 ./install.sh
 ```
 
-Then **restart OpenCode** so it picks up the plugin, and verify:
+Then **restart OpenCode** so it loads the hook, and verify:
 
 ```bash
-skillt doctor      # PASS / WARN / FAIL report; exits 1 if anything FAILs
-skillt insight     # usage summary — works without the TUI
-skillt             # launch the interactive TUI
+ocut health    # is the tracker database readable, and is the host database found?
+ocut sync      # index what OpenCode has written so far
+ocut           # launch the interactive TUI (eight tabs)
 ```
 
 `install.sh` is idempotent. It:
 
-1. creates `./.venv` and installs `requirements.txt` into it;
-2. replaces the four install locations with **symlinks pointing back at this
-   repo**, so `git pull` here updates the live install:
+1. creates `./.venv` and installs `requirements.txt` (textual) into it;
+2. symlinks exactly **two** install locations back at this repo, so `git pull` here
+   updates the live install:
 
    | Install location | Points at |
    |---|---|
-   | `~/.config/opencode/plugin/skill-tracker.js` | `plugin/skill-tracker.js` |
-   | `~/.config/opencode/scripts` | `scripts/` |
-   | `~/.config/opencode/skill-tracker` | `skill-tracker/` |
-   | `~/.local/bin/skillt` | `bin/skillt` |
+   | `~/.config/opencode/plugin/ocut-hook.js` | `plugin/ocut-hook.js` |
+   | `~/.local/bin/ocut` | `bin/ocut` |
 
-   If a location already holds a real file or directory, the script **refuses to
-   overwrite it** and tells you what to move. Pass `--force` to replace it.
+   `bin/ocut` resolves its own `scripts/` directory from the repo it lives in, so the
+   scripts are never copied to a user path. If a location already holds a real file or
+   directory, the script **refuses to overwrite it** and tells you what to move; pass
+   `--force` to replace it.
 
-3. runs `skillt doctor` once and prints the next steps.
+3. runs `ocut health` once and prints the next steps.
 
 > Make sure `~/.local/bin` is on your `PATH`. If it is not, add
 > `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
 
 ### 🛠️ Manual install
 
-Same thing, spelled out — useful if you prefer to place the repo elsewhere:
+The same thing, spelled out — useful if you prefer to place the repo elsewhere:
 
 ```bash
 git clone https://github.com/SHADE-glitch/opencode-usage-tracker.git
@@ -116,32 +131,24 @@ cd opencode-usage-tracker
 uv venv --python 3.13 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 
-# 2. point the install locations at this repo
-#    (-n on directory links: don't create a link *inside* an existing dir)
+# 2. point the two install locations at this repo
 mkdir -p ~/.config/opencode/plugin ~/.local/bin
-ln -sf  "$PWD/plugin/skill-tracker.js" ~/.config/opencode/plugin/skill-tracker.js
-ln -sfn "$PWD/scripts"                 ~/.config/opencode/scripts
-ln -sfn "$PWD/skill-tracker"           ~/.config/opencode/skill-tracker
-ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
+ln -sf "$PWD/plugin/ocut-hook.js" ~/.config/opencode/plugin/ocut-hook.js
+ln -sf "$PWD/bin/ocut"            ~/.local/bin/ocut
 ```
-
-Remove any pre-existing real `~/.config/opencode/scripts` or
-`~/.config/opencode/skill-tracker` directory first (back it up), otherwise
-`ln -sfn` would nest a link inside it.
 
 ### 📟 Headless-only install
 
-No Textual, no venv — just the recorder and the CLI:
+No Textual, no venv — just the reader and the reports:
 
 ```bash
-mkdir -p ~/.config/opencode/plugin ~/.local/bin
-ln -sf  "$PWD/plugin/skill-tracker.js" ~/.config/opencode/plugin/skill-tracker.js
-ln -sfn "$PWD/scripts"                 ~/.config/opencode/scripts
-ln -sf  "$PWD/bin/skillt"              ~/.local/bin/skillt
+mkdir -p ~/.local/bin
+ln -sf "$PWD/bin/ocut" ~/.local/bin/ocut
 ```
 
-Running bare `skillt` will then print how to create the venv; every other
-subcommand works.
+`ocut` then falls back to the system `python3` for every subcommand; only launching the
+bare TUI needs the venv. You can also point the launcher at a venv of your own with
+`OCUT_VENV`.
 
 ---
 
@@ -150,414 +157,215 @@ subcommand works.
 ### 🖥️ Interactive TUI
 
 ```bash
-skillt
+ocut
 ```
 
-Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs, and `TERM` neither
-empty nor `dumb`). Pages: **Dashboard / Skills / MCP / Plugins / Agents /
-Recent / Categories / Data** (Data is always last).
-
-The six Dashboard cards, each labelled below its number:
-
-| Card | Meaning |
-|---|---|
-| `Skills` | total skills known (rows in `skills`) |
-| `Skill calls` | total recorded skill invocations (rows in `skill_usage`) |
-| `MCP calls` | total recorded MCP tool calls (rows in `mcp_usage`) |
-| `Plugin calls` | total recorded plugin calls (rows in `plugin_usage`) |
-| `Today (all)` | skill + MCP + plugin calls today (local calendar day) |
-| `Skill success` | overall skill success rate |
-
-Below the cards a legend line breaks `Today (all)` down by kind and shows the
-observed sample (sessions and days). The three counters are kept separate, so
-`Skill calls` never silently includes MCP or plugin traffic.
-
-`Last 7 days` shows three side-by-side charts — skill, MCP and plugin calls —
-each scaled to its own peak (MCP/plugin volumes are usually an order of
-magnitude smaller). Every day line is a fixed 20 characters and every chart is
-pinned to the same height, so the three always sit on **one horizontal line**:
-an un-padded count used to make only the chart that had a large number
-word-wrap, and its day rows fell out of step with its neighbours. Below 70 columns the row no longer
-fits (measured: the cells are exactly 20 wide at 70, and 18/19/19 at 66) and all
-three clip alike instead of staggering. Counts beyond five
-characters are compacted (`123456` → `123k`), which is what keeps the row a
-constant length. Below them, top-10 tables mirror the three kinds: **Top
-Skills**, **Top MCP tools** and **Top Plugins**.
-
-The **MCP** page lists one row per `(server, tool)` pair with call count,
-30-day calls, sessions, success rate, average duration and last use. Each of
-the Skills / MCP / Plugins tables has its own sort mode and filter box — `s`
-cycles the sort of whichever page is active, and `Enter` opens the row's
-detail page. The **Recent** page merges all three kinds into one timeline;
-`Enter` routes each row to its skill/MCP/plugin detail page. Switching to a
-page re-reads **only that page** (and `r` re-reads every page), so each page
-prints its own `data as of HH:MM:SS` instead of one global timestamp.
-
-Switching pages is instant rather than animated. Textual slides the tab-bar
-underline for 0.3 s on every switch, which measured ~305 ms of a ~500 ms
-Dashboard→Skills switch on a 44-skill database — more than the page's own
-re-read (~70 ms) and Textual's layout/render floor (~125 ms) combined — so the
-app disables animations (`animation_level = "none"`) and the underline snaps
-into place, bringing the same switch to ~190 ms.
-
-The **Plugins** page lists a registered surface even when it has never been
-called: `total` comes from the union of what the scan saw at OpenCode's start and
-what has usage, so a `0` means nobody used that tool — not that the tracker
-missed it. The footer says how many rows are in that state. `Enter` on one of
-them warns that there is no history rather than pushing an empty detail page, and
-`skillt plugins --json` carries both claims as `registered` and `ever_called` so
-a consumer cannot merge them into one zero either.
-
-The **Agents** page answers "which agent did this work" with one row per agent
-and its calls split by kind — `Skill`, `MCP`, `Plugin`, `Total`, `Spawned`,
-`Success rate`, `Last used`, most calls first. Read its footer before believing
-it: the agent shown is the one the row's **session first reported**, not the one
-that ran that call, and a call recorded before its session named an agent stays
-in `(unknown)` forever. That bucket is printed with its own count instead of
-being hidden (see M23). `s` deliberately does nothing here — the page has no sort
-of its own to cycle.
-
-`Spawned` and `Ran as` sit after `Total` and are deliberately outside it. They are
-two facts, not one count: `Spawned` is how many subagents this agent started,
-`Ran as` is how many times this name ran as somebody else's subagent (such a row
-carries `⟨sub⟩`). A subagent that spent its whole run shelling and editing leaves no
-usage row anywhere — builtins are not what this tracker measures (M13) — so the
-spawn record is the only place it can appear, which is why it gets a row rather
-than a footnote. Its `Success rate` is over its runs, because that is the only
-outcome it has; `Total` still means skill + MCP + plugin on every row, including
-one whose Total is 0.
-
-A name missing from `Ran as` did not run **since OpenCode last started**, not never:
-`subagent_usage` begins where the writer begins (M24). Recovering the earlier
-history would mean reading OpenCode's own database; that is deliberately not done
-here and is recorded as deferred in `MAINTENANCE.md` §8. The two read-only neighbours
-that used to sit beside this tool (`skillt agentos`, `skillt claude-mem`) were retired
-on 2026-10-12 (D-053); nothing outside this database is read any more.
+Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs).
+Pages: **Dashboard / Tools / Skills / Agents / Plugins / MCP / Tokens / Usage** (eight
+tabs, in that order). The tab bar and footer are the whole key surface:
 
 | Key | Action |
 |---|---|
-| `Tab` | switch page |
-| `↑` `↓` / `j` `k` | move cursor |
-| `Enter` / double-click | open the selected row's detail page (skill / MCP / plugin) |
-| `/` | jump to the Skills page and focus search |
-| `s` / `ctrl+s` | cycle sort (uses ↓ / recently used ↓ / success rate ↓ / name ↑) |
-| `Esc` | clear search and unfocus |
-| `r` / `ctrl+r` | refresh |
 | `q` | quit |
-| `d` | delete the skill selected **on the Skills page** (confirms first) |
-| `b` `e` `v` | backup / export / vacuum |
+| `r` | refresh — run an incremental sync, then reload the screen |
+| `s` | toggle auto-sync (the 30-second background indexer) |
+| `tab` | next tab |
+| `shift+tab` | previous tab |
+| `enter` / double-click | open the selected row's detail screen |
+| `escape` / `q` | go back from a pushed detail screen |
 
-> While the search box has focus, plain letters are consumed by it — that is why
-> `ctrl+s` (sort) and `ctrl+r` (refresh) are **always available** without pressing
-> `Esc` first.
+The **Dashboard** is three rows of panels. The first row is the headline counts and the
+token totals, each label printed beside its number:
 
-The Data page also has buttons for backup, vacuum, export, **Health**, and
-clearing usage. Deleting a skill is possible **only** from the Skills page.
+| Panel | Labels |
+|---|---|
+| Usage | `Tool calls`, `Skills`, `Agents`, `MCP`, `Plugins inst.` |
+| Tokens | `Requests`, `Input`, `Output`, `API Total`, `Prompt Total` |
+| Cache | `Cache read`, `Cache write`, `Hit rate` |
+| Runtime | `Completed`, `Failed`, `Avg tool time`, `Sessions`, `Projects` |
 
-The key table above is the human-facing copy; the **Data page prints the same
-promise from the code**. `MainScreen.key_help()` lists every binding the footer
-hides (`show=False` — `j` `k` `d` `b` `v` `e` `ctrl+r` `ctrl+s`), generated from
-`BINDINGS`, so a new binding documents itself and a removed one cannot keep a line
-in the help. `test_a_new_binding_documents_itself_in_the_help` adds a binding and
-requires it to appear.
+Below those sit the `Top models` and `Top tools` leaderboards, and a `Calls per day`
+trend. `Plugins inst.` counts what is **installed**, never what was used — a passive
+reader has no evidence a plugin or command ran.
 
-Three things a page now says about itself, because each of them previously read as
-a broken tool:
+The **Tools / Skills / Agents / Plugins / MCP** tabs are one row per entity, with calls,
+success, average duration and last use; `enter` on a row opens that entity's recent-call
+history. The **Tokens** tab is per-model token totals from the host's own step records,
+and the **Usage** tab is the request log for the window you pick. Each tab keeps its own
+time window (a preset like `7d`, or a custom span), so changing one tab's window never
+moves another's.
 
-- **An empty table names its cause.** Nothing recorded yet (`press r to re-read`,
-  the writer adds a row on the next call), a search hiding every row (`N skills
-  hidden`, clear the box), or a skills directory that has nothing in it — and the
-  directory's path, since "no skills" and "I looked in the wrong place" otherwise
-  look identical.
-- **A page's status block is one colour.** Every line under a table is a single
-  dimmed span, so nothing in it reads as two kinds of information at once.
-- **A table wider than the terminal says so.** `→` scrolls the trailing columns
-  into view; what was missing was the admission that they exist, so the status line
-  prints how many columns sit past the right edge.
-
-**Terminal widths.** Measured at the sizes named, not read off the CSS. The card
-grid comes out 4 columns narrower than the screen and Textual splits the remainder
-unevenly, so the *narrowest* card is what a label must fit: six cards across needs
-**111** columns, three needs **57**, and two is the floor — below **40** the longest
-label (`Skill success`, 13 columns) wraps, and it does so deliberately rather than
-the page doubling in height. The confirm dialog is `width: 100%, max-width: 60`,
-which keeps it inside the screen at every width; at 36 columns its two buttons still
-fit, and that is as narrow as this was tested.
+A plugin call that the hook recorded carries a NULL status — a tool's after-hook carries
+no status and a command has no after-hook at all — so a plugin row's status column reads
+`-`, not `0`.
 
 ### ⚡ Headless subcommands (no Textual needed)
 
 ```bash
-skillt insight [--days N] [--min-uses N] [--limit N] [--json]
-skillt export  [--out FILE] [--pretty] [--force] [--skills-only]
-skillt sync    [--dry-run] [--prune-orphans] [--json]
-skillt health  [--json] [--limit N]
-skillt mcp     [--json] [--limit N]
-skillt plugins [--json] [--limit N]
-skillt auto-backup [--dry-run] [--json]
-skillt doctor  [--json] [--freshness-days N]
-skillt cleanup-selftest [--yes]
-skillt scrub-metadata [--yes] [--json] [--limit N]
-skillt prune-usage [--keep-days N] [--keep-versions N] [--yes] [--json]
-skillt config [list|get|set|unset|path|explain] [<key> [<value>]] [--json]
-skillt rotate-log [--max-bytes N] [--keep-files N] [--yes] [--json]
+ocut sync    [--full] [--quiet] [--db PATH] [--host-db PATH] [--host-config PATH] [--plugin-events PATH]
+ocut stats   [--kind K] [--db PATH]
+ocut tools   [--limit N]
+ocut skills  [--limit N]
+ocut agents  [--limit N]
+ocut mcp     [--limit N]
+ocut plugins
+ocut models  [--limit N]
+ocut show    <tool|skill|agent|mcp> <name> [--limit N]
+ocut recent  [--limit N]
+ocut inventory [--kind K]
+ocut export
+ocut health
+ocut backup
+ocut restore [NAME]
+ocut format  [--write]
 ```
 
-- `insight` — most used / fastest growing / **never used** / dormant / highest
-  failure rate, plus the observed sample (sessions and days).
-- `export` — dump JSON (mode 0600); prints to stdout without `--out`.
-- `sync` — rescan `SKILL.md` files, recording content changes in
-  `skill_versions`; `--dry-run` counts without writing.
-- `health` — buckets every skill into **active (≤30d) / dormant (30–90d) /
-  unused (>90d or never)** with risk flags and suggestions, and reports the
-  observed sample. Usage-based pruning suggestions are **suppressed** until at
-  least 20 sessions over 14 days have been observed — below that, "0 uses"
-  means nothing. **Read-only, advisory only, never deletes.**
-- `mcp` — MCP tool usage: per-server roll-up plus the top tools by call count,
-  success rate and last use. **Read-only.**
-- `auto-backup` — snapshot into the backup directory and prune by retention
-  policy (see [Backups](#-backups)).
-- `doctor` — health check printing PASS/WARN/FAIL; **exit code 1 if any FAIL**.
-  Besides the structural checks (database, skills, plugin file, environment,
-  backups) it checks the **capture pipeline itself**: `capture.freshness` (the age
-  of the newest row **of each stream separately** — `skill_usage 0.0d · mcp_usage
-  2.2d · plugin_usage 0.0d` — against `--freshness-days`, default 7; a stream that
-  never recorded a row is reported as `no rows` and is not treated as stalled, and
-  `OPENCODE_SKILL_TRACKER_STREAMS=skill,plugin` excludes a stream from the verdict
-  while still printing its age), `log.errors` (count of `[err]` lines in the plugin's own log, with
-  the last one quoted), `env.opencode_version` (installed version versus the
-  one the builtin-tool allowlist is pinned to, see M13) and `backups.scheduled`
-  (whether `skillt-auto-backup.timer` is actually enabled in the user's systemd —
-  a fresh backup file says nothing about whether the next one is coming, and the
-  two facts came apart on a real host). Those four **WARN,
-  never FAIL** — a quiet week is not a fault.
-- `cleanup-selftest` — remove synthetic rows left by `__selftest()`
-  (`project_path = /tmp/selftest-proj`). Dry-run by default; `--yes` deletes for
-  real (after taking a backup).
-- `scrub-metadata` — strip free-text keys that must not be stored
-  (`summary`, `title`) from historical `metadata` rows. **The rows themselves
-  are kept** — usage is the point of this database, leaked prompt text is not.
-  Dry-run by default and lists what it would touch; `--yes` applies (backup
-  taken first, then the WAL is checkpointed so the text really leaves the disk).
-  See M14.
+- `sync` — index OpenCode's database into the tracker's own. `--full` rebuilds from
+  scratch (taking a snapshot first); `--quiet` is what the TUI's background worker runs.
+  It is incremental: a rowid cursor consumes new `part` rows, and `session` is re-read in
+  full each run because the host rewrites its rollup.
+- `stats` — an overview of every category: sessions, projects, tool calls, skill / agent /
+  MCP invocations, plugins and commands *installed*, model steps and tokens.
+- `tools` / `skills` / `agents` / `mcp` — one category's table. `plugins` is the
+  installed ∪ used union, with the owning plugin's version and declared path.
+- `models` — per-model token totals from the host's own `step-finish` records, plus the
+  most recent steps. `Total` is the host's own step total when it sent one; cache
+  read/write are shown separately and are **not** inside it.
+- `show <kind> <name>` — the recent calls for one entity. `recent` — the most recent tool
+  calls of any kind. `inventory` — what is installed or available.
+- `export` — dump every view and table as JSON.
+- `health` — a read-only report: the database path, the host database and config, the
+  resolved settings, the schema version, each sync cursor against the host's own counts,
+  the indexed totals, and — the point of the command — the `unparsed` counters. A run
+  that quietly claims nothing still prints "done"; `health` is where a format change
+  becomes visible.
+- `backup` / `restore` — snapshot the database, or list and restore a snapshot (see
+  [Backups](#-backups)).
+- `format` — print the OpenCode format-dependency surface, read out of the parser's
+  registry. `--write` refreshes the generated block in `docs/maintenance/`.
 
-- `rotate-log` — keeps the plugin's own log from outrunning the reader (M17). It
-  **renames** the file rather than emptying it: every line that leaves the live path is
-  still on disk in `skill-tracker.log.<UTC stamp>`, because those lines are the evidence
-  `doctor log.errors` reads. The cap is `log.max_bytes`, and `doctor` reads the log at
-  that **same resolved** number, so raising one raises the other instead of letting the
-  file outrun the reader; `log.keep_files` rotations are kept and
-  anything older is pruned (only names matching this rotation shape, never a neighbour's
-  log — the command takes no path argument). The live file is re-created empty rather
-  than left missing, because a missing log makes `doctor` WARN about a plugin that is
-  running fine, and it is created without `O_TRUNC`: the writer appends per line, so a
-  line can land between the rename and the re-create. Dry-run by default; the backup
-  timer runs it with `--yes`. Needs **no database** — on a fresh machine the log exists
-  first. A second rotation inside the same second gets a `-2` suffix instead of renaming
-  onto the copy already there — that would lose a generation of the log in silence, and
-  it is the opposite of `auto-backup`, where a same-second name is an error.
-- `prune-usage` — the only command here that **deletes recorded history**. Off by
-  default: `retention.usage_days` and `retention.max_skill_versions` are both `0`, and
-  with either at 0 nothing is scheduled. It lists the rows it would remove and deletes
-  them only with `--yes`, which writes a backup first and aborts if that backup fails;
-  the delete is one transaction. The count in the dry run comes from the same SELECT the
-  delete uses, so it is a measurement and not a prediction. Rows whose timestamp will not
-  parse are **kept** and reported as `undated` — "older than N days" is a claim about a
-  date we do not have. `subagent_usage` is never in the delete set: those rows are events,
-  not calls, and the spawn record is the only witness that a subagent ran (M24). Deleting
-  rows frees pages; the file does not shrink until `skillt vacuum`.
-Argument validation: `--days ≥ 1`, `--min-uses ≥ 0`, `--limit ≥ 1`,
-`--freshness-days ≥ 1`; invalid values fail fast with exit code 2. Every
-headless subcommand also works when stdout is **not** a TTY (pipes,
-redirection), emitting plain text or JSON.
-
-### 🕰️ Legacy CLI (delegates to `skill-stats.py`)
-
-```bash
-skillt stats | top [N] | show <skill> | recent [N] | delete <skill> | clear | backup | vacuum
-skillt help
-```
-
-Command names, positional arguments (`top 3`) and `--json` fields are unchanged
-from the original CLI. `top` / `recent` accept either a positional count or
-`--limit 3`. `show <skill> --limit N` controls history depth (default 20). The
-only visible change is that **output text is now English**, for consistent logs
-and script parsing.
-
----
+Global value flags (`--db`, `--kind`, `--limit`, `--host-db`, `--host-config`,
+`--plugin-events`) may sit before **or** after the subcommand: `ocut --limit 5 tools` and
+`ocut tools --limit 5` are the same. A command is never mistaken for a flag's value.
 
 ## ⚙️ Settings
 
-Zero configuration is a supported configuration. Every key has a default, and the
-defaults *are* the behaviour the screens already show — nothing here is needed for
-the plugin, the CLI or the TUI to work, and the file does not exist until you make
-it.
+Zero configuration is a supported configuration: with no file, every key takes its
+default and nothing is created. Settings live in **`~/.config/ocut/config.toml`**
+(override the path with `OCUT_CONFIG`; `XDG_CONFIG_HOME` is honoured), read with the
+standard library's `tomllib`.
 
-**Precedence: flag → config file → environment → default.** The file is
-`~/.local/share/opencode/skillt-config.json`: the tracker's own data directory,
-never `~/.config/opencode/`, which belongs to OpenCode. Change it with the CLI
-rather than by hand, because the CLI validates and reports where each value came
-from:
+**Precedence: environment → file → default.**
 
-```bash
-skillt config list                    # every key: value, origin, and what it does
-skillt config get view.days
-skillt config set view.days 45
-skillt config unset view.days
-skillt config explain view.min_uses   # default, minimum, flag, env name, both languages
-skillt config path
-skillt config list --json
-```
+| Key | Default | Environment | What it changes |
+|---|---|---|---|
+| `top_n` | `5` | `OCUT_TOP_N` | rows in the Dashboard's Top models / Top tools |
+| `log_limit` | `100` | `OCUT_LOG_LIMIT` | request rows on the Usage tab |
+| `detail_limit` | `200` | `OCUT_DETAIL_LIMIT` | rows on a history / model-response screen |
+| `name_cap` | `28` | `OCUT_NAME_CAP` | widest cell a table renders before the name is clipped |
+| `refresh_secs` | `5` | `OCUT_REFRESH_SECS` | TUI redraw timer |
+| `sync_secs` | `30` | `OCUT_SYNC_SECS` | TUI auto-sync timer |
 
-| Key | Default | Flag | Environment | What it changes |
-|---|---|---|---|---|
-| `view.days` | `30` | `--days` | `OPENCODE_SKILL_TRACKER_VIEW_DAYS` | how many days the headless reports cover (`insight`, `export`). The interactive screens are pinned to fixed windows — 7-day trends, 30-day totals — so this does not stretch them |
-| `view.limit` | `10` | `--limit` | `OPENCODE_SKILL_TRACKER_VIEW_LIMIT` | how many rows `skillt insight` lists per ranked table. The interactive tables hold every row and scroll |
-| `view.recent_rows` | `100` | `--recent-rows` | `OPENCODE_SKILL_TRACKER_VIEW_RECENT_ROWS` | how many events the Recent timeline lists. Older events stay in the database; only what the screen holds changes |
-| `view.min_uses` | `3` | `--min-uses` | `OPENCODE_SKILL_TRACKER_VIEW_MIN_USES` | how few calls make a skill "worth advising about" in `skillt insight` |
-| `doctor.freshness_days` | `7` | `--freshness-days` | `OPENCODE_SKILL_TRACKER_DOCTOR_FRESHNESS_DAYS` | how old the newest recorded call may get before `doctor` warns that capture looks stalled |
-| `log.max_bytes` | `4194304` | `--max-bytes` | `OPENCODE_SKILL_TRACKER_LOG_MAX_BYTES` | when the plugin's own log passes this size `skillt rotate-log` moves it aside — **and `doctor log.errors` reads the log at this same resolved value**, so the two cannot drift when an owner sets it (`TRACKER_LOG_BYTES_CAP` is only its shipped default). Floor 1024 — a smaller cap would rotate on the first line |
-| `log.keep_files` | `5` | `--keep-files` | `OPENCODE_SKILL_TRACKER_LOG_KEEP_FILES` | how many rotated logs stay beside the live one. Rotation is a rename, so the lines move rather than disappear; this is how far back that history goes |
-| `retention.usage_days` | `0` | `--keep-days` | `OPENCODE_SKILL_TRACKER_RETENTION_USAGE_DAYS` | **`0` = off: nothing is ever deleted.** Usage rows older than this many days become the delete set of `skillt prune-usage`, which lists them first and only removes them with `--yes`, after a backup |
-| `retention.max_skill_versions` | `0` | `--keep-versions` | `OPENCODE_SKILL_TRACKER_RETENTION_MAX_SKILL_VERSIONS` | **`0` = off.** Keep at most this many `skill_versions` rows per skill — the newest N, so retention cannot eat the current content. The table gains a row per content change and never loses one |
-The environment name is **derived by rule**: uppercase the key, replace `.` with
-`_`, prefix `OPENCODE_SKILL_TRACKER_`. There is no second list to keep in step, and
-`scripts/tests/test_settings_documented.py` fails the build if a key, its flag or
-its default is missing from either README — the gate whose absence let six
-variables ship undocumented.
+A file that cannot be read is an **error**, not a fallback: an unknown key, malformed
+TOML, a value of the wrong type, or a value outside its bounds is a hard failure that
+names the path (or variable) and the key. Someone who edits `config.toml` and is
+silently ignored is the worst outcome this layer can produce.
 
-**A refused value is reported, never hidden.** A file saying `"view.days": "thirty"`
-still shows 30 on screen, and `skillt config list` prints that key's origin as
-`config file (rejected)` with the reason; `skillt doctor` carries a matching
-`config.file` WARN. Silent fallback is how a settings layer stops being believable.
+### 🌱 Environment variables
 
-**A file that does not parse is never rewritten.** `skillt config set` against a
-broken or unknown-key file refuses with exit 2 instead of rebuilding it from the
-lines that happened to parse. The typo is your evidence, and it is one line to fix.
-Keys are `group.key`, one level; an unrecognised key is named and ignored, and
-`skillt config set view.dayz 7` answers with the nearest real key.
-
-What settings deliberately do **not** cover: what the recorder captures, or how
-long it keeps it — those are `OPENCODE_SKILL_TRACKER_*` (table below) and code. And
-the privacy invariants (purely local, no network, no message text) are not
-configurable at all; a toggle for them would be a way to break them.
+| Variable | Effect |
+|---|---|
+| `OCUT_DB` | the tracker database (default `~/.local/share/opencode-usage-tracker/usage.db`) |
+| `OCUT_OPENCODE_DATA` | OpenCode's data home (default `~/.local/share/opencode`) |
+| `OCUT_OPENCODE_CONFIG` | OpenCode's config home (default `~/.config/opencode`) — **both** the reader and the hook |
+| `OCUT_HOST_DB` | the host database to read (default `<data home>/opencode.db`) |
+| `OCUT_HOOK_EVENTS` | the plugin-usage sidecar (default `~/.local/share/opencode-usage-tracker/plugin-events.jsonl`) — **both** the hook and `ocut sync` |
+| `OCUT_CONFIG` | the settings file (default `~/.config/ocut/config.toml`) |
+| `XDG_CONFIG_HOME` | base for the default settings path |
+| `OCUT_HOOK_DISABLE` | `1` turns the hook off entirely |
+| `OCUT_HOOK_PACKAGES` | where npm plugin sources are looked up for the hook's static scan (default `~/.cache/opencode/packages`) |
+| `OCUT_SCRIPTS` | override the `scripts/` directory the launcher uses |
+| `OCUT_VENV` | point the launcher at a venv dir **or** a python binary |
+| `OCUT_CONFIG_DIR` | installer only: the OpenCode config directory to link into (default `~/.config/opencode`) |
+| `OCUT_BIN_DIR` | installer only: where the `ocut` launcher is linked (default `~/.local/bin`) |
+| `HOME` | inherited, not a knob: every default above is built from it |
 
 ---
 
 ## 🔬 How it works
 
+`ocut` reads OpenCode's own state **read-only** and copies what it needs into its own
+database; nothing is ever written back to OpenCode.
+
 ```
-OpenCode runtime
-   │  tool.execute.before/after, permission.ask, event, chat.message, chat.params
-   ▼
-~/.config/opencode/plugin/skill-tracker.js     (Bun runtime, bun:sqlite)
-   │  writes
-   ▼
-~/.local/share/opencode/skill-usage.db         (SQLite, WAL, 0600)
-   │  reads
-   ├── skillt                → scripts/skill-tui.py    (Textual TUI, needs venv)
-   ├── skillt stats|top|...  → scripts/skill-stats.py  (legacy CLI, read-only)
-   └── skillt insight|health|doctor|...  → skill-tui.py --cli  (no Textual needed)
+OpenCode's own state (read-only — never opened for writing)
+  ~/.local/share/opencode/opencode.db    session · message · part
+  ~/.config/opencode/                    installed skills · agents · commands · mcp · plugin
+        │
+        │  ocut sync   → scripts/ocut-sync.py   (opens the host with mode=ro)
+        ▼
+~/.local/share/opencode-usage-tracker/usage.db   (SQLite — the tracker's own store)
+        │
+        │  reads
+        ├── ocut                 → scripts/ocut-tui.py    (Textual TUI, eight tabs, needs venv)
+        ├── ocut stats|tools|…   → scripts/ocut-stats.py  (headless reports, stdlib only)
+        └── ocut backup|restore|format
+
+  ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
+        ▲  written only by plugin/ocut-hook.js, ingested by ocut sync
 ```
 
-- **Writer**: only the plugin, only inside the OpenCode runtime. Every write is
-  deduplicated by `UNIQUE(session_id, call_id)` with an `ON CONFLICT` upsert.
-- **Readers**: every `skillt` command. `health` opens the database read-only and
-  never modifies it.
-- **Shared data layer**: `scripts/skill_db.py` — schema, migrations, queries,
-  export and backup — used by both `skill-tui.py` and the test suite. It holds the
-  tracker's own data and nothing else.
-- **Upstream contract**: every name OpenCode chose is written once per language —
-  `scripts/opencode_compat.py` on the Python side, the `CONTRACT` block in
-  `plugin/skill-tracker.js` on the writer's side (hooks are registered and events
-  switched on *through* it, so each name appears once, as a value).
-  `scripts/tests/test_compat.py` compares the two, so a half-finished rename fails
-  the build instead of silently recording nothing. Numbers and policy that *this*
-  tool chose are not there.
-
-### 🌱 Environment variables
-
-Every name this project reads, in one table, on both sides of the documentation —
-`scripts/tests/test_settings_documented.py` enumerates the environment reads out of
-the source and fails if a name is missing here or from `README.zh-CN.md`. That gate
-did not exist while six variables shipped undocumented.
-
-| Variable | Effect |
-|---|---|
-| `OPENCODE_SKILL_TRACKER_DB` | override the database path (the plugin) |
-| `OPENCODE_SKILL_TRACKER_CONFIG` | the settings file's path (readers only; default `~/.local/share/opencode/skillt-config.json`) |
-| `OPENCODE_SKILL_TRACKER_CONFIG_DIR` | the OpenCode config tree (default `~/.config/opencode`) — **both sides**: the writer records the skills it finds there, the readers scan the same tree, so a one-sided override would show an empty Skills page over real data |
-| `OPENCODE_SKILL_TRACKER_SKILLS_DIR` | the skills tree (default `$CONFIG_DIR/skills`) — both writer and readers |
-| `OPENCODE_SKILL_TRACKER_PACKAGES_DIR` | where npm plugin sources are looked up for the static scan (default `~/.cache/opencode/packages`) |
-| `OPENCODE_SKILL_TRACKER_PLUGINS` | comma-separated plugin specs; **when set, reading the installed set out of OpenCode's config is skipped** (even when empty). Nothing is pruned from the inventory under an override: it says nothing about what is installed |
-| `OPENCODE_SKILL_TRACKER_PLUGIN_EXCLUDE` | comma-separated specs appended to the default exclusions (the tracker itself, `opencode-notifier`) |
-| `OPENCODE_SKILL_TRACKER_TOOL` | the name of the skill tool (default `skill`), for a host that renamed it |
-| `OPENCODE_SKILL_TRACKER_MCP_SERVERS` | comma-separated MCP server names; **when set, automatic detection is skipped** (even when empty) |
-| `OPENCODE_SKILL_TRACKER_MCP_DISABLE` | `1` stops MCP recording while skill recording stays on |
-| `OPENCODE_SKILL_TRACKER_PLUGIN_DISABLE` | `1` stops plugin tool/command recording only |
-| `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE` | `1` stops recording that a subagent was started (the builtin `task` tool). The other three streams are unaffected |
-| `OPENCODE_SKILL_TRACKER_DISABLE` | `1` disables the plugin entirely |
-| `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` | replaces the builtin-tool allowlist (pinned to OpenCode 1.18.34, see M13) |
-| `OPENCODE_SKILL_TRACKER_LOG` | the plugin's own log file (default `~/.config/opencode/logs/skill-tracker.log`, the one `skillt doctor` reads). `__selftest()` ignores the **default** value and writes beside its temp database instead — a failed selftest must not land in the owner's error count |
-| `OPENCODE_SKILL_TRACKER_DEBUG` | `1` enables per-call debug lines in the plugin log |
-| `OPENCODE_SKILL_TRACKER_BACKUP_DIR` | where `VACUUM INTO` backups are written and retention sweeps look (default `~/.local/share/opencode/backups`) |
-| `OPENCODE_SKILL_TRACKER_STREAMS` | read side: comma list of streams `doctor` may call stalled (default: all three). An excluded stream is still printed, marked `(excluded)` |
-| `SKILLT_SCRIPTS` | override the `scripts/` directory the launcher uses |
-| `SKILLT_VENV` | point the launcher at a venv dir or a python binary |
-| `SKILLT_CONFIG_DIR` | installer only: the OpenCode config directory to link into (default `~/.config/opencode`) — for a sandboxed install test |
-| `SKILLT_BIN_DIR` | installer only: where the `skillt` launcher is linked (default `~/.local/bin`) |
-| `SKILLT_SYSTEMD_DIR` | installer only, and only with `--with-timer`: where the user units are copied (default `~/.config/systemd/user`) |
-| `HOME` | inherited, not a knob: the writer builds every default above from it, so setting it moves the whole tree unless a specific override pins it |
-| `TMPDIR` | inherited: where `__selftest()` creates its throwaway database (default `/tmp`) |
-| `TERM` | inherited: the TUI refuses to start on an empty or `dumb` terminal rather than painting garbage |
+- **Source — read-only.** OpenCode's `opencode.db` (`session`, `message`, `part`) plus
+  the installed inventory under `~/.config/opencode`. The host database is opened
+  `mode=ro` with `PRAGMA query_only = ON`, and a missing file is an error, not an empty
+  success.
+- **Sync.** `ocut sync` copies what it needs into the tracker's own database; `--full`
+  rebuilds it from scratch (after a snapshot).
+- **Store.** `~/.local/share/opencode-usage-tracker/usage.db` — the tracker's own SQLite,
+  written only by `ocut`, in WAL mode with a 5-second busy timeout.
+- **Readers.** Every `ocut` command. The TUI needs Textual (a venv); the headless reports
+  need only the standard library.
 
 ### 🗄️ Database
 
-- `skills` — one row per `SKILL.md`. `path` is `UNIQUE`; `name` is **not**.
-  Migration adds `content_hash` for version tracking.
-- `skill_usage` — one row per skill call. `UNIQUE(session_id, call_id)` makes it
-  idempotent. `status ∈ {success, error, denied, ask, unknown}`;
-  `trigger_type ∈ {tool_call, event_detected, permission_denied, manual}`.
-  `metadata` is sanitized JSON (model / agent / branch) — the message body and
-  title are never read, so they cannot be stored.
-- `mcp_usage` — one row per MCP tool call, keyed by `(server_name, tool_name)`.
-  Same `UNIQUE(session_id, call_id)` and status/trigger vocabulary as
-  `skill_usage`. `tool_name = '*'` means only the server was known (the
-  permission paths). `arg_names` is a JSON array of the call's **argument key
-  names only** — argument values are never read, so they cannot be stored.
-- `skill_versions` — content-hash history, `UNIQUE(skill_name, content_hash)`.
-- `plugin_usage` — one row per plugin tool/command call, keyed by
-  `(plugin_name, kind, item_name)` with the same `UNIQUE(session_id, call_id)`.
-  A tool that no installed plugin could be resolved to lands in `(unknown)`;
-  an unresolvable **command** is dropped instead (fail-closed, no command
-  allowlist exists).
-- `plugin_inventory` — one row per plugin seen when OpenCode started: the tool
-  and command lists the static scan found, `skipped` for the excluded ones, and
-  `scope` (`global` / `localdir` / `project`) naming which config claimed it.
-  Retained when usage is cleared; pruned only at the next OpenCode start.
-- `subagent_usage` — one row per subagent the host started, keyed by
-  `(parent_session_id, call_id)`. Identifiers and durations only:
-  `subagent`, `child_session_id`, `status`, `trigger_type`, `duration_ms`. The
-  task text, the one-line description, the title and the subagent's own report
-  are not read by the writer at all (M24). Both the hook pair and the event
-  stream may report one spawn; the conflict rule fills in what the first
-  observation left unknown rather than overwriting it, so it is still one row.
-- Views: `v_skill_totals`, `v_skill_last30`, `v_skill_history`, plus the MCP
-  analogues `v_mcp_totals`, `v_mcp_last30`, `v_mcp_history`, and the plugin
-  analogues `v_plugin_totals`, `v_plugin_last30`, `v_plugin_history`.
-- `skillt export` writes `schema_version = 6` (4 = metadata is allowlisted,
-  5 = `plugin_inventory.scope`, 6 = the `subagent_usage` key). `skillt
-  scrub-metadata` reports 0 rows on a clean database.
-- `journal_mode = WAL`, `busy_timeout = 5000`, `synchronous = NORMAL`, file mode
-  `0600`. The `source` (personal / open-source) column is derived from
-  `category` at query time, not stored.
+Tables: `tool_calls`, `model_calls`, `skill_usage`, `agent_usage`, `mcp_usage`,
+`plugin_usage`, `plugin_surface`, `sessions`, `inventory`, `unparsed`, `sync_state`.
+Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
+
+- `tool_calls` — one row per `tool` part, whatever the tool is. `category` is
+  `builtin | skill | agent | mcp`; `status` is the host's own `state.status` verbatim.
+- `skill_usage` — the `skill` tool's calls; the skill name is read from
+  `state.input.name`, one of the only two argument names this project looks at.
+- `agent_usage` — the `task` tool's calls (a subagent was started), keyed by
+  `state.input.subagent_type`.
+- `mcp_usage` — MCP tool calls, found by name (`<server>_<tool>`) and resolved against
+  the servers the host's config lists, longest prefix first.
+- `model_calls` — one row per `step-finish` part; tokens and cost live here, the model
+  comes from the parent message.
+- `sessions` — one row per OpenCode session (including child sessions), with the host's
+  own per-session rollup. `sessions` and `model_calls` are one measurement at two
+  granularities and are **never added**.
+- `inventory` — what is installed, from the host's directories and config: skills, agents,
+  commands, MCP servers, plugins, providers, and the tool ids each plugin registers.
+- `plugin_usage` — one row per plugin tool/command call the hook saw. This is the one
+  table fed from outside the host database.
+- `plugin_surface` — the tool and command ids each plugin registers, as reported by the
+  hook at load; `ocut sync` folds it back into `inventory` after the filesystem rewrite.
+- `sync_state` — one row per host table the reader tracks: the rowid cursor plus the
+  host's own `count(*)`/`max(rowid)` and a `note` where a pruned or renumbered table says
+  so. The cursor is held back at the first non-final `running` tool part so a call that
+  finishes after the row was inserted is re-read; the hold is capped, so an interrupted
+  session cannot pin the cursor forever.
+- `unparsed` — records the indexer saw but could not use, keyed by reason. This is the
+  runtime signal that OpenCode's persisted format moved.
 
 Query it directly:
 
 ```bash
-sqlite3 ~/.local/share/opencode/skill-usage.db \
-  "SELECT skill_name, total, success, errors, last_used FROM v_skill_totals ORDER BY total DESC LIMIT 10;"
-sqlite3 ~/.local/share/opencode/skill-usage.db \
-  "SELECT server_name, tool_name, total, errors FROM v_mcp_totals ORDER BY total DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT tool_name, calls, errors FROM v_tools ORDER BY calls DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT skill, calls, last_ts FROM v_skills ORDER BY calls DESC LIMIT 10;"
 ```
 
 ---
@@ -565,62 +373,26 @@ sqlite3 ~/.local/share/opencode/skill-usage.db \
 ## 💾 Backups
 
 ```bash
-skillt auto-backup --dry-run   # see what would happen
-skillt auto-backup             # do it
+ocut backup            # snapshot the database now
+ocut restore           # list available snapshots
+ocut restore NAME      # restore one (close the TUI first)
 ```
 
-- Snapshots are written to `~/.local/share/opencode/backups/` (0700) as
-  `skill-usage-backup-YYYYMMDD-HHMMSS.db`, created with `VACUUM INTO`.
-- Retention: the **last 30 daily** snapshots plus the **last 12 monthly** ones;
-  everything else is pruned.
-- Guardrails: only files matching the exact name pattern are touched; only that
-  dedicated directory is pruned (never the live DB, exports or manual copies);
-  files younger than 120 seconds are never deleted; unparsable names are never
-  deleted; same-second name collisions **error instead of overwrite**; a
-  `.lock` file prevents concurrent runs (stale after 10 minutes).
-- Manual: `skillt backup` (legacy CLI) or `b` in the TUI. They land in the
-  **same directory**, so retention reaches them too (it used to write beside the
-  database, where nothing would prune or report them — see M19).
+- Snapshots are written to `~/.local/share/opencode-usage-tracker/backups/` as
+  `usage-YYYYMMDD-HHMMSS-<reason>.db`, created with SQLite's online backup API — not a
+  file copy, because under WAL the newest committed frames can still be in `-wal`, and a
+  copied main file would be a stale database.
+- The newest `BACKUP_KEEP` (5) managed snapshots are kept; older ones are pruned by
+  mtime, not by name, because several can land in the same second.
+- `ocut sync --full`, a schema-version bump, and `ocut restore` all take a snapshot
+  **first**, so a destructive step is undoable.
+- Restore keeps the database that was there: it snapshots the live file before replacing
+  it, so a wrong restore is itself reversible.
+- Hand-made `usage.db.bak-*` files beside the database are listed as restore sources but
+  are never pruned — this tool did not create them and does not get to delete them.
 
-### ⏰ Daily timer (optional)
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp ~/.config/opencode/skill-tracker/systemd/skillt-auto-backup.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now skillt-auto-backup.timer
-
-systemctl --user list-timers skillt-auto-backup.timer
-systemctl --user start skillt-auto-backup.service     # trigger once now
-
-loginctl enable-linger "$USER"                        # run while logged out
-```
-
-The unit's `ExecStart` is `%h/.local/bin/skillt` because systemd's user `PATH`
-does not include `~/.local/bin`, and it runs two maintenance jobs: `auto-backup` (the
-retention above) and `rotate-log --yes` (the plugin's own log, M17). The same thing can
-be done by `./install.sh --with-timer`, which is still opt-in — writing a unit is a
-change outside this project's directory.
-
-Neither job bounds the **database rows**. Usage rows are kept forever unless
-`retention.usage_days` is set and `skillt prune-usage --yes` is run, which is a decision
-nobody should make on a schedule they did not choose; and the database *file* only
-shrinks under `skillt vacuum`.
-
-### ♻️ Restore
-
-```bash
-# 1. stop any OpenCode session using the DB
-# 2. keep the current DB
-cp ~/.local/share/opencode/skill-usage.db ~/.local/share/opencode/skill-usage.db.before-restore
-# 3. overwrite it with a snapshot
-cp ~/.local/share/opencode/backups/skill-usage-backup-YYYYMMDD-HHMMSS.db \
-   ~/.local/share/opencode/skill-usage.db
-# 4. drop stale WAL/SHM belonging to the old DB
-rm -f ~/.local/share/opencode/skill-usage.db-wal ~/.local/share/opencode/skill-usage.db-shm
-# 5. verify
-skillt doctor
-```
+There is **no systemd timer**: backups are manual and pre-destructive only. `ocut backup`
+is the deliberate act.
 
 ---
 
@@ -628,254 +400,55 @@ skillt doctor
 
 | Symptom | Cause / fix |
 |---|---|
-| `skillt: not an interactive terminal` / `skillt: TERM is unset or 'dumb'` | Not all of stdin/stdout/stderr are TTYs, or `TERM` is empty/`dumb`. Use `skillt insight`, `skillt health` or `skillt doctor`. |
-| `skillt: TUI venv not found` | Run `./install.sh` from the repo root, or `export SKILLT_VENV=/path/to/venv`. |
-| No new data in the stats | The plugin only writes while OpenCode runs. Check OpenCode's log for `failed to load plugin` — if `skill-tracker.js` appears there, the plugin failed to load, no hook was registered, and the problem is **not** that skills went uncalled. Then confirm `skillt doctor` shows `plugin.exists` / `plugin.hooks` as PASS. |
-| `failed to load plugin path=list error="Plugin export is not a function"` | A project-level `.opencode/opencode.json` lists a non-plugin npm package in its `plugin` array (e.g. `"list"`). Remove that entry. `path=list` means the source is the config's plugin list, not the `plugin/` directory. |
-| `doctor` reports `db.wal` FAIL | The file is corrupt or not SQLite. Confirm with `sqlite3 ... "PRAGMA integrity_check;"`, then restore from a backup. |
-| Timestamps look shifted | Day buckets follow the local calendar. Older rows written before that fix are still stored in UTC. |
-| Mojibake / `UnicodeEncodeError` | Non-UTF-8 locale. Set `LANG=C.UTF-8` or `LC_ALL=C.UTF-8`. |
-| `backups.latest` WARN | `auto-backup` has never run, or has not run in 7 days. Run `skillt auto-backup --dry-run` to see what it would do, or `skillt auto-backup` to make one now. |
-| `backups.scheduled` WARN (`not-found` / `disabled`) | Nothing is *scheduled* to take the next backup or rotate the log — the timer unit is not installed, or someone turned it off. A `backups.latest` PASS beside this line only means an old file is still on disk. Arm it with `./install.sh --with-timer` (installing a user systemd unit is opt-in by design), or accept that both are manual and run them yourself. |
-
-The plugin logs errors under `~/.config/opencode/logs/` (managed by OpenCode).
+| `no database at … — run: ocut sync` | The tracker database has not been built yet. Run `ocut sync`. |
+| `no OpenCode database at …` | `ocut` cannot find `~/.local/share/opencode/opencode.db`. Check that OpenCode has run, or point `OCUT_HOST_DB` at it. |
+| Plugin usage stays empty / a plugin shows `0 uses` | Plugin usage is recorded **only** by the hook, and only after an OpenCode restart. Confirm `~/.config/opencode/plugin/ocut-hook.js` exists (it is a symlink), restart OpenCode, and check that `OCUT_HOOK_DISABLE` is not set. A `0 uses` means "the hook recorded nothing", not "the plugin was not used". |
+| `ocut: this database is older than this build` | The database predates the current schema. Run `ocut sync` to roll it forward. |
+| `ocut health` shows an `UNPARSED` line | The reader met a record type or field it does not know — usually right after an OpenCode upgrade. The reason string names it; see [compatibility](docs/maintenance/compatibility.md). |
+| `ocut health` reports `settings NOT READ` | `~/.config/ocut/config.toml` has an unknown key, malformed TOML, or an out-of-range value. The message names the key. |
+| The TUI refuses to start | It needs a real terminal and a venv with textual. Run `./install.sh`, or set `OCUT_VENV` to a python with textual. |
 
 ---
 
 ## 🚧 Known limitations
 
-The full audit — M1 through M24, with reproduction notes — lives in
-[README.zh-CN.md §9](README.zh-CN.md#-9-已知限制). Highlights:
+The list below runs **M1–M12**. The Chinese README carries the same list with more
+detail in [§9](README.zh-CN.md#-9-已知限制).
 
-- **M1** (fixed) Day buckets (`Today`, daily trend) used to use **UTC**; at
-  UTC+8, local 00:00–08:00 landed on the previous day. They now follow the
-  local calendar. Time windows themselves were always correct.
-- **M2** Some read commands (`insight`, `export`, `doctor`) open the DB
-  read-write; `open_db(readonly=True)` creates an empty DB instead of erroring
-  when the path does not exist.
-- **M3** `ensure_schema`'s `executescript` commits any pending transaction
-  implicitly; in its result dict `created_base` is never set and
-  `created_versions` is always true. Semantics of that dict only — the tables
-  themselves are created correctly.
-- **M4** Backups `chmod 0600` **after** `VACUUM INTO`, leaving a brief
-  permissive window; a failed VACUUM can leave a **half-written file** behind
-  that must be deleted by hand.
-- **M19** (fixed) The two ways a backup was made wrote to **two different
-  places**, and retention only covered one: `auto-backup` (the timer) wrote into
-  `BACKUP_DIR` (`~/.local/share/opencode/backups/`) and pruned it to 30 daily +
-  12 monthly, while `skillt backup`, the TUI's `b`, and the automatic pre-write
-  backup of `scrub-metadata --yes` / `cleanup-selftest --yes` used `backup_db()`'s
-  default — **beside the database**. Nothing pruned those, and `doctor
-  backups.latest` could not even see them, so "backups exist" and "the backup
-  check says none" were both true at once. The default now writes into
-  `BACKUP_DIR`; `test_default_backup_lands_in_the_retention_directory` pins it.
-  Strays left outside it are still there until moved by hand:
-  `mv ~/.local/share/opencode/skill-usage-backup-*.db
-     ~/.local/share/opencode/backups/`
-- **M5** `VACUUM` / backup / export / refresh run on the UI thread, so a very
-  large database briefly freezes the TUI.
-- **M6** (mitigated) Non-UTF-8 locales forced `UnicodeEncodeError`; stdout and
-  stderr are now reconfigured to UTF-8, though exotic glyphs may still render
-  as substitutes. `LANG=C.UTF-8` avoids it entirely.
-- **M7** (fixed) `resolveBranch`'s 500 ms timeout did not kill the `git` child
-  process or clear its timer, leaking one process per call on a bad mount
-  point. It now spawns git directly and aborts it.
-- **M8** (fixed) `branchByDir` / `pendingSkillPerms` had no capacity limit and
-  grew for the lifetime of the process; both are now bounded.
-- **M9** (fixed) `initDone` was set before `init()` did any work, so a failed
-  init left the tracker permanently disabled with only a log line to show for
-  it. It is now set only on success, and a failed init can be retried.
-- **M10** `app.run()` is not wrapped in `try/finally`, so a fatal error may still
-  exit with code 0.
-- **M11** The MCP server list is resolved **once, at plugin init**. Adding or
-  renaming an MCP server needs an OpenCode restart before its calls are
-  recorded — until then those calls are invisible (they are never misrecorded,
-  just skipped). Detection fails **closed**: if no server can be identified,
-  nothing is written rather than guessing which tools are MCP.
-- **M12** The plugin inventory and attribution are also resolved **once, at
-  init** by a best-effort **static scan** of each plugin's source: the package's
-  entry file, plus **one hop** into the modules it imports by relative path
-  (bounded: 3 hops, 256 KiB each — a published `main` is often a few-hundred-byte
-  shim that re-exports the chunk holding the real registration). Tool ids are the
-  keys at the **shallowest level** inside the `tool: { … }` object, so a tool's own
-  `args: { query: … }` is not mistaken for one. New,
-  upgraded or renamed plugins (and the tools/commands they register) need an
-  OpenCode restart to appear. An unattributable tool is recorded as
-  `(unknown)`; an unattributable command is **not recorded** (fail closed, so
-  builtin commands like `/init` never land in the table).
-  The inventory row records **which config listed the plugin** (`global`,
-  `localdir`, `project`), and a `global`/`localdir` row that a later start does not
-  see again is deleted — that is what makes the page's list mean "loaded", not
-  "seen once since this database was created". `project` rows are never deleted
-  from elsewhere, because a session started in another directory cannot see them.
-- **M13** The builtin-tool `allowlist` is hardcoded and pinned to OpenCode
-  1.18.34 (measured with `curl /experimental/tool/ids` against
-  `opencode serve --pure`, which loads no plugins; the fourteen ids are
-  unchanged since 1.18.33). A builtin added by a later release would be
-  attributed to a plugin as `(unknown)` until the list is refreshed — or set
-  `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS` yourself. `skillt doctor`
-  `env.opencode_version` warns when the installed version drifts.
-- **M14** Older builds stored a session summary — the user's **own prompt
-  text** — in `metadata.summary`. That writer is gone, the export path now
-  emits only an allowlist of keys, and `__selftest` asserts it is never
-  written, but **rows already in your database do not remove themselves**, nor
-  do the backups taken of it. Run `skillt scrub-metadata` to see them, then
-  `--yes` to strip the keys. Measured 40 such rows in a real 8-day database;
-  they were stripped with `scrub-metadata --yes` on 2026-10-01, and the three
-  loose backups that still held it were deleted. Re-check with
-  `skillt scrub-metadata` (it must report 0) and see M19. **The other free-text
-  key the scrubber knows about — a permission `title` — is no longer read at
-  all**: since 2026-10-09 the writer stores none, so a fresh denial cannot
-  reintroduce one, and `title` stays in the scrub list only for rows older builds
-  wrote. Note that removing the
-  value is not the same as removing the bytes: under WAL the replaced text keeps
-  living in the `-wal` file until a checkpoint, so `--yes` ends with
-  `wal_checkpoint(TRUNCATE)` and reports when the database is too busy to
-  checkpoint (then close OpenCode and run `skillt vacuum`).
-- **M15** A call that never completes leaves **no row at all**. Usage is written
-  at `tool.execute.after` or from `message.part.updated`; `tool.execute.before`
-  only parks the start time in memory. So an aborted, crashed or
-  after-hook-less call is not misrecorded — it is invisible. `trigger_type`
-  means "which path wrote this row first", not "how the call was detected".
-- **M16** One failed git lookup caches `branch = null` for that directory
-  **forever** (the tradeoff that fixed M7/M8), until `vcs.branch.updated` or a
-  process restart. A 500 ms timeout on a healthy repo therefore silences branch
-  for the rest of that OpenCode process.
-- **M17** The plugin log grows: `~/.config/opencode/logs/skill-tracker.log` gains one
-  line per init and one per dispose (measured 2026-10-09: 74.4 lines/day — re-take it
-  with [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §4, which
-  is also where the "is the cap near?" arithmetic lives), and it is the only place
-  capture errors appear, which is what `doctor log.errors` reads — so clearing it erases
-  that history. **Both sides are now bounded.** The reader counts only the first
-  `log.max_bytes` (default 4 MiB, this project's own choice) from the
-  **start** of the file and says so in the line it prints ("a floor, not a total");
-  `skillt rotate-log` renames the file at that same size — one setting, read by both
-  sides after resolution, so a line cannot sit in the active log and be
-  invisible to the reader at the same time — and keeps `log.keep_files` rotated copies.
-  What is left open is the shape of the history: rotation is opt-in unless the backup
-  timer is installed (`./install.sh --with-timer`), and a log that nobody rotates stops
-  being evidence the moment it is truncated by the cap.
-- **M18** All three upserts keep `metadata = COALESCE(existing, incoming)`. If
-  the hook path wrote a row first and the event path arrives later carrying the
-  actual error text, `status` is corrected to `error` (the monotonic rule) but
-  `metadata.error` is **not** filled in. Left alone deliberately: that clause is
-  the load-bearing dedup invariant.
-- **M20** A `denied` row cannot be produced by OpenCode 1.18.33. Denials do
-  reach the tracker — as the bus events `permission.asked` then
-  `permission.replied` (fields `requestID` and `reply: "reject"`, the refused
-  call under `tool.callID`), measured live on 2026-10-01 — and they are recorded
-  correctly now. But the host gates only five permission kinds (`edit`, `bash`,
-  `webfetch`, `doom_loop`, `external_directory`) and **none of them is a category
-  this tracker measures**: skills, MCP tools and plugin tools run without asking,
-  and a denied `bash` is deliberately not recorded. So no table will ever show a
-  denial on this version. The earlier code additionally listened for
-  `permission.updated` and read `permissionID` / `response`, none of which
-  1.18.33 sends — that mismatch is fixed, and
-  `test_permission_rejection_writes_a_denied_row` pins the real shapes; what is
-  left is a host boundary, not a tracker bug.
-- **M21** (withdrawn 2026-10-12, D-053) Was: the advisor's per-call budget is a
-  copied default, because skillt cannot read `AOS_TIMEOUT_MS` across a seam, so the
-  "over budget" flag used AgentOS's documented 1200 ms. The advisor reader left with
-  the command, so no seam is left to copy across. The shape it warned about is still a
-  rule: a bound taken from somebody else's default goes stale in silence, so any
-  foreign value is named where a reader can see it — which is what M13 does.
-- **M22** (withdrawn 2026-10-12, D-053) Was: the claude-mem numbers come from a foreign
-  schema, and they are only numbers. That reader is gone with `skillt claude-mem`.
-  What it taught stays, and now applies to the host's own files and log: read a foreign
-  field by name and by type; treat a foreign value that could carry prose as
-  **counted, never read** (a `SKILL.md` body and a log line's message text contribute a
-  shape and a count, never the text); count an unparseable line as `unparsed` instead of
-  dropping it; and mark a byte-capped scan `truncated` so its numbers read as floors and
-  not totals. If this project ever reads a foreign **store**
-  again, it comes back under those rules with its own check named in `AGENTS.md`.
-- **M23** The Agents page counts the agent a row's session **first** reported, not
-  the agent that ran that call. All three usage upserts write
-  `metadata = COALESCE(existing, excluded)`, so whichever JSON lands first is
-  frozen in that row for good; `agent` only ever arrives later, on
-  `chat.message`. A call recorded before its session named an agent is therefore
-  `(unknown)` forever, and `(unknown)` measures *capture order*, not anonymous
-  work. It is shown with its own count so the table cannot be read as "these
-  agents did this". Measured on the two 2026-10-03 backups — 619 and 664 rows, 0
-  of them without an agent — so on a healthy machine the bucket is empty; it is
-  written down because it is not derivable from the page.
-- **M24** A subagent's work is invisible unless it used a measured tool. The
-  `task` tool is a builtin and builtins are not measured (M13), so the spawn
-  record is the only witness that a subagent ran at all: the name the host asked
-  for, the child session it got, whether it finished, and how long it took. Two
-  things follow. `Spawned` on the Agents page counts spawns and is never folded
-  into `Total`, so one column cannot mean "calls" one day and "calls plus events"
-  the next. And the name arrives in the host's `subagent_type` argument, so it is
-  admitted only when it is label-shaped (`SUBAGENT_LABEL_RE`: no spaces, no path,
-  at most 40 characters) — that is a **shape** test, not a prose detector, and a
-  value that fails it is counted as `(unnamed)` rather than printed. The row holds
-  none of the task text, description, title, report or error string that sit in
-  the same payload: the writer names no field but those identifiers. The stream
-  also starts empty on an existing database — the table appears the next time a
-  migrating surface runs (`skillt`, `sync`, `doctor`), and a running OpenCode
-  picks the writer up only after a restart, so `Spawned` reads 0 for sessions that
-  began before either happened. `OPENCODE_SKILL_TRACKER_SUBAGENT_DISABLE=1` turns
-  it off; which of the two write paths the host actually fires for a builtin is
-  not assumed, so both write and the `(parent_session_id, call_id)` key decides.
-  The same boundary makes a row *absent* rather than wrong: `Ran as` says nothing
-  about a subagent that ran before the writer existed. Recovering that history is
-  technically clean — OpenCode's own `opencode.db` keeps every past `task` with its
-  `subagent_type` and both session ids — and is deliberately **not** done here,
-  because it would put a live foreign database into this project's read set. That
-  choice is recorded as deferred in `MAINTENANCE.md` §8, so "not implemented" and
-  "not decided" do not look the same from here.
-- `skills.name` has **no unique constraint** (only `path` does). `delete_skill`
-  deletes by name, so if two skills ever share a name, both sets of records go.
-
-### 📜 Plugin export contract (important)
-
-`plugin/skill-tracker.js` must expose its factory **only** via
-`export default { id, server }`:
-
-```js
-export default { id: "skill-tracker", server: skillTrackerPlugin };
-```
-
-OpenCode 1.18.32's loader treats **every exported function** in a plugin module
-as a plugin factory, and only stops enumerating when the default export is an
-object carrying `server`. Do not add named `export function`s
-(`parseFrontmatter` / `sanitize` / `__selftest` exist for tests and manual
-self-test). If the default export ever regresses to a bare function, the loader
-will call `__selftest`, whose isolation guard throws — the **whole plugin fails
-to load, no hook registers, and `skill_usage` stays empty forever**.
-
-Loader failures are not written to this plugin's own log; they appear in
-OpenCode's log only:
-
-```bash
-grep 'failed to load plugin' ~/.local/share/opencode/log/opencode.log | tail
-```
-
-Regression test: `test_loader_does_not_enumerate_exports` in
-`scripts/tests/test_plugin.py` (replicates the loader logic; requires `bun`).
-
-### 🧪 Self-test isolation
-
-`__selftest()` inserts synthetic `call-test-*` rows. It checks the environment
-**before opening any database** and throws `Selftest requires isolated database`
-when `OPENCODE_SKILL_TRACKER_DB` is unset or resolves to the production path.
-Always run it like this:
-
-```bash
-OPENCODE_SKILL_TRACKER_DB=/tmp/st-selftest-$$.db \
-  bun -e 'import("~/.config/opencode/plugin/skill-tracker.js").then(m => m.__selftest())'
-```
-
-The selftest isolates its **log** as well as its database: unless
-`OPENCODE_SKILL_TRACKER_LOG` names a path of its own, its lines go to
-`skill-tracker-selftest.log` beside that temp database, never to the
-`~/.config/opencode/logs/skill-tracker.log` that `skillt doctor` reads. Before this,
-a hand-run selftest that failed wrote `[err] selftest FAIL` into the shared log and
-`doctor log.errors` counted them as plugin errors forever. A successful run now
-leaves its own record (`selftest start` / `selftest done: N/N passed`) where you can
-find it, and nowhere else.
-
-If the database was polluted historically, clean it with
-`skillt cleanup-selftest --yes`.
+- **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
+  host persisted; a call the host never wrote a `part` for is invisible, not misrecorded.
+- **M2** The host database and config are read-only and **never written** — opened
+  `mode=ro` with `PRAGMA query_only = ON`. `ocut` therefore cannot repair or backfill the
+  host, only index it.
+- **M3** Plugin usage requires the opt-in hook **and** an OpenCode restart. Until then
+  `plugin_usage` is empty, and a `0 uses` on the Plugins tab means **nothing recorded**,
+  not "not used".
+- **M4** The hook's attribution is a best-effort **static scan** of each plugin's source.
+  A plugin whose surface the scan cannot parse records nothing — honest, because a
+  guessed owner would be worse than a missing row. New or renamed plugins need a restart.
+- **M5** A plugin call's `ts` is the **hook's own clock**, not the host's, and its status
+  is NULL: a tool's after-hook carries no status and a command has no after-hook at all.
+- **M6** When OpenCode's persisted format moves, the reader counts the record as
+  `unparsed` instead of guessing. A jump in `ocut health`'s `UNPARSED` line after an
+  upgrade means the format changed, not that you stopped using a tool.
+- **M7** No message body and no tool prose is ever stored. A part's `output`, `title`,
+  `metadata`, `error`, a `text`/`reasoning` body, and a session `title` are named nowhere
+  the reader reads them; only identifiers, statuses, durations and counts land in the
+  database.
+- **M8** The per-step `model_calls` and the host's per-session rollup `sessions` are one
+  measurement at two granularities. They are shown beside each other and are **never added**.
+- **M9** MCP calls are attributed by name against the host's own config, resolved
+  **longest prefix** first. A tool name no configured server owns is not guessed into a
+  server; it stays `builtin` and is reported as server-shaped-unowned.
+- **M10** The plugin-usage sidecar is capped and rotated by **truncation** (8 MiB). The
+  reader notices the file is shorter than its cursor and re-reads from the start —
+  idempotent, because every record is keyed by its own id.
+- **M11** The Plugins tab is the union of what is **installed** and what has usage, keyed
+  by name. An installed-but-unused plugin shows a zero count; a plugin with usage and no
+  inventory row still appears.
+- **M12** Backups are manual and pre-destructive only. There is **no systemd** timer any
+  more; retention keeps the newest five managed snapshots and never touches hand-made
+  copies.
 
 ---
 
@@ -887,91 +460,73 @@ opencode-usage-tracker/
 ├── README.zh-CN.md               # full documentation, Chinese
 ├── MAINTENANCE.md                # operating checklist (English)
 ├── MAINTENANCE.zh-CN.md          # operating checklist, Chinese
+├── AGENTS.md                     # the agent contract (architecture, invariants, CI)
 ├── LICENSE                       # MIT
 ├── install.sh                    # idempotent installer
-├── requirements.txt              # textual
+├── requirements.txt              # textual (the TUI's only dependency)
 ├── requirements-dev.txt          # + pytest
-├── bin/skillt                    # launcher (location-independent)
-├── plugin/skill-tracker.js       # OpenCode plugin — the only writer
-├── scripts/skill_db.py           # shared data layer (the tracker's own data only)
-├── scripts/opencode_compat.py    # every OpenCode name, in one place
-├── scripts/skill-tui.py          # TUI + --cli headless subcommands
-├── scripts/skill-stats.py        # legacy CLI (backwards compatible)
+├── bin/ocut                      # bash dispatcher (location-independent)
+├── plugin/ocut-hook.js           # the one optional OpenCode plugin — writes the sidecar
+├── scripts/ocut_db.py            # shared data layer: schema, settings, queries, snapshots
+├── scripts/ocut-sync.py          # the passive reader: host database → tracker database
+├── scripts/ocut-tui.py           # Textual TUI (eight tabs)
+├── scripts/ocut-stats.py         # headless reports (stdlib only)
 ├── scripts/tests/                # pytest suite
-├── docs/maintenance/             # compat matrix · host interface list · measurement recipes
-└── skill-tracker/systemd/        # optional auto-backup timer + service
+└── docs/maintenance/             # compat matrix · host interface · measurements · format
 ```
 
 ### 🧑💻 Development
 
 ```bash
-python3 -m pytest scripts/tests -q                       # standard library only; the TUI
-#                                                         tests skip only where textual is
-#                                                         not installed — CI has it
-
-uv pip install --python .venv/bin/python -r requirements-dev.txt   # once
+python3 -m pytest scripts/tests -q                       # standard library only; TUI tests
+#                                                         need textual
 .venv/bin/python -m pytest scripts/tests -q              # full suite, incl. TUI tests
 ```
 
-Tests resolve their own paths with `Path(__file__).resolve()`, so the suite
-passes both from this repo and through the symlinked install locations. The third
-command in `docs/maintenance/measurements.md` §10 points the skills directory at a
-path that does not exist, which is what proves the suite never read this machine's
-real files.
-
 **Before operating this on a machine you care about**, read
-[MAINTENANCE.md](MAINTENANCE.md) (Chinese: `MAINTENANCE.zh-CN.md`): the
-daily / weekly / monthly checks, the procedure that reconciles recorded rows
-against OpenCode's own `part` table, the invariants with the test guarding each
-one, and the deviations that must not be "fixed" back. Behind it sit three
-references, and they are the parts that outlive a single edit:
-[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) says which
-OpenCode release each claim was measured on,
-[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)
-lists every host name this project reads, and
-[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) holds the
-command behind every size, rate and duration quoted anywhere in this repository —
-including the numbers this README used to state as facts.
+[MAINTENANCE.md](MAINTENANCE.md) (Chinese: `MAINTENANCE.zh-CN.md`): the checks to run, the
+invariants with the test guarding each one, and the deviations that must not be "fixed"
+back. Behind it sit three references:
+[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) records the pins
+and which OpenCode release each claim belongs to,
+[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) lists
+every host name this project reads, and
+[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) holds the command
+behind every size, rate and duration quoted anywhere in this repository.
 
 ---
 
 ## 🧹 Uninstall
 
 ```bash
-rm ~/.local/bin/skillt
-rm ~/.config/opencode/plugin/skill-tracker.js
-rm -rf ~/.config/opencode/scripts ~/.config/opencode/skill-tracker
+rm ~/.local/bin/ocut
+rm ~/.config/opencode/plugin/ocut-hook.js
 
-# optional, if you installed them
+# the venv, if you installed it
 rm -rf .venv
 
 # data — back it up first
-rm ~/.local/share/opencode/skill-usage.db*
-rm -rf ~/.local/share/opencode/backups
+rm ~/.local/share/opencode-usage-tracker/usage.db*
+rm -rf ~/.local/share/opencode-usage-tracker/backups
+rm ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
 ```
 
-If you enabled the timer:
-
-```bash
-systemctl --user disable --now skillt-auto-backup.timer
-rm ~/.config/systemd/user/skillt-auto-backup.{service,timer}
-systemctl --user daemon-reload
-```
+`ocut` never writes anything under `~/.config/opencode` except through `install.sh`'s one
+symlink, so removing that link and the launcher is a complete uninstall.
 
 ---
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome. Before opening a PR, make sure the suite
-is green:
+Issues and pull requests are welcome. Before opening a PR, make sure the suite is green:
 
 ```bash
-python3 -m pytest scripts/tests -q     # standard library only; TUI tests are skipped
+python3 -m pytest scripts/tests -q     # standard library only; TUI tests need textual
 ```
 
-Keep changes scoped, and update **both** `README.md` and `README.zh-CN.md` when
-you change documented behaviour — `scripts/tests/test_readme.py` asserts that the
-Chinese documentation covers every known limitation.
+Keep changes scoped, and update **both** `README.md` and `README.zh-CN.md` when you change
+documented behaviour — `scripts/tests/test_readme.py` asserts that both READMEs carry the
+same limitations, the same tabs and the same keys.
 
 ---
 

@@ -1,35 +1,34 @@
 #!/usr/bin/env bash
 #
-# install.sh — install or re-install the OpenCode skill tracker from this repo.
+# install.sh — install or re-install the OpenCode usage tracker (`ocut`) from this repo.
 #
 # Idempotent: re-running is safe. It creates repo/.venv with the TUI dependency,
-# then points the four OpenCode install locations at this repo with symlinks, so
-# `git pull` in this directory updates the running install.
+# then points two install locations at this repo with symlinks, so `git pull` in
+# this directory updates the running install:
+#
+#   ~/.local/bin/ocut                        -> bin/ocut
+#   ~/.config/opencode/plugin/ocut-hook.js   -> plugin/ocut-hook.js
 #
 #   ./install.sh            install (refuses to replace real files/dirs)
 #   ./install.sh --force    also replace existing real files/dirs
-#   ./install.sh --with-timer   also install the user systemd units for the daily
-#                        backup + log rotation. Off by default: writing into
-#                        ~/.config/systemd/user is a change outside this project.
 #
-# The headless subcommands (skillt insight/health/doctor/...) need nothing but
-# python3; only the interactive TUI needs the venv.
+# `ocut` itself needs only python3 for its headless subcommands (sync / stats /
+# health / export / backup / …); the interactive TUI needs the venv. The hook is
+# loaded by OpenCode itself and only appends plugin tool/command calls to a local
+# sidecar — it never touches OpenCode's database.
 #
 # Environment overrides (mainly for testing a sandboxed install):
-#   SKILLT_CONFIG_DIR   default: ~/.config/opencode
-#   SKILLT_BIN_DIR      default: ~/.local/bin
+#   OCUT_CONFIG_DIR   default: ~/.config/opencode   (the OpenCode config home)
+#   OCUT_BIN_DIR      default: ~/.local/bin
 set -euo pipefail
 
 FORCE=0
-TIMER=0
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
-    --with-timer) TIMER=1 ;;
     -h|--help)
-      echo "usage: ./install.sh [--force] [--with-timer]"
-      echo "  --force        replace existing non-symlink files/dirs at the install locations"
-      echo "  --with-timer   install and enable the user systemd units (daily backup + log rotation)"
+      echo "usage: ./install.sh [--force]"
+      echo "  --force   replace existing non-symlink files/dirs at the install locations"
       exit 0
       ;;
     *)
@@ -44,8 +43,8 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
 REPO_DIR="$(cd "$(dirname "${SELF:-${BASH_SOURCE[0]}}")" && pwd)"
 cd "$REPO_DIR"
 
-CONFIG_DIR="${SKILLT_CONFIG_DIR:-$HOME/.config/opencode}"
-BIN_DIR="${SKILLT_BIN_DIR:-$HOME/.local/bin}"
+CONFIG_DIR="${OCUT_CONFIG_DIR:-$HOME/.config/opencode}"
+BIN_DIR="${OCUT_BIN_DIR:-$HOME/.local/bin}"
 
 # --- 1. TUI virtualenv -----------------------------------------------------
 VENV="$REPO_DIR/.venv"
@@ -68,17 +67,15 @@ else
 fi
 
 # --- 2. symlink the install locations back to this repo --------------------
+# Only two links: `bin/ocut` resolves its own scripts/ from the repo it lives in
+# (readlink -f through the symlink), so scripts/ is never copied to a user path.
 LINK_SRC=(
-  "$REPO_DIR/plugin/skill-tracker.js"
-  "$REPO_DIR/scripts"
-  "$REPO_DIR/skill-tracker"
-  "$REPO_DIR/bin/skillt"
+  "$REPO_DIR/plugin/ocut-hook.js"
+  "$REPO_DIR/bin/ocut"
 )
 LINK_DST=(
-  "$CONFIG_DIR/plugin/skill-tracker.js"
-  "$CONFIG_DIR/scripts"
-  "$CONFIG_DIR/skill-tracker"
-  "$BIN_DIR/skillt"
+  "$CONFIG_DIR/plugin/ocut-hook.js"
+  "$BIN_DIR/ocut"
 )
 
 # Pre-flight: check every target before touching any of them, so a blocked
@@ -111,55 +108,19 @@ done
 
 # --- 3. verify ------------------------------------------------------------
 echo
-echo "==> skillt doctor"
-"$BIN_DIR/skillt" doctor || echo "  (doctor reported FAIL/WARN — see the lines above)"
-
-SYSTEMD_DIR="${SKILLT_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
-
-if [ "$TIMER" -eq 1 ]; then
-  # Everything that touches systemd is inside this branch: `--with-timer` is the
-  # opt-in, and a default install must not leave a unit behind that runs code the
-  # owner never asked for.
-  echo "==> installing user systemd units (daily backup + log rotation)"
-  mkdir -p "$SYSTEMD_DIR"
-  cp -f "$REPO_DIR/skill-tracker/systemd/skillt-auto-backup.service" \
-        "$REPO_DIR/skill-tracker/systemd/skillt-auto-backup.timer" "$SYSTEMD_DIR/"
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user daemon-reload
-    systemctl --user enable --now skillt-auto-backup.timer
-    echo "  enabled skillt-auto-backup.timer in $SYSTEMD_DIR"
-    echo "  check: systemctl --user status skillt-auto-backup.timer"
-  else
-    echo "  units copied to $SYSTEMD_DIR, but systemctl is unavailable — enable by hand" >&2
-  fi
-fi
-
-if [ "$TIMER" -eq 1 ]; then
-  TIMER_NOTE="Daily backup + log rotation are scheduled (skillt-auto-backup.timer)."
-else
-  # Built with printf rather than a nested here-document: nesting one here-doc inside
-  # a command substitution inside another leaves the outer delimiter unmatched, which
-  # bash only warns about and then prints something nobody asked for.
-  TIMER_NOTE="$(printf '%s\n' \
-    '' \
-    'Optional daily backups and log rotation (one timer runs both):' \
-    '  ./install.sh --with-timer' \
-    '  # or by hand:' \
-    '  mkdir -p ~/.config/systemd/user' \
-    "  cp $REPO_DIR/skill-tracker/systemd/skillt-auto-backup.* ~/.config/systemd/user/" \
-    '  systemctl --user daemon-reload' \
-    '  systemctl --user enable --now skillt-auto-backup.timer')"
-fi
+echo "==> ocut health"
+"$BIN_DIR/ocut" health || echo "  (health reported something — see the lines above)"
 
 cat <<EOF
 
 Installed.
 
-  skillt           launch the interactive TUI
-  skillt doctor    health check (PASS/WARN/FAIL)
-  skillt insight   usage summary, no TUI required
-  skillt config    the settings file, and where each value came from
+  ocut            launch the interactive TUI (eight tabs)
+  ocut sync       index what OpenCode wrote since the last run
+  ocut stats      usage summary, no TUI required
+  ocut health     check the tracker database is readable and current
 
-Restart OpenCode so it loads the plugin from $CONFIG_DIR/plugin/.
-$TIMER_NOTE
+Restart OpenCode so it loads the hook from $CONFIG_DIR/plugin/.
+Plugin usage is recorded only after that restart; a plugin the hook has never
+seen shows 0 uses, which is "nothing recorded", not "not used".
 EOF

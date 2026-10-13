@@ -44,12 +44,6 @@ CODE_PATHS = [
     # reader, so a bug here is exactly the kind a passive reader cannot notice:
     # the Plugins panel would just stay empty and look like a quiet week.
     "plugin/ocut-hook.js",
-    "plugin/skill-tracker.js",
-    "scripts/opencode_compat.py",
-    "scripts/skill_db.py",
-    "scripts/skill-tui.py",
-    "scripts/skill-stats.py",
-    "bin/skillt",
 ]
 EXCLUDED_SUBJECT = re.compile(r"^feat(\([^)]*\))?!?:")
 KINDS = {"fix", "perf", "taste", "guard", "revert", "chore"}

@@ -1,401 +1,231 @@
 # 维护清单
 
-与 [README.md](README.md)（功能）、[README.zh-CN.md](README.zh-CN.md)（详尽参考）配套的**运行**文档：该查什么、按什么顺序查、健康长什么样、以及哪些是故意不修的。
+配套文档：[README.md](README.md)（英文首页）与
+[README.zh-CN.md](README.zh-CN.md)（完整参考）。本文件是**操作**文档：查什么、按什么顺序、
+「健康」长什么样，以及哪些缺陷是刻意保留的。
+
 英文版：[MAINTENANCE.md](MAINTENANCE.md)。
 
-长篇维护资产的索引在
-[`docs/maintenance/README.md`](docs/maintenance/README.md)——版本矩阵、宿主接口清单与实测数据；
-仓库内的工作规则在 [`AGENTS.md`](AGENTS.md)。本文件是**运行清单**而不是指向它们的路由：它的编号
-小节是从 `AGENTS.md`、两个 README 以及上面那些文档引用过来的稳定锚点，所以改一个编号等于改名。
-不要把 `docs/maintenance/` 里的表格抄到这里——被抄写的事实正是会漂移的东西。
+长篇维护资产索引在
+[`docs/maintenance/README.md`](docs/maintenance/README.md)——版本矩阵、宿主接口清单、
+测量方法——本仓库的工作规则在 [`AGENTS.md`](AGENTS.md)。本文件是**操作清单**而不是它们的指针：
+它的编号小节是稳定锚点，被 `AGENTS.md`、两份 README 与下面的文档引用，所以改编号等于改名。
+不要把 `docs/maintenance/` 里的表抄进这里——被复制的那个事实就是会漂移的那个。
 
 | 文档 | 什么时候读 |
 |---|---|
-| [`compatibility.md`](docs/maintenance/compatibility.md) | OpenCode、Textual 或 Python 版本动了，或某个 pin 需要重新验证时 |
-| [`opencode-interface.md`](docs/maintenance/opencode-interface.md) | 新增或改名一个宿主依赖时 |
-| [`measurements.md`](docs/maintenance/measurements.md) | 要重述某个体积、速率或时长时 |
+| [`compatibility.md`](docs/maintenance/compatibility.md) | OpenCode、Textual 或 Python 版本动了，或某个 pin 需要重验 |
+| [`opencode-interface.md`](docs/maintenance/opencode-interface.md) | 新增或改名一个宿主依赖 |
+| [`measurements.md`](docs/maintenance/measurements.md) | 要重述某个体积、速率或时长 |
 
-## 0. 最后一次实测的机器事实
+## 0. 最后一次验证所在机器的事实
 
-机器身份（OpenCode、Bun、解释器、textual）在
-[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §1；本项目按名字
-依赖的宿主接口在
-[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)；下面这些
-体积、速率、时长全部是**一次运行的结果**，所以搬到了带命令的
-[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md)，不再留在这张表里。
-搬家的理由：清单里的数字会被永久读成「现在」，而这张表原先的两个数字搬家时**已经错了**
-（「约 69 行/天」实测 74.4；「8.2–15.8 ms」实测 12.2–14.0）。
+机器身份（OpenCode、解释器、textual）在
+[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §1；本项目依赖的宿主
+接口按名字列在 [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)；
+下面每一个体积 / 速率 / 时长都是一次**运行**，所以它们连命令一起住在
+[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md)，不在这里。清单里的数字会被
+永远当成现状读，所以本文件只写形状，不写体量。
 
 | 项 | 值 |
 |---|---|
-| OpenCode | **跑的是哪个版本是一条读数，不是这份文件能替它固定的东西**——compatibility §1 记那四个 pin 和主机当前版本，`skillt doctor` 的 `env.opencode_version` 拿运行版本去比对内置白名单的 pin（`PIN_TOOL_IDS`）。内置白名单 2026-10-03 已从宿主端重读，那十四个 id 没变 |
-| 插件 SDK | `@opencode-ai/plugin` 1.18.4 —— 即 `PIN_SDK_TYPES`，记下来是**因为它和运行的宿主不一致**（M20），不是因为谁 import 它 |
-| 插件运行时 | Bun（`~/.bun/bin/bun`，`bun:sqlite`） |
-| TUI venv | `.venv`（Python 3.13.14，textual 8.2.8） |
-| 数据库 | `~/.local/share/opencode/skill-usage.db`，0600，WAL——体积、`-wal` 与各表行数：measurements §2 |
-| 行数 | 各表计数与 `metadata` 键普查：measurements §2、§3。这张表里**稳定**的是形状——七张表，`skills` 加四条用量流——以及 `title` 普查读到 **0 个键**这件事（那是 S1 的承诺，由 `test_the_writer_never_names_a_permission_title` 守着）。至于「12 个 surface 里 10 个从没被调用」那条库存读数，最后一次是 2026-10-09 用 `skillt plugins` 读的；要重读就去那条命令，别在这里抄 |
-| Schema | `PRAGMA user_version = 2`，`SCHEMA_VERSION = 2`。2026-10-04 加 `subagent_usage` 时**没有** bump：这个计数器是为视图存在的（`CREATE VIEW IF NOT EXISTS` 改不了已有视图），而这次加的是表，`ensure_schema()` 每次都会幂等建表 |
-| 导出文档 | `schema_version = 6`（4 = metadata 走白名单，5 = 多了 `plugin_inventory.scope`，6 = 新增 `subagent_usage` 这个键）。`PRAGMA user_version` / `SCHEMA_VERSION` 仍是 **2**：这个计数器存在，是因为 `CREATE VIEW IF NOT EXISTS` 改不了已有的视图，而这一轮加的是**表**、不是视图——`ensure_schema()` 每次都会跑建表 DDL，所以不该 bump |
-| 测试 | 三条命令、按这个顺序、各自证明什么：measurements §10。通过数是一次**运行**的结果（系统解释器、venv、CI 三个数不一样，而 AGENTS.md 禁止把这种总数抄进文档），所以这里不再写它——这张行写下时是 530，现在早就不是 530。稳定的部分：shipped `__selftest()` 的下限由 `test_selftest_is_green_end_to_end` 钉住，配方在 measurements §5，而第三条命令（`OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`）才是证明这轮绿没有拿本机真实文件换来的那一条 |
-| 读取范围——本项目在自己数据库之外还会打开什么 | **这一行原来记的东西现在都不读了。**两个只读邻居在 2026-10-12 退役（D-053）：AgentOS 顾问的库（`store/aos.db` 加 `store/loops/*.json`），以及 claude-mem 的账本和它那几个文件、它的三个 HTTP 端点——模块、`skillt agentos` / `skillt claude-mem` 两条命令、`doctor` 的 `claude_mem.capture` 检查、Plugins 页那行 dim 活动文本是一起走的，所以这里再没有读取端会打开别人的库，也不再打开 socket。现在仍会打开的东西，以及各自守哪条规则：宿主的 skills 目录（**只读 `SKILL.md` 的 frontmatter**——取 `name`，外加由路径推出来的 `source`/`category`，**绝不读正文**）、宿主的配置文件（只读，解析失败绝不当成「配置是空的」），以及本项目**自己的**插件日志——就是写入端在每次运行之间往里追加的那份——从文件**开头**扫、上界是用解析后的 `log.max_bytes`，所以上界咬到时要写 `truncated`，计数只能当下界读。`opencode.db` 仍然一次都不打开——§8 记着那次被回绝的回填。同一份清单作为**契约**（而不是某次运行）写在 [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §4，而清单里每一个宿主名字的声明处在 [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) 与 `scripts/opencode_compat.py`。守卫：`test_scan_sync.py`、`test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`、`test_the_rotation_cap_is_the_number_the_reader_reads`。规则比它的对象活得久：第一个被重新读取的外来**库**必须回到 AGENTS.md 那条规则之下——只读 URI、字段白名单、绝不经 `open_db()`、绝不上重画路径——并且要在那份文件的不变量表里点上自己的名。两个邻居的历史读数仍留在 [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §6 与 §7，已标注退役 |
-| 插件日志 | `~/.config/opencode/logs/skill-tracker.log`。体积、行数、行/天、错误行数——都是增长读数，配方在 measurements §4。这里留它**内容的形状**。里面有 **4 行 `[err]`，全是 `selftest FAIL: …`，是本项目的自测在 2026-10-04 07:32Z 写进去的**——那时子 agent 的断言还是红的。`doctor` 的 `log.errors` 会因此 WARN，而它们是测试残留、不是采集故障，这就是它们还在、也仍然被报出来的原因。**它们暴露的缺口已经修掉**（2026-10-04）：`__selftest()` 现在会把自己的日志改写到临时库旁边的 `skill-tracker-selftest.log`，除非用 `OPENCODE_SKILL_TRACKER_LOG` 明确指定别的路径——所以文档里那条手工配方再也碰不到这个文件；2026-10-09 照 measurements §5 重跑过一次并对比这份日志的 sha256，前后一致。别手工去删活日志里的行 |
-| 备份定时器 | **截至 2026-10-10 00:07 是「没装」** —— `systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`，`~/.config/systemd`、`/etc/systemd`、`~/.local/share/systemd` 下都搜不到任何 `skillt*` 单元文件，而 `journalctl --user -u skillt-auto-backup.timer` 停在 `Stopped … 2026-10-07 21:48:34`。service 最后一次成功运行是 **2026-10-07 00:18**，所以 `backups.latest` 现在是 3.0 天，并在 **2026-10-14** 前后越过它的 7 天 WARN 线。`Linger=yes` 仍然开着，也就是说会话这边没有任何东西阻止这个单元——它就是没了。**这一轮没人删它，这一轮也没人把它装回去**：装 systemd 单元是本项目之外的改动，而 S7 主人拍板的是 `install.sh` 把它藏在 `--with-timer` 后面。**2026-10-10 12:5x 主人已决定：不装这个单元。** 所以「排班是空的」是一种**选择**，不是故障——`backups.scheduled` 会一直 WARN，`backups.latest` 大约在 2026-10-14 越过 7 天线，**这两条都不是新问题**。备份于是变成一件要主动做的事：`skillt auto-backup`。以后若要改主意，就 `./install.sh --with-timer` 重新上弦，然后看 `systemctl --user status skillt-auto-backup.timer` 和 `skillt doctor` 的 `backups.latest`。关于这个单元本身**已验证**的是：`systemd-analyze verify --user` 接受这两个文件，两条 `ExecStart` 的完整命令行用已安装的启动器手工跑过（`below the cap; nothing to rotate`，日志 sha256 未变）。另外，手工起 service 还会按保留策略真的清理备份，所以那不是例检 |
-| 本机 `doctor` 的 WARN 各自是什么意思 | 2026-10-10 12:2x 实测：**17 PASS / 4 WARN / 0 FAIL**。以后读到这几条还活着的人很可能花一整轮去"修"本来就该警告的东西，所以那份带日期的记录里每一条都点名它到底是什么。① `backups.scheduled` —— **主人的选择**（上面那一行：不装 systemd 单元），它只能 WARN、永不 FAIL。② `log.errors` —— 4 行，时间戳全在 `2026-10-04T07:32:13Z` / `07:32:25Z`，实际是**两条不同的 `selftest FAIL` 各写了两遍**，来自 `0c8f41d` 那次"先红后绿"的红的那一步；`d1884cd` 之后 `__selftest` 不再写共享日志，此后的 169 新行里 `[err]` 增加 **0** 条。这条检查数的是行数、不看年龄，所以不轮转就会永远 WARN 历史。③ ~~`claude_mem.capture`~~ —— **已经不是一项检查了**：它 WARN 的是 *claude-mem 自己的* worker 日志里的 ERROR 行，那是本项目只读不写的邻居进程，而那个读取端在 2026-10-12 走了（D-053）。今天还在这行里数出四条 WARN 的人，读的是 2026-10-10 那份记录，不是这台机器。④ `env.opencode_version` —— 主机已走到 1.18.35，而 `DEFAULT_BUILTIN_TOOLS` 钉在 1.18.34；要消掉它必须做一次活的 `/experimental/tool/ids` 探测（measurements §5），**那是主人拍板的事，不是例行修复**。**所以在那份带日期的集合里：①④ 是预期内的，② 是历史残留，③ 已退役。四条都不是 tracker 的缺陷，真正给工作设门槛的是那个 `0 FAIL`** |
-| `doctor` 以前看不见、现在能看见的东西 | 直到 2026-10-10，**没有任何检查在问「定时器装了吗」**，这一行就是证据：连续三天 `backups.latest` 报 PASS——而且报得没错，备份确实才 3.0 天、阈值是 7 天——而那个负责产生备份的东西已经被移除了。**计划不等于文件。** 现在 `backups.scheduled` 会去问 `systemctl --user is-enabled skillt-auto-backup.timer`，只要不是 `enabled` 就 WARN，**包括「问不到 systemd」**（没有用户 systemd 的机器是「未知」，不是「健康」）。它永不 FAIL，因为「不装这个单元」本来就是主人做的合法选择。这两条检查**就是要能不一致**：本机今天的读数正是 `backups.latest` PASS 而 `backups.scheduled` WARN，这一对不一致本身就是那条发现 |
-| 散落备份（M19） | **这一行原先描述的那部分已经了结**——2026-10-10 重读：`ls ~/.local/share/opencode/` 里 `BACKUP_DIR` **之外**已经没有任何 `skill-usage-backup-*.db`，六份备份全在里面，也就是保留策略能扫到的地方。还剩下的一个散落文件不是备份：`skill-usage-export-20260923-100620.json`，`schema_version = 1`，40,390 字节。对它做一次完整键遍历（32 个不同键、每个列表的每一个元素）后**找不到** `summary`、`title`、`error`、`text`、`prompt`、`body` 任一键，所以它不带 M14 那些 metadata 原文——但它确实带着 skill 的 `description`、`path` 和导出那台机器的 `db_path`，而一份 skill 库存导出本来就该带这些。`BACKUP_DIR` 里每一份备份也用同样方式查过 `metadata` 含 `summary`/`title` 的行：**六份全是 0** |
-| 备份默认路径 | **已修**（M19）：`skillt backup`、TUI 的 `b`、以及 `--yes` 前的自动回滚备份现在都落进 `BACKUP_DIR`。2026-10-01 把最后一个散落在库旁边的文件收了进来，保留策略第一次看全了所有备份——它的 dry-run 报 `kept: 2, delete: 1`（09-23 同一天里较旧的那份）。**这个删除并没有发生**，因为 2026-10-07 起停掉的就是那个会跑它的定时器；两份备份今天都还在，这正是上面「计划不等于文件」那一行的证据 |
-| metadata 清理 | 2026-10-01 已执行 `scrub-metadata --yes`，剥掉 40 行（skill 17 / mcp 10 / plugin 13），用量行与 46 条 `error` 文本全部保留；另外删除 3 个仍含原文的散落备份，并对生产库做了 VACUUM。此后 `skillt scrub-metadata` 必须报 0 行，且 `grep -l '<一段已知原文>' ~/.local/share/opencode/skill-usage.db*` 必须什么都搜不到 |
+| OpenCode | **在跑哪个版本是一次读数，不是本文件的事实**——compatibility §1 记录 pin；`ocut sync` 读的是今天 `~/.local/share/opencode/opencode.db` 里有什么 |
+| 宿主数据库 | `~/.local/share/opencode/opencode.db`——以 `mode=ro` 打开并设 `PRAGMA query_only = ON`，**从不写入** |
+| 宿主配置 | `~/.config/opencode`——只读；解析失败绝不当作「空配置」 |
+| Tracker 数据库 | `~/.local/share/opencode-usage-tracker/usage.db`，WAL，只由 `ocut` 写入 |
+| 插件 sidecar | `~/.local/share/opencode-usage-tracker/plugin-events.jsonl`，由 `plugin/ocut-hook.js` 追加，由 `ocut sync` 摄取 |
+| TUI venv | `./.venv`（textual `>=8.2,<9`） |
+| 设置 | `~/.config/ocut/config.toml`（或 `OCUT_CONFIG`）——优先级：环境 > 文件 > 默认 |
+| Schema | `ocut_db.py` 里的 `SCHEMA_VERSION`；一次升级会清空同步游标，强制一次干净的重读 |
+| 快照 | `~/.local/share/opencode-usage-tracker/backups/`，保留最新 `BACKUP_KEEP`（5）份 |
+| 安装布局 | 两个软链接：`~/.local/bin/ocut -> <repo>/bin/ocut` 与 `~/.config/opencode/plugin/ocut-hook.js -> <repo>/plugin/ocut-hook.js` |
 
-安装布局——四个位置都是**指回本仓库的符号链接**，所以改仓库即生效、无需重装；但改插件必须**重启 OpenCode**：
+安装布局——两个都是**指回本仓库的软链接**，所以在这里改仓库就是实时的（无需重装），
+只是必须重启 OpenCode 才会重新加载 hook：
 
 ```
-~/.local/bin/skillt                          -> <repo>/bin/skillt
-~/.config/opencode/scripts                   -> <repo>/scripts
-~/.config/opencode/skill-tracker             -> <repo>/skill-tracker
-~/.config/opencode/plugin/skill-tracker.js   -> <repo>/plugin/skill-tracker.js
+~/.local/bin/ocut                        -> <repo>/bin/ocut
+~/.config/opencode/plugin/ocut-hook.js   -> <repo>/plugin/ocut-hook.js
 ```
 
-核对：`skillt doctor`（`plugin.exists`、`env.*`），或
-`readlink -f ~/.local/bin/skillt ~/.config/opencode/scripts`。
-若其中某个变成了**普通副本**，它会静默地不再跟随仓库。`install.sh` 拒绝覆盖非符号链接；确认副本里没有你需要东西之后再 `--force`。
-
-## 1. 不变量（永不可破）
-
-每条都有测试守着。下列测试变红，说明**不变量被改了**，而不是测试写错了。
-
-| 不变量 | 守护 |
-|---|---|
-| 插件是**唯一写入者**；`skill_db.py` / TUI / 旧版 CLI 绝不记录用量 | `AGENTS.md`、`test_plugin_db.py` |
-| 导出契约 `export default { id, server }`。加具名 `export function` 或退回裸函数默认导出，会让**整个插件加载失败**、采集静默停止 | `test_loader_does_not_enumerate_exports` |
-| 一次调用一行：`UNIQUE(session_id, call_id)` + `ON CONFLICT` upsert | `test_plugin_db.py`、`test_mcp_db.py` |
-| 状态单调：观测到的 `error` 可覆盖乐观写入的 `success`，反向永不允许 | 三条 `UPSERT_*_SQL` 的 CASE |
-| MCP 只记**参数名**。`mcpArgNames()` 只用 `Object.keys()`，绝不读值 | `test_plugin.py` |
-| 绝不读取消息正文，因此也不会存储；session 的 `title` 同样不读（宿主用它的首条消息生成它）。写入端只留任何代码真正会读的字段 | `test_readme.py`、`test_the_session_handler_keeps_only_the_fields_it_uses`、`__selftest` 断言 |
-| 权限事件的 `title` 写入端同样**从不读取**——不是靠事后 scrub 才没落库。`skillt scrub-metadata` 名单里留着 `title`，只为处理老版本已经写下的行 | `test_the_writer_never_names_a_permission_title`、`test_a_denied_call_stores_no_title_but_still_stores_the_denial`、`__selftest` |
-| schema 有两份副本：插件 `TABLES_SQL`/`VIEWS_SQL` 与 Python `SCHEMA_SQL`，必须同一提交里一起改 | `test_plugin_and_python_schema_do_not_drift` |
-| 改视图必须升 `SCHEMA_VERSION`，否则老库继续用旧视图（`CREATE VIEW IF NOT EXISTS` 不更新） | `test_migration.py`、`test_schema_sync.py` |
-| 采集相关测试是封闭的：不得读真实 `~/.config/opencode/skills`、真实插件日志，也**不得问本机的 `systemctl`** | `temp_skills` fixture、`_isolated()` 环境变量、`test_doctor.py` 的 monkeypatch，加上 conftest 的 `never_query_the_hosts_service_manager`——它**既抛异常也记账**，因为 `doctor` 里每一个问宿主的分支都包在 `except Exception` 里，只会抛的绊线被吞掉后就变回一次绿 |
-| 表格列宽由 `fit_columns()` 在渲染时算定；Textual 自己的自动列宽跑在 `_on_idle`，永远晚一帧，第一帧每列都只有表头那么宽 | `test_tui_dashboard_tables_fit_their_content_before_idle`、`test_tui_page_tables_cover_every_tab` |
-| **排班要按排班查**，不能拿它产出的文件反推。`backups.latest` 很新**不能**证明下一次备份会来；「问不到 systemd」是未知，永远不算健康；`disabled` 与 `not-found` 指向两条不同的命令 | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`、`test_a_disabled_timer_is_named_as_disabled_not_as_missing`、`test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`、`test_the_timer_check_never_fails_and_never_shells_out_uninvited`、`test_the_timer_check_asks_about_the_unit_install_sh_installs` |
-| 推送前测试全绿，**两条文档里的命令都要跑** | `AGENTS.md` |
-
-## 2. 每日（在相信任何数字之前）
+验证：
 
 ```bash
-skillt doctor            # 期望：0 FAIL
+readlink -f ~/.local/bin/ocut ~/.config/opencode/plugin/ocut-hook.js
+ocut health
 ```
 
-至少应看到：
+若其中任何一个成了**普通拷贝**，它会静默地不再跟随仓库。`install.sh` 拒绝覆盖非软链接；
+只有在确认那份拷贝里没有你需要的东西之后，才用 `--force` 重跑。
 
-- `db.quick_check` → `ok`
-- `plugin.exists` / `plugin.hooks` / `plugin.mcp_hooks` / `plugin.plugin_hooks` → PASS
-- `capture.freshness` → PASS 时**三条流各自**报距今时长；**WARN 会点名停滞的那条**——这正是这项检查存在的理由。以前它取三张表的最大值，只要还有一路活着就永远绿：某一路断了它不会误报，而是**该报的时候不报**。现在按流判定；从没记过行的流算 `no rows` 不算停滞，`OPENCODE_SKILL_TRACKER_STREAMS` 可以排除某条流但仍会打印它的年龄
-- `log.errors` → `0 error line(s)`；非 0 说明有钩子抛过异常，详情就是最后那条 `[err]`
-- `env.opencode_version` → 只有安装版本与 allowlist 对齐版本相同才 PASS
-- 启用 §4 的定时器后，`backups.latest` → 约 1 天内
-- `backups.scheduled` → `skillt-auto-backup.timer enabled`。**这一条和上面那条说的是两件
-  不同的事**：`not-found` 配上 `backups.latest` 的 PASS，正是一台「定时器已被移除、而最后
-  一份备份看上去还很新」的机器的状态。如果它说「问不到 systemd」，那是**未知**、不是健康——
-  没有用户 systemd 的机器上，请自己决定 `auto-backup` 与 `rotate-log` 由谁来跑，别把沉默当成通过
+## 1. 不变量——永不破坏
+
+下面每一条都有测试守着。若某个测试红了，变的是不变量，不是测试。
+
+| 不变量 | 守卫 |
+|---|---|
+| OpenCode 自己的数据库与配置**从不被写**。宿主库以 `mode=ro` 打开并设 `PRAGMA query_only = ON`；本项目只写 tracker 自己的库。 | `scripts/tests/test_ocut_sync.py`、`test_the_host_database_is_never_opened_for_writing`、`test_open_source_refuses_to_create_a_host` |
+| 消息与工具的**散文从不被读**，因此从不被存。`tool` part 的 `output`/`title`/`metadata`/`error`、`text`/`reasoning` 正文、会话 `title` 都不被点名。 | `scripts/tests/test_ocut_sync.py`、`test_no_prose_field_is_copied_out_of_the_host` |
+| hook `plugin/ocut-hook.js` 是 `plugin_usage` 的**唯一写入方**，且从不打开 OpenCode 的数据库。 | `scripts/tests/test_ocut_hook.py`、`test_the_hook_records_a_surface_and_only_plugin_owned_calls` |
+| hook 只以 `export default { id, server }` 暴露工厂。具名导出会让 OpenCode 把它当工厂调用，从而中断整个插件加载。 | `scripts/tests/test_ocut_hook.py`、`test_default_export_is_the_loader_contract_and_nothing_else` |
+| 两个 token 粒度——每步的 `model_calls` 与宿主的按会话 rollup `sessions`——是同一测量的两个层级，**绝不相加**。 | `scripts/tests/test_ocut_sync.py`、`test_two_granularities_of_the_same_measurement_agree`；`scripts/tests/test_ocut_tui.py`、`test_no_panel_repeats_the_input_number_under_a_second_label` |
+| 读取器用不了的记录会被**计数**，绝不丢弃：未知 part 类型、解析不了的 JSON blob、解析不了的 sidecar 行，各自落进 `unparsed`。 | `scripts/tests/test_ocut_sync.py`、`test_a_json_blob_that_does_not_parse_is_counted_not_skipped`、`test_an_unknown_part_type_is_counted_per_type`、`test_an_unparseable_sidecar_line_is_counted_not_skipped` |
+| 改动 schema 或视图必须升 `SCHEMA_VERSION`，而升级会**清空同步游标**，好让新形状被重读而不是被信任。 | `scripts/tests/test_ocut_windows.py`、`test_a_version_bump_clears_the_cursors_so_nothing_is_read_again` |
+| 由**更新**版本写下的数据库会被原样留下（只确保表，不碰视图）并报为 newer，绝不重写。 | `scripts/tests/test_ocut_windows.py`、`test_a_database_from_a_future_build_is_left_alone_and_says_so` |
+| 设置是一个注册表：**环境 > 文件 > 默认**，坏值是以点名键的硬错误，零配置不创建任何东西。 | `scripts/tests/test_ocut_settings.py`、`test_environment_beats_the_file_and_the_file_beats_the_default`、`test_an_unknown_key_is_refused_and_names_the_real_ones`、`test_no_file_is_the_normal_case_and_creates_nothing` |
+| 推送前测试全绿。 | `AGENTS.md` |
+
+## 2. 每日（在相信数字之前）
+
+```bash
+ocut health
+ocut sync
+```
+
+健康意味着：
+
+- `ocut health` 找得到宿主数据库（`ok, N MiB`）与宿主配置（`ok`）。
+- `ocut health` 打印的 `schema version` 等于 `ocut_db.py` 里的 `SCHEMA_VERSION`。
+- 每条 `cursor` 行显示的游标不超过宿主自己的 `host max`，且没有 `note`——有 note 意味着
+  宿主的表被裁剪或重新编号过；这本来就会发生，但应当被读到，而不是被忽略。
+- `ocut health` 打印 `unparsed 0 — every record type was claimed`。非零行就是 OpenCode
+  持久化格式变了的信号；reason 字符串会点名它。
+- `ocut sync` 结束时没有 `UNPARSED … this run` 行，且 `tool_calls` / `sessions` 计数合理。
 
 ## 3. 每周
 
 ```bash
-skillt cleanup-selftest          # 干跑：必须报告没有合成行
-skillt scrub-metadata            # 干跑：必须报 0 行（M14 已闭环）
-skillt sync --dry-run            # scanned == skills 行数，changed == 0
-# 增长观察（M17）：体积、行数、行/天、错误行数、有没有被上界截断——一份配方、一个地方：
-# docs/maintenance/measurements.md §4。别在这里用一条裸的 `wc -l` 重新推导：
-# 没有与上界对照的行数分不清"总数"和"下限"，而那正是 M17 唯一要紧的差别。
-skillt rotate-log                # 同一个上界落到写的一侧：长到 4 MiB 就把日志**改名**挪走，
-                                 # 保留 log.keep_files（默认 5）代。是改名、绝不是截断——
-                                 # doctor 要数的那些 `[err]` 行因此一直都在盘上。加 `--yes`
-                                 # 才动手；装了备份 timer 时每天由它替你做这件事
-                                 # （本机现在没装——见 §0「备份定时器」那一行）
+ocut sync --full          # 计数看起来不对时从头重建（重建前先快照）
+ocut backup               # 任何有风险的操作之前，主动做一份快照
+ocut plugins              # 已安装 ∪ 已使用；某插件 0 uses 说明 hook 什么都没看到
+ocut format               # OpenCode 格式面，从解析器注册表读出
 ```
 
-清理删掉的是**值**；WAL 模式下旧字节会留在 `-wal` 里直到 checkpoint。这就是
-`scrub-metadata --yes` 结束时执行 `wal_checkpoint(TRUNCATE)` 的原因，库忙它会明说。
-用你确定写过的原文验证：
-
-```bash
-grep -l '一段你确定写过的原文' ~/.local/share/opencode/skill-usage.db*   # 必须无输出
-```
-
-再确认没有备份躲在保留策略够不着的目录外。M19 已修、旧散落文件已于 2026-10-01 处理，所以这里应当**一个都不剩**：
-
-```bash
-for f in ~/.local/share/opencode/skill-usage-backup-*.db; do
-  printf '%s  summary_rows=%s\n' "$(basename "$f")" \
-    "$(sqlite3 -readonly "file:$f?mode=ro" "SELECT (SELECT COUNT(*) FROM skill_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM mcp_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM plugin_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL);" 2>/dev/null || echo '未迁移的老库')"
-done
-```
-
-然后做这份清单里**最有价值的一步**：拿 OpenCode 自己的记录对账。它能在别的检查全绿时抓到"采集悄悄变了形"。
-
-```bash
-# 1) tracker 自己记了什么（按 server，覆盖它自己的时间窗）
-sqlite3 -readonly ~/.local/share/opencode/skill-usage.db \
-  "SELECT server_name, COUNT(*), SUM(status='success'), SUM(status='error')
-   FROM mcp_usage GROUP BY 1;"
-
-# 2) 地面真相：opencode.db 的 part 表，同一时间窗
-sqlite3 -readonly "file:$HOME/.local/share/opencode/opencode.db?mode=ro" \
-  "WITH t AS (SELECT json_extract(data,'\$.tool') tool,
-                    json_extract(data,'\$.state.status') st, time_created tc
-             FROM part WHERE json_extract(data,'\$.type')='tool')
-   SELECT substr(tool,1,instr(tool,'_')-1) server, COUNT(*), SUM(st='completed'), SUM(st='error')
-   FROM t WHERE tc > strftime('%s','<tracker 覆盖起点>')*1000
-        AND (tool LIKE 'playwright_%' OR tool LIKE 'basic-memory_%')
-   GROUP BY 1;"
-```
-
-按 server 的次数必须对得上。**已知且可解释的差异**只有两类：会话后来被删掉（tracker 保留、`part` 消失）；以及早于 tracker 安装的调用。**出现无法解释的新缺口就是采集回归**——先看 `log.errors`，再确认 OpenCode 重启时插件有没有真的加载。
+- `ocut sync --full` 会清空 tracker 表并重建。它会先给数据库做快照，但**宿主**才是事实来源：
+  OpenCode 已经删掉的会话无法从中恢复。
+- 插件用量**只**由 hook 记录，且只在 OpenCode 重启之后。若每个插件都显示 `0 uses`，检查
+  `~/.config/opencode/plugin/ocut-hook.js` 是否存在、`OCUT_HOOK_DISABLE` 是否未设、以及 sidecar
+  `~/.local/share/opencode-usage-tracker/plugin-events.jsonl` 是否在被追加。`0` 是「没有任何记录」，
+  不是「没用过」。
+- `ocut format` 打印读取器依赖的宿主名字。任何 OpenCode 升级之后，把它和
+  [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) 对照。
 
 ## 4. 每月 / 任何改动之后
 
 ```bash
-systemctl --user is-enabled skillt-auto-backup.timer   # 必须输出：enabled
-                                 # 输出 `not-found` 就是「没有任何东西在排班」：本机
-                                 # §0 的「备份定时器」那一行正是这个情况的活样本
-sqlite3 -readonly ~/.local/share/opencode/skill-usage.db "PRAGMA integrity_check;"
+sqlite3 -readonly ~/.local/share/opencode-usage-tracker/usage.db "PRAGMA integrity_check;"
 python3 -m pytest scripts/tests -q                     # 不需要 venv
-.venv/bin/python -m pytest scripts/tests -q            # 含 TUI 全量
-OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/nope python3 -m pytest scripts/tests -q   # 封闭性证明
-bash -n bin/skillt                                     # dispatcher 语法
+.venv/bin/python -m pytest scripts/tests -q            # 完整套件，含 TUI
+bash -n bin/ocut                                       # 分发器仍能解析
 ```
 
-备份只有真的在跑才算数。一次性启用：
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp skill-tracker/systemd/skillt-auto-backup.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now skillt-auto-backup.timer
-loginctl enable-linger "$USER"       # 没登录会话也照跑
-```
-
-保留策略（`skill_db.py`）：最近 30 个每日 + 12 个每月；**绝不**碰 120 秒内的文件，也**绝不**碰名字不匹配 `skill-usage-backup-<日期>-<时间>.db` 的文件。
+第二、三条是同一套件在两个解释器上跑；没装 textual 时 TUI 文件会被跳过，所以两条都要跑。
 
 ## 5. 升级 OpenCode 之后
 
-先看 [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §2——它列出本项目每条说法属于哪个 OpenCode 版本、以及我们已经背下的后果；再看 [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md),那是本项目读取的全部宿主名词、载荷字段路径与目录清单。声明处有两处：`scripts/opencode_compat.py`（Python 侧）与写入端的 `CONTRACT` 块。内置工具 allowlist 钉在某个版本（M13），MCP/插件清单只在 init 解析（M11/M12）。所以：
+先读 [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §2——它列出本项目每条
+说法属于哪个版本——再读 [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)，
+那是本项目按名字读取的全部宿主名字、载荷路径与目录。然后：
 
-1. `opencode --version`，记下版本号。
-2. `skillt doctor` → `env.opencode_version` 必须因为漂移而 WARN。
-3. 拿真实列表：`curl -s http://127.0.0.1:<端口>/experimental/tool/ids`。注意在跑的 TUI 不一定开着这个端点——你查到的端口可能属于**某个插件自己的** web server，不是宿主。所以起一个什么都不加载的：`~/.opencode/bin/opencode serve --pure --port 14096 --hostname 127.0.0.1`，curl 完就 kill。`--pure` 是它能在别的会话活着时安全执行的原因：不加载任何插件，于是不采集、也不写任何东西。但这仍然要 owner 点头——再起一个宿主实例是他的决定，不是例行检查。
-   **别**拿 `strings` 读安装包代替：它里面的 TUI 视图表还带着 `batch`、`list`、`lsp`、`plan_exit`，而这四个宿主根本不报成 tool id（2026-10-03 实测——就在这个推断已经被当成事实写进一份报告之后）。
-4. 同时更新 `plugin/skill-tracker.js` 里的 `DEFAULT_BUILTIN_TOOLS` **和**同一行那句 `verified against OpenCode X.Y.Z` 注释——`doctor` 解析的就是那句注释，漏掉它等于重新制造它要检的漂移。`scripts/opencode_compat.py` 里有一份同样的声明（`PIN_TOOL_IDS`，另有 `PIN_LOADER` / `PIN_PERMISSION_SHAPE`）；注释与 `PIN_TOOL_IDS` 不一致时 `test_compat.py` 会红，所以两处要一起改。
-5. 重启 OpenCode，用 `skillt plugins` 确认清单已刷新。
+1. `opencode --version`——记下版本号。
+2. `ocut sync`——若打印 `UNPARSED … this run` 行，说明宿主格式变了。`ocut health` 会列出原因
+   （`unknown_part_type:<type>`、`unparseable_part_data`……），每条点名读取器用不了什么。
+3. 重读格式注册表：`ocut format`。它由 `scripts/ocut-sync.py` 的常量生成，所以描述不了代码已不再
+   读取的面。
+4. 若某个宿主字段改名，在 `scripts/ocut-sync.py` 里修好，并在**同一次改动**里把声明加进注册表；
+   `scripts/tests/test_ocut_sync.py` 锁住两个方向——没注册的字段不许读，注册了的字段不许不读。
+5. `ocut sync --full` 在新形状下重建（重建前先快照）。
+6. 重启 OpenCode，让 hook 重新加载并重扫插件面。
 
-6. 大版本升级后**重新测量事件载荷**。字段名已经咬过一次（M20：代码照 SDK 类型写，
-   宿主发的却是另一套名字），所以这一步的原则是**观测，而不是相信文档**。做法：在
-   `/tmp` 建一个一次性项目，放一个探针插件，只记录
-   `permission.asked` / `permission.replied` / `command.execute.before` 的**键名与枚举值**，
-   用 `OPENCODE_SKILL_TRACKER_DB` 指向临时库跑一次，再把到达的字段和 tracker 读取的
-   字段逐一对。探针请只留在 `/tmp`：它会打印字段值，用在合成沙箱会话里可以，放在有
-   真实文本的地方不行。
+## 6. 刻意偏离
 
-   真的发现改名，就是**一次提交里改两个文件**：`plugin/skill-tracker.js` 的 `CONTRACT` 块，
-   和 `scripts/opencode_compat.py`。别处不许再放 hook 名或事件类型——`test_compat.py` 按**值**
-   比对这两份清单，还会检查写入端确实是经由 `CONTRACT` 注册的，所以只改一半会让构建变红，
-   而不是安静地什么都不记。
+记在这里，好让下一个读者不会「顺手」把它们改回坏掉的样子。
 
-不想改插件就设 `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS`——但那样 `env.opencode_version` 会**故意**一直 WARN。
-
-## 6. 刻意为之的偏离（别"顺手修回去"）
-
-- **TUI 里没有后台定时器。** 刷新是按页、事件驱动的：按键（5 秒节流）和切页只重读当前页，`r` 与首次绘制重读所有页；每页各自显示自己的 `data as of HH:MM:SS`。先试过 `set_interval`：在 textual 8.2.8 上，**只要在任何屏 mount 之后创建了 app 定时器**，`run_test` 收尾就会抛 `LookupError: <ContextVar name='active_app'>`——用空回调复现过，挂在 App 上和挂在 Screen 上都一样，`timer.stop()` 也救不回来。那会把整个 TUI 文件一次带走——**一个** app 定时器就足以让 `test_tui.py` 里所有用例同时失败，因为收尾属于 app，不属于添加定时器的那条用例。`test_tui_creates_no_app_timers` 把这条钉住。
-- **TUI 关闭了 Textual 的动画。** `SkillTUI.animation_level` 是 `"none"`，tab 栏下划线是瞬间到位而不是滑动。Textual 的 `Tabs` 会对它做 0.3 秒动画，级别是 `"basic"`（`_tabs.py` 的 `_highlight_active`），所以全局设成 `"basic"` **挡不住**它——只有 `"none"` 能。实测（44 个 skill 的数据库）：Dashboard→Skills 一次切换带动画约 500 ms、关掉约 190 ms，其中动画占 ~305 ms，而页面自身重读只有 ~70 ms、Textual 布局/渲染地板 ~125 ms。`test_tui_disables_textual_animations` 把这条钉住。不要以「只是外观」为由把它打开——它是切页最大的单项开销。
-- **图形断言不许去问被测对象自己的辅助函数“返回了啥”。** Dashboard 排名柱那版把每根渲染出来的柱都和 `rank_bar_width(...)` 的返回值比，于是把阶梯压平成常数之后测试全绿——从被测对象推导期望值的守卫不是守卫。那一列后来按他的要求撤掉了，但这条教训留下：`test_tui_trend_rows_are_a_fixed_width` 在同一句里把绝对行宽（20）也写死了，不只是断言各行彼此相等。
-- **本项目自己的数据库之外的东西一律不读。** Advisor 页在 2026-10-03 按 owner 的要求移除了；喂 `skillt agentos` 与 `skillt claude-mem` 的那两个只读邻居在 2026-10-12 连同它们自己的命令一起退役（D-053），所以读取范围里再没有任何外来库需要被挡在重画路径之外——`test_tui_never_reads_the_advisor_store` 也随着它盯着的那个库一起没了。活下来的规矩都有对象、也都有检查：重画路径上既没有 HTTP 也没有子进程（`test_no_http_is_reachable_from_the_tui_refresh_path`），外来的**文件**只按计数读、绝不按内容读（`test_scan_sync.py`、`test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`）。规则比它的对象活得久：第一个被重新读取的外来库必须回到 AGENTS.md 那条规则之下——只读 URI、字段白名单、绝不经 `open_db()`、绝不上重画路径——并且要在那份文件的不变量表里点上自己的名，因为一句指着没人写过的检查的承诺，比没有承诺更糟。
-- **两个含义不同的计数绝不合并，钉住它们的 fixture 也绝不给它们同一个值。** 教这条的是顾问的召回三元组——`retrieved`（引擎自报）、`recalled` 是 `len(memory_ids)`、`injected` 是 `len(injected_memory_ids)`——假说(hypothesis)可以被单独注入，合并就把一件真实的事藏起来了；把其中一个印在写着"recall"的列标题底下是**报告错误**，不是风格问题。那个读取端和 `test_the_recall_counts_surface_and_the_query_dict_does_not` 都在 2026-10-12 退役（D-053）；今天还活着的两对是 `Spawned`/`Ran as` 对 `Total`（`test_spawns_and_runs_are_two_columns_and_never_inside_total`）和 Plugins 页的 `registered`/`ever_called`。不依赖具体对象的那一半是 fixture 规则：顾问那个 loop 故意让三个数互不相等，因为三个数相等时任何断言都分不清「被合并了」和「本来就一样」——这跟下面双击那条「fixture 只有一行就会造出一个反例」是同一件事。
-- **分派是显式的 kind 列表，以 `else: return` 收尾。** 它以前收尾在插件调用上，于是任何它没听过的
-  kind 都会被塞进三个它没有的位置参数，处理器抛 `IndexError`。新增 kind 要加分支，不许落到
-  `else`——Advisor 的 kind 跟着那一页一起删了，`test_tui_row_dispatch_ignores_unknown_kinds`
-  仍然把这条钉住。行的身份绝不从 key 字符串里读出来：key 只是个查表用的记号
-  （`dash-skill:<name>`、`recent#<n>`），真正的目标是 `app.row_targets` 里那个元组，因为把一个
-  名字从 key（或从渲染出来的单元格）里拆回来，就等于让一个含分隔符的值变成另一行。
-- **`bar(value, peak, width)`：`value > peak` 就会溢出，传 `None` 就抛异常。**
-  顾问的逐阶段图是在真数据上学会这条的：峰值只取阶段时，一个真实 loop（最慢阶段 18ms、
-  预算 1200ms）会画出 **1467 格**并把整页折行；fixture 里那个 4000ms 的阶段把问题完全遮住了。
-  那张图跟着 Advisor 页一起没了，喂它的那个读取端也在 2026-10-12 退役（D-053）；**算术没有退役**，
-  「样本里那个把参考线盖住的最大值正是问题藏身的地方」也没有。Dashboard 的趋势图还在调同一个函数，
-  它们对这两条都安全，理由也是同一个：峰值就是它自己要画的那些值的 `max()`，而没有调用的那一天是 `0`，
-  绝不是 `None`。
-- **双击不需要新代码，但落点必须在一行之上。** Textual 在点击落在“已经持有行光标的那一格”时发
-  `RowSelected`，也就是第二击；不引入点击链计时器，所以“不许用 app timer”仍然成立。
-  在 `#dash-top`（120x40、5 行）上重新实测过：`(4, 1)`、`(2, 1)`、`(60, 1)`、`(3, 5)`
-  这些落在行里的坐标都会打开那一行的详情页，而 `(4, 0)`——表头——什么也不打开。
-  `test_tui_dashboard_row_double_click_opens_detail` 先把表头这一条断言掉，正例才不会是空的。
-  给搬旧数字的人留一句：Advisor 表上那个 `(4, 2)` 的反例是**fixture 只有一行**造成的，
-  行数多于一个时 y=2 就是一行，它会打开页面。那张表已经没了（2026-10-12，D-053），这个坑没有——
-  所以这里任何一句关于坐标的说法都得先讲清楚 fixture 里放了几行，别人才敢重用那个数字。
-- **插件表面的扫描只跳一层，而且入口文件永远不受大小上限约束。** 发布出去的 `main` 经常只是个壳：
-  `opencode-mem@2.28.1` 的 `dist/plugin.js` 只有 407 字节、什么都不注册，真正的工具在它
-  `await import("./index.js")` 拉进来的 chunk 里。只扫入口于是把一个确实注册了工具的插件列成
-  `tools=[]`，它每次调用都落进 `(unknown)`。现在扫描跟着入口自己的相对 import：
-  `PLUGIN_SCAN_HOPS_MAX`（3 个）、`PLUGIN_SCAN_HOP_MAX_BYTES`（每个 256 KiB）、只在入口所在目录里，
-  绝不递归——因为发现过程跑在 `init()` 里，宿主是盯着截止时间的。这两条边界都是靠踩坏另一条找出来的：
-  第一版把大小上限也加在入口上，于是悄悄丢了 DCP 的 `compress`（一个 300 KiB 的 bundle，以前一直是整份读的）；
-  把工具键规则收紧成 `id: {` 又丢一次，因为 DCP 写的是 `compress: cond ? a() : b()`。
-  守卫是 `test_scan_follows_the_entry_shim_one_hop`、`test_scan_hops_are_bounded`、
-  `test_scan_reads_a_large_entry_file_in_full`。三个真实插件上整个 `init()` 的实测成本：
-  改前中位 45.1 ms，改后 44.7 ms。
-- **工具 id 取"最浅的有键那一层"，不是"第一层"。** 以前那块是用一个停在第一个 `}` 的正则读的，
-  于是同时犯了两头的错：把工具自己 `args: { query: … }` 里的参数名当成工具（这个错位第一次是在
-  claude-mem 身上看见的——真正的 `claude_mem_search` 旁边多出一个 `query`；归属扫描和它的守卫今天还在，
-  2026-10-12 退役的是那个读 claude-mem 自己账本的读取端，D-053），以及把写在嵌套对象**之后**的工具整个漏掉。
-  现在的路径会跳过字符串字面量，取最浅的那一层——DCP 的 `tool:{ ...cond && { compress: … } }`
-  和 opencode-mem 的 `tool: { memory: tool({ args: {…} }) }` 在这条规则下都是对的。
-  先试过的"过滤全大写的键"已经删掉：它治的是症状，而且真有一个工具引用常量命名的话会被它误杀。
-  守卫是 `test_scan_reports_tool_ids_not_parameter_names`、
-  `test_scan_finds_a_tool_registered_behind_a_spread`。
-- **清单是并集，四种来源里只有两种可删。** `scope` 记下这一行是哪份配置声明的：`global` 和
-  `localdir` 每个会话都会读，所以本次启动没再见到的就是用户已经删掉的插件，`loadPlugins()`
-  结束时删掉——页面那一列于是说的真是"上次启动加载了什么"，不再是"这个库建好以来见过什么"。
-  `project` 行绝不在别处删（换个目录启动的会话看不见它）；建列之前的旧行按 `global` 处理——
-  猜错的代价只是这一行，用量还在，那个项目的下次启动会把它加回来。另有两道闸，每道都是靠把它
-  关掉来证明有效的：`OPENCODE_SKILL_TRACKER_PLUGINS` 覆盖时一律不删；全局配置文件一个都没解析成功
-  时一律不删——配置坏了或没了，看起来和"没装插件"一模一样。守卫是
-  `test_the_inventory_prunes_a_plugin_the_global_config_dropped`、
-  `test_a_project_scoped_plugin_survives_a_session_started_elsewhere`、
-  `test_the_env_spec_override_never_prunes`、`test_an_unreadable_global_config_never_prunes`、
-  `test_a_project_scope_row_is_never_downgraded`。
-- **表格列宽在这里算，不交给 Textual 去发现。** `DataTable` 在 `_on_idle` 里重算自动列宽，
-  所以第一帧每列恰好是表头的宽度（`frozen-gnome-fork-maintenance` 显示成 `froze`），之后每一帧
-  都滞后一帧的内容。`fit_columns()` 用手里的单元格算宽并把 `auto_width` 关掉；`_PAGE_TABLES`
-  声明每个页拥有哪些表，于是只重测刚画过的那一页。加上 Agents 页之后在 2026-10-04
-  用生产库的只读快照重测过：**九张表合计约 1 ms**（四次跑出来 0.7–2.0 ms），外圈整个
-  `refresh_all()` 是 8.9–14.8 ms。2026-10-03 那组数（八张表 2.7–3.1 ms、整趟 21–24 ms）
-  是在 Recent 还压着 100 行的时候测的；owner 清空用量后重跑，两趟都变便宜是因为数据变少，
-  不是因为代码变快；`plain_len` 的
-  “没有方括号就不解析”快路是当年把这一趟从约 21 ms 压到约 3 ms 的原因。
-  用例读宽度时**故意不**先 `pilot.pause()`——一 pause，idle 就把那一帧修好了，坏代码也会绿。
-- **自测隔离的是日志，不只是数据库。** `logPath()` 是一个 `let`，`__selftest()` 把它挪到临时库旁边的 `skill-tracker-selftest.log`，并在**两个出口**都还原——正常结束和中途放弃。还原这一步不能省：自测和真实会话可能共用同一个进程里的同一个模块实例，覆盖要是留着，之后每一条真正的 `[err]` 都会写到 `doctor` 看不见的地方。显式设置的 `OPENCODE_SKILL_TRACKER_LOG` 会被尊重（测试脚手架一直设着一个，这正是 CI 从没暴露此问题的原因）；只有落在共享默认路径上时才改写。证明方式见 README「插件自测（重要）」里那条配方：照它跑成功一次、再**故意跑失败一次**，两次都对比共享日志的 sha256。
-- **手画的图表行，宽度不许依赖数据。** 趋势行固定为 `TREND_ROW_WIDTH`（20），
-  `.trend` 把高度钉到 `TREND_LINES`，`fmt_count` 把计数压到 5 字符以内。两条腿都不是摆设：
-  只撤一条时另一条会把错位藏起来；钉高是**故意用"裁切"换"错位"**——窄于 70 列时三张一起裁（这个 70 是实测的，不是估的）。
-  三个序列各自取峰值这一点仍是有意为之。守卫是
-  `test_tui_trend_charts_share_one_line_when_a_series_is_huge`、
-  `test_tui_trend_css_height_matches_the_line_count` 和
-  `test_tui_trend_rows_are_a_fixed_width`；最后这条量的是**剥掉标记后**的文本，
-  因为 `Static.content` 返回的原串带着标记。
-- **子 agent 的两个角色分两列。** `Spawned` 是这个 agent 启动了几次，`Ran as` 是这个名字被别人当子 agent 跑了几次；两者绝不合成一个数，也都不进 `Total`——`Total` 在每一行上都仍等于 skill + MCP + plugin，由 `test_spawns_and_runs_are_two_columns_and_never_inside_total` **逐行**钉住，而不是只对着今天恰好存在的总数核。纯子 agent 行的 `Success rate` 按它自己的运行次数算（那是它唯一有的结果），并带 `⟨sub⟩` 标记，免得被读成「一个很闲的主 agent」。
-- **分组不许丢数，解析不出来的值只计数、不丢掉。** 教这条的是那条 trace 行的分组——claude-mem 注入日志的 `by_project` 与 `by_day`，归不进组的落进 `projectless`、`older_days`、`undated`，由 `test_grouping_never_loses_a_count` 断言各组之和加得回总量；那个读取端在 2026-10-12 退役（D-053）。规则没有，而且今天仍有三个对象守着它：`plan_retention()` 按 `by_day` 与 `by_month` 给备份分桶，名字解析不出来的全部落进 `unparsed`，**绝不**被排进删除队列（`test_backup.py`）；`skillt sync` 把 frontmatter 名字读不出来的 skill 计成 `unparsed_name`，而不是让这一条就此消失（`test_sync_counts_unparsed_names`）；`skillt prune-usage` 把时间戳解析不出来的行计为 `undated` 并留下它——「早于 N 天」是对一个该行根本给不出的日期的断言（`test_row_retention.py`）。一个各桶加不回总量的拆分，就是一次伪装成报告的丢失。用量窗口照旧按**本地**日历日分桶——分桶来自 `local_day_bounds()` 与 `date(timestamp,'localtime')`，也就是 M1 记的那次修复——而备份与轮转的文件名仍是 UTC 时间戳，因为里面的行本身就是 UTC。外来的标签也仍然只按形状准入：`SUBAGENT_LABEL_RE` 只收 slug 形的名字，其余一律计成 `(unnamed)`，所以别人字段里的一句话会变成一个计数，不会变成一个标签。
-- **行身份绝不从 row key 里 parse 回来。** 名字本身含分隔符（`@scope/pkg`、`conductor:newTrack`、带 `_` 的 server 名），所以每张表在渲染时把 `(kind, ...parts)` 注册进 `app.row_targets`。不要恢复 `split()`。
-- **`unified_recent_rows` 额外返回详情页需要的列**（`skill_name`、`server_name`+`tool_name`、`plugin_name`+`item_kind`+`item_name`），显示用的 `name` 不是主键。
-- **导出对 metadata 走白名单**（`EXPORT_METADATA_KEYS`）而不是整列倒出，文档形状因此升到 `schema_version = 4`；后来给 `plugin_inventory` 加 `scope` 又把它推到 5，新增 `subagent_usage` 这个键把它推到 6。再改形状要升版本并同步 `test_export.py` / `test_plugin_db.py`——形状用例现在把**整个键集合**钉死了，新键没法悄悄混进来。
-- **`scrub-metadata` 原地改行而不是删行**，且 `--yes` 之前必先备份。
-- **日志从文件开头扫，不读尾部；被上界切到的读数只是下界。** 这条规则是在 claude-mem 的 worker 日志上学会的——那里面有 **57 行 ERROR**，全都排在文件**前半段**，只读尾部 64 KB 会报成 0——而那个读取端在 2026-10-12 退役了（D-053），把 `CLAUDE_MEM_LOG_BYTES_CAP` 和它那套按方括号位置解析的规则（`_LOG_LINE_RE`：级别在第 2 个括号、类别在第 3 个，匹配不上的行进 `unparsed` 计数而不是静默丢掉）一起带走了。这里再也没有任何代码去解析别人日志的级别。活下来的上界是本项目自己的 `log.max_bytes`，**解析一次、读写两侧共用同一个值**：`doctor log.errors` 从文件**开头**数前 N 个字节，上界咬到就在结论里写「这是下限、不是总数」，`skillt rotate-log` 在同一个数上把文件改名。守卫是 `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`、`test_the_rotation_cap_is_the_number_the_reader_reads`、`test_the_reader_bound_moves_with_the_writer_bound`。旧教训里「代价」那一半正是让它成为规则而不是偏好的原因：计划里那句「整份读也就 1–2 ms」是**没测就写进去的**，实测那三个文件要 **8.2–15.8 ms**（2026-10-04）、重测 **12.2–14.0 ms**（2026-10-09）——读数留在 measurements §6，已经跟着读取端一起标了退役。同一条命令隔五天差了 4 ms，说的就是这笔开销是**别人正在追加的那个文件有多大**，绝不是「数它的那段代码有多快」。
-- **没有 HTTP，重画路径上什么也没有。** `claude_mem_worker()` 读 `worker.pid` 再 `os.kill(pid, 0)`——那是个 syscall，所以存活与端口只花微秒、worker 没起来时照样能回答——也只有它活着时那一条命令才会去问 worker 三个问题，共用**一个**总截止时间，答案同时按字段名**和**类型投影。这些全都在 2026-10-12 走了（D-053）：现在本项目没有任何代码路径会打开 socket，唯一还剩下的 HTTP 是人照着 §5 亲手敲的那条 `curl`。「文件在前、HTTP 在最后、而且绝不进 TUI」这个形状活了下来，而它的检查不靠任何历史：`test_no_http_is_reachable_from_the_tui_refresh_path` 把 `urllib.request.urlopen`、`http.client.HTTPConnection`、`socket.create_connection` 三道门都装上探针，要求每一道确实应答过，再把每一页加上 `s`、`r` 走一遍——一道门都不许应答。
-- **一个没在跑的东西是一种状态，不是一次故障。** 这条原本是 `claude_mem.capture` 在讲：按需启动的 worker 停了，它打印 `worker down` 并保持 PASS，因为「没跑」和「跑坏了」不是同一个断言。那项检查随它的读取端在 2026-10-12 被删（D-053）；规则活在接班的那几项排班检查里，而那也正是它今天咬人的地方——`backups.scheduled` 对一台主人决定不装单元的机器只 WARN、永不 FAIL，`disabled` / `not-found` / 「问不到 systemd」是三句不同的话，排班没了要说成没排班，不能拿它产出的最后一份文件反推（`test_a_disabled_timer_is_named_as_disabled_not_as_missing`、`test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`）。仍然靠证据、而不是靠缺席报警的仍然是 `log.errors`——那是行数给不了的唯一信号，因为写入端可以每次都失败，而它最新一行的时间戳照样好看。
-- **Agents 页没有排序是有意做的。** `action_cycle_sort` 对 `tab-agents` 直接 return；落到 `else` 会在用户站在 Agents 页时悄悄改掉 *Skills* 的排序，而屏幕上看不出任何变化。它那一行 `(unknown)` 照实显示，并在页脚解释（M23）。
-- **Plugins 页用的是并集，`plugin_stats_rows` 不是。** 那一页和 `skillt plugins` 读的是 `plugin_surface_rows`（清单 ∪ 用量）：一个注册了却从没人调过的工具原本**一行都不产生**——11 个界面只画出 1 行，owner 因此判定「采集坏了」。dashboard 的 Top Plugins 仍然用只含用量的那个视图：一排 0 不叫排行。被排除的插件不给它造 0 行，它本来就没有界面。`registered` 与 `ever_called` 保持两个字段，消费方没法把它们合成一个含义不明的 0。
-- **子 agent 记成「事件」，绝不当第四种流。** `Spawned` 排在 `Total` 旁边而不是塞进去：`task` 是内置工具，它那一轮里可能一次被测调用都没有——并进去会让同一列一会儿是「调用」、一会儿是「调用加事件」，全看那次会不会 delegate。由 `test_agent_rows_gain_a_spawned_count_and_total_stays_the_three_streams` 钉住。
-- **TUI 的自述与几何都是算出来的，不是抄出来的。** 四处手写版本被实测证明确实错过，现在全部由代码生成：
-  `MainScreen.key_help()` 从 `BINDINGS` 生成 Data 页的按键清单（旧文案只写了 `b`/`e`/`v`，
-  而 Footer 用 `show=False` 藏起来的 `d`、`j`/`k` 一个字都没提）；`MainScreen.CARD_LABELS`
-  是六张卡片标签的唯一来源，因为 `_card_columns()` 需要其中最长的那条才能选出不会折行的网格；
-  `_empty_note()` 把「表格为什么是空的」写进这一页自己的状态行——新鲜度后缀本来就住在那里，
-  于是同一页不会同时挂出两句互相打架的数据声明；状态块**每行只有一个平铺的 `[dim]` 区间**，
-  被 `[dim]` 包着的行里再嵌一个 `[dim]` 时刻尾，正是 Plugins 那块读起来像两种信息的起因，
-  也正是这条规则能被正则检查的前提。守卡：`test_a_new_binding_documents_itself_in_the_help`、
-  `test_the_data_page_key_help_is_generated_from_the_bindings`、
-  `test_every_table_page_status_line_is_dimmed_throughout`、
-  `test_the_card_grid_switches_where_the_layout_actually_fits`。
-- **窄终端的数字是量出来的，别拿 CSS 去「修正」它。** 卡片网格比屏幕窄 4 列，而 Textual 分余数时不平均分，
-  所以由**最窄那张卡**决定：六列并排要 111 列，三列要 57 列，两列是底线（低于 40 列最长标签就会折行——
-  这是主动选择，代价不让一个本来就在滚动的仪表板再长高一倍）。`_card_columns()` 第一版把这个内缩量算成 2，
-  于是在 55 列选了 3 列、在 109 列选了 6 列，而这两档上最窄的卡片只有 16 列，13 列的标签必然折行。
-  确认框现在是 `width: 100%; max-width: 60`：原来是 `width: 60`，48 列的终端会拿到一个钉在 `x=0` 的 60 列框，
-  `Confirm (y)` 一直延伸到 `x=56`。
-- **TUI 里不再有任何命令式颜色。** `#data-result.ok` / `.bad` 解析到 `$success` / `$error`，
-  所以换主题能跟着走；被它替掉的命令式赋值做不到。`test_the_result_colour_is_a_theme_token_and_not_a_literal`
-  既查类名、也查 CSS 规则，还扫源码里有没有命令式赋值回来了。
-- **状态行是在布局之后画的，不是在布局之中。** 还没布局的 `DataTable` 报的是 `region.width == 0`，
-  此时那句「有几列在屏幕外」会说成整张表都在屏幕外——那是对仪器下结论，不是对页面下结论，
-  所以 `_offscreen_note` 跳过宽度为 0 的表，而 `_refresh_pages` 用 `call_after_refresh` 补一次重画。
-  `fit_columns` 存在的理由也是这个。这条提示只解决「看不看得见」：`right` 本来就能把剩下的列滚进来
-  （48 列实测 `virtual_size.width` 96 对 `region.width` 44、`max_scroll_x` 52），
-  所以表格**没有**加 `min_width`——那是给一个不存在的缺陷开药。
-- **两条写路径都接上，因为宿主对内置工具到底触发哪一条并不知道、也不赌。** hook 一对和 `message.part.updated` 各自调用写入端，`UNIQUE(parent_session_id, call_id)` 配「只补空、不覆盖」的规则把两次观测收成一行：事件补上 hook 拿不到的子会话 id，也不会盖掉已有名字。`__selftest` 两条都驱动并断言只有一行。**真实宿主走哪一条仍未验证**——要重启后跑一次真会话才行；而答案不会改这段代码。
-- **`subagent_type` 是按形状准入，不是按含义。** `SUBAGENT_LABEL_RE` 要求不含空格、不含路径、至多 40 字符；不合格就计成 `(unnamed)`。这是一条**上界**，不是散文探测器——一个 39 字符、连字符拼的 token 是能过的，这一轮我自己的哨兵值就是这样混过去的，直到把用例的值改成一句带空格的话才暴露。载荷里的散文字段（`prompt`、`description`、`title`、`output`、`error`）在写入端一个都不点名；`test_the_subagent_writer_never_names_a_text_field` 就是去读那三个函数体来保证这一点——而一个会连自己注释一起误伤的扫描，是没人改得动的扫描。
+- **宿主只读，永不写。** `open_source()` 以 `file:<host>?mode=ro` 打开并设
+  `PRAGMA query_only = ON`，文件缺失时**抛错**而不是创建一个空库。这正是读取器无法修复或回填
+  OpenCode 的原因；`ocut sync --full` 只重建 tracker 自己的那份。
+- **插件用量来自 sidecar，不来自宿主。** OpenCode 不标明一次工具调用属于哪个插件，对命令则完全不记，
+  所以 `plugin_usage` 是唯一一张数据来自宿主库之外的表——由 `plugin/ocut-hook.js` 追加到
+  `plugin-events.jsonl`。这个 hook 从不打开 OpenCode 的数据库，也从不读工具的参数、输出或任何消息
+  文本。`OCUT_HOOK_DISABLE=1` 关掉它；`OCUT_HOOK_EVENTS` 移动 sidecar，hook 与 `ocut sync` 必须
+  对它达成一致。
+- **hook 的归属是一次尽力而为的静态扫描。** 它读每个已安装插件的源码，找 `tool: { … }` 对象和两种
+  命令注册形状，再往 bundle 的相对 import 跳一层。扫描解析不出某个插件的面时，它就什么都不记——
+  猜一个归属比缺一行更糟。
+- **插件调用没有状态。** 工具的 after-hook 不带状态，命令则根本没有 after-hook，所以
+  `plugin_usage.status` 是 NULL，界面打印 `-` 而不是 `0`。它的 `ts` 是 hook 自己的时钟，不是宿主的。
+- **sidecar 有上限、靠截断轮转。** `ocut-hook.js` 在超过 8 MiB 时截断文件；`ocut sync` 发现它
+  （文件比字节偏移游标短）就从开头重读——幂等，因为每条记录以自己的 id 为键。`OCUT_HOOK_DISABLE`、
+  `OCUT_HOOK_EVENTS`、`OCUT_HOOK_PACKAGES`、`OCUT_OPENCODE_CONFIG` 是 hook 的旋钮。
+- **读取器给它用不了的东西计数。** `unparsed` 按 reason 累加，而不是丢掉一个未知 part 类型或一个
+  解析不了的 blob；一次「什么都没认领」的运行照样打印 "done"，而这个计数才是让格式变化变得可见的
+  东西。`ocut health` 连 0 的情况也打印，好让那一行本身证明检查跑过。
+- **两个 token 粒度并排显示、绝不相加。** `model_calls` 是每步记录；`sessions` 是宿主的按会话
+  rollup。它们是同一测量的两个层级，相加会把每个 token 数两遍。
+- **MCP 按名字归属，最长前缀优先。** 没有哪个已配置服务认领的工具名保持 `builtin`，并作为
+  「server 形状但无主」报出，而不是被猜进某个服务。
+- **设置在宿主的目录树之外。** `~/.config/ocut/config.toml`（或 `OCUT_CONFIG`），绝不是
+  `~/.config/opencode/**` 下任何东西——那是宿主的。解析不了的文件是以点名键的错误，不是静默回退。
+- **备份是手动的。** `ocut backup` 是那个刻意的动作；`ocut sync --full`、schema 升级与
+  `ocut restore` 各自会先做快照。**没有 systemd** timer 了，保留策略只留最新 `BACKUP_KEEP`（5）份
+  托管快照，从不碰手工的 `usage.db.bak-*` 副本。
+- **schema 只有一份，在 `ocut_db.py` 里。** `TABLES_SQL` 建表、`VIEWS_SQL` 建视图；
+  视图一改就升 `SCHEMA_VERSION`，而升级会清空 `sync_state`，让游标被重读而不是被信任。
+  `plugin_surface`（hook 上报的工具/命令 id）在每次文件系统重写之后被折回 `inventory`，
+  所以那些面能存活下来。
 
 ## 7. 已知限制
 
-M1–M24 全文见 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制)（英文摘要在 [README.md](README.md#-known-limitations)）。
-维护时最容易咬人的几条：**M14**（历史行里的提示词原文——2026-10-01 已清理，但更早的备份里仍在）、**M19**（已修：备份曾有两个落点而保留策略只管一个——复查库旁边不该再出现 `skill-usage-backup-*.db`）、**M15**（没跑完的调用一行都不留）、**M16**（一次 git 失败会把该目录的 branch 永久钉成 null）、**M17**（日志会长；现在读写两侧都上了界——两端都用解析后的 `log.max_bytes`，文件本身由 `skillt rotate-log` 改名）、**M18**（晚到的错误文本会被 `COALESCE` 丢掉）以及 **M23**（同一个 `COALESCE` 会把 `agent` 冻住，所以 Agents 页统计的是一行的 session **首次**报出的 agent，而 `(unknown)` 量的是采集顺序，不是「无主的调用」）。
+M1–M12，含复现说明：
+[README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
+[README.md](README.md#-known-limitations)。
+维护时最容易踩到的几条：**M1**（宿主是事实来源，它从没落盘的调用就是不可见）、**M3**（插件用量需要
+hook **以及**一次 OpenCode 重启）、**M4**（扫描是尽力而为的）、**M6**（`unparsed` 是格式变化的信号）、
+**M10**（sidecar 靠截断轮转）。
 
-## 8. 暂缓（P2）——按性价比排序，并写明为什么不修
+## 8. 暂缓——按代价排序，附不做的理由
 
-| 项 | 成本 | 为什么先不修 |
+| 项 | 代价 | 为什么暂缓 |
 |---|---|---|
-| `branchByDir` 负缓存无 TTL（M16） | 小 | 动采集路径；AGENTS.md 要求改采集必须带测试，且当前 null 的主因是会话目录本身不是 git 仓库 |
-| `metadata` COALESCE 丢晚到错误文本（M18） | 中 | 位于承载去重不变量的 upsert 里 |
-| init 里 MCP 探测阻塞约 1.5 秒（164 次 init 的 p90） | 中 | 调低 `MCP_STATUS_TIMEOUT_MS` 会误判服务列表，比启动慢更糟 |
-| `plugin_inventory` 对本地插件显示绝对路径 | 观感 | 需要只显示层的短化 + 测试 |
-| 行级保留只用手跑（M17 已结；`retention.usage_days` 默认 0） | 小 | 把它装上就等于让已记录的历史按一个主人没选过的时间表被删，所以默认关；`skillt prune-usage --yes` 才是那个决定点。`skill_versions` 由 `retention.max_skill_versions` 管，同样默认关 |
-| 从 OpenCode 自己的 `part` 表回填 `subagent_usage`（重启前那 84 次：`explore` 61、`general` 13、`auditor` 5、`researcher` 3、`reviewer` 2、`verifier` 1） | 小——一次只读扫描、8 条白名单 json 路径、按 `(parent_session_id, call_id)` 幂等 | **owner 在 2026-10-04 明确不做**：为一个不是天天问的历史问题，要把一个正在被写的库（OpenCode 自己的，WAL，会话跑着的时候也在写）加进本项目的读集合。于是 `Ran as` 说的是「自上次启动以来」，M24 也在页面上这么讲。等真有需要那些旧数字的问题时再提。 |
-
-### 已用 live 验证结清（2026-10-01）
-
-两条此前"只有单测"的采集路径，已在 `/tmp` 沙箱里对真实 `opencode run` 跑通（库用
-`OPENCODE_SKILL_TRACKER_DB` 隔离、模型 `opencode/space-bunny-free`、提示词全合成、
-用绝对路径调用二进制以绕开 shell alias）：
-
-- **插件命令采集是通的。** `--command dcp-compress` 触发了
-  `command.execute.before`，写下
-  `@tarquinen/opencode-dcp@3.2.0 / command / dcp-compress / command_call / unknown`。
-- **拒绝采集当时是坏的，现已修好。** OpenCode 1.18.33 发的是
-  `permission.asked` → `permission.replied`：id 在 `id`、被拒调用在 `tool.callID`、
-  答复是 `reply` 且用 `requestID` 关联。而 tracker 监听的是 `permission.updated`、
-  读的是 `permissionID`/`response`——这个宿主从不发这些名字，于是**每一次真实拒绝都
-  什么都没写**，生产里 `denied` 为 0 不是"没遇到"而是"记不下"。现在能正确落库，但
-  M20 依然成立：宿主只对 `edit`/`bash`/`webfetch`/`doom_loop`/`external_directory`
-  设门，这五类都不在度量范围内，所以仍应预期 `denied` 为 0 行。
+| 回填 hook 存在之前漏掉的插件用量 | 中 | 宿主不标明一次工具调用属于哪个插件，所以没有可回填的**来源**；恢复它等于猜一个归属 |
+| 归属扫描解析不出的插件命令 | 中 | 猜一个归属比缺一行更糟（M4）；诚实的答案是 `0` |
+| 按模型的 cost 图 | 小 | `sessions.cost` 与 `model_calls.cost` 是同一笔钱数两遍；任何地方只显示其中一个 |
 
 ## 9. 回滚
 
-一次提交一个改动，代码先于文档（Conventional Commits）。退回某个阶段：
+每次改动一个 commit，代码在文档之前（Conventional Commits）。要撤掉一个阶段：
 
 ```bash
 git log --oneline -12
-git revert <sha>          # 优先 revert，不要 reset；测试必须保持全绿
+git revert <sha>          # 优先 revert 而不是 reset；套件必须保持全绿
 ```
 
-`scrub-metadata --yes` 是本项目唯一的破坏性操作。它在应用**之前**会在数据库旁边写一个 `skill-usage-backup-*.db`，所以恢复方式是：先停 OpenCode，再
-`cp ~/.local/share/opencode/skill-usage-backup-<ts>.db ~/.local/share/opencode/skill-usage.db`。
+`ocut restore NAME` 是从坏的数据库状态回去的路：它在替换前先给在用的数据库做快照，所以恢复本身可逆。
+先关掉 TUI——它把文件开着。
 
 ## 10. 每个阶段的报告格式
 
-本项目的每次改动都按同样五项汇报，让读者不用重新推导就能验收或否决：
+这里每次改动都用同样五项汇报，好让读者不用重新推导就能接受或拒绝：
 
-1. **改了什么**——说行为，不说代码。
-2. **怎么看得到**——能演示出来的那条命令或那次按键。
-3. **测试增减**——之前 → 之后的数字，以及"先红后绿"的证据。
-4. **偏离之处**——与批准计划不同的地方及原因。
-5. **回滚方式**——该 revert 哪个提交。
+1. **改了什么**——行为，不是代码。
+2. **怎么看**——能演示它的确切命令或按键。
+3. **测试增量**——前 → 后计数，附任何先红后绿的证据。
+4. **偏离**——任何与批准方案不同的做法，以及为什么。
+5. **回滚**——要 revert 的 commit。
 
-## 11. 「全绿」是怎么被产出来的
+## 11. 一个 `green` 是怎么产生的
 
-测试只有在"跑它的那条命令本可以大声失败"时才算证据。下面四个坑，每一个都在这台机器上付过代价：
+只有当跑它的那条命令**本来就能大声失败**时，套件才算证据。四个坑，都在这台机器上付过学费：
 
-- **串联会把失败吞掉。** `a && b` 只报 `b` 的状态，`pytest -q | grep -c passed` 报的是
-  `grep` 的。一次检查一条命令，取它自己的退出码，不要经过管道：
+- **串联会吞掉失败。** `a && b` 只报 `b` 的状态，`pytest -q | grep -c passed` 报 `grep` 的。
+  一次检查一条命令、各自的状态、不接管道：
   `python3 -m pytest scripts/tests -q > /tmp/pt.log 2>&1; echo "exit=$?"`。
-- **`${PIPESTATUS[0]}` 是 bash 的写法。** 这个项目是在 **zsh** 里驱动的，那里数组叫
-  `$pipestatus` 而且**下标从 1 开始**；用 bash 的写法会展开成空字符串——于是一次失败的
-  `git push` 打印出 `push exit=`，一个看起来像"检查过了"的空状态。本机实测：`false | true`
-  之后 `${pipestatus[1]}` = `1`，而 `${PIPESTATUS[0]}` = **空**。取状态不要穿过管道。
-- **看尾巴不等于看结论。** 一次 `tail -3` 把一个还在磁盘上的备份说成已被清理。这个仓库里
-  根本没有 pytest 配置文件——没有 `addopts`，也不存在第二个 `-q` 能压掉的摘要行——所以计数
-  一定在：读日志文件的最后一行，而不是屏幕上的碎片。
-- **验红会留下探针。** 证明一个守卫能失败，就要短暂改一下实现或 fixture；而这个"短暂"要是
-  留在了文件里，结果就是假绿。被跟踪的源码里出现 `TEMP-` 标记会被
-  `test_no_canary_or_scratch_marker_survives_in_tracked_source` 拒绝——一个留在 conftest
-  fixture 里的探针曾经带着 318 个通过跑完全程，所以这条不是洁癖。还原要重新读一遍文件确认，
-  而不是假定最后一次编辑抵消了第一次。还原这条命令自己也会中途停：这台机器把 `rm` 和
-  `cp` 别名成了交互模式，所以 `cp a b && pytest …` 卡在一个没人回答的提问上——canary 还
-  留在文件里，而它后面那次“全绿”根本没跑。用 `command cp -f` / `command rm -f`，还原后
-  再打一次 `git diff --stat`：空 diff 才是证明，一条被跳过的命令的 `exit=0` 不是。
+- **`${PIPESTATUS[0]}` 是 bash。** 本项目由 **zsh** 驱动，那里的数组是 `$pipestatus` 且从 1 开始；
+  bash 写法会展开成空，于是失败的 `git push` 打印出 `push exit=`——一个看起来像检查跑过了的空白状态。
+  取状态时不要接管道。
+- **`tail` 不是结论。** 本仓库没有 pytest 配置——没有 `addopts`，没有第二个 `-q` 能压掉的摘要行——
+  所以计数总是在：读日志文件的最后一行，而不是屏幕的片段。
+- **一次 red-check 会留下金丝雀。** 证明一个守卫能失败，意味着要临时改实现或 fixture 一下，而这一下
+  如果活过了编辑，就是一个假绿。被跟踪源码里的 `TEMP-` 标记会被
+  `test_no_canary_or_scratch_marker_survives_in_tracked_source` 拒绝。恢复靠重读文件，而不是相信最后
+  一次编辑撤销了第一次。

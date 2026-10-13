@@ -1,18 +1,61 @@
-"""The project README must document every required section and limitation."""
+"""The project README must document every required section and limitation.
+
+Repointed from the retired `skillt` tool to its successor `ocut`. The gates that
+named a deleted artifact were rewritten against the ocut code (the TUI's tabs and
+bindings, the headless commands, the Dashboard panels, the settings the resolver
+actually uses) rather than dropped: the point of each one — a document that cannot
+drift from the code — is unchanged.
+"""
 
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]      # repo root
 README = ROOT / "README.zh-CN.md"
-SYSTEMD = ROOT / "skill-tracker" / "systemd"
 
-# Every documented limitation, in both languages. M14-M18 came out of the
-# full capture/UI audit; M19 out of the privacy cleanup that followed it; M22-M23
-# out of the Agents page and the subagent round.
-LIMITATIONS = tuple(f"M{i}" for i in range(1, 25))
+sys.path.insert(0, str(ROOT / "scripts"))
+import ocut_db as db  # noqa: E402  (stdlib-only: tomllib, sqlite3, pathlib)
+
+# Every documented limitation, in both languages. Derived from the ocut code: the
+# passive reader's boundaries (the host is the source of truth; nothing is written
+# back; prose is never read), the one thing the opt-in hook must supply and how
+# best-effort it is, the two token granularities, and the sidecar's cap. M1-M12.
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 13))
+
+# The load-bearing half of each limitation. A marker alone could survive a rewrite
+# that dropped the meaning, so each Mx must sit beside a keyword that is actually
+# true of the ocut code. The two READMEs are one document in two languages.
+EN_KEYWORDS = (
+    "source of truth",      # M1
+    "never written",        # M2
+    "nothing recorded",     # M3
+    "static scan",          # M4
+    "hook's own clock",     # M5
+    "unparsed",             # M6
+    "message body",         # M7
+    "never added",          # M8
+    "longest prefix",       # M9
+    "truncation",           # M10
+    "installed",            # M11
+    "no systemd",           # M12
+)
+ZH_KEYWORDS = (
+    "事实来源",              # M1
+    "从不写入宿主",          # M2
+    "没有任何记录",          # M3
+    "静态扫描",              # M4
+    "hook 自己的时钟",       # M5
+    "unparsed",              # M6
+    "消息正文",              # M7
+    "绝不相加",              # M8
+    "最长前缀",              # M9
+    "截断",                  # M10
+    "已安装",                # M11
+    "没有 systemd",          # M12
+)
 
 # --- HTTP status-code parity across a bilingual pair -------------------------
 # A status code named in one language alone is a fact that silently contradicts the
@@ -41,9 +84,9 @@ def _text():
 
 def test_readme_has_all_sections():
     text = _text()
-    # The zh-CN README now mirrors README.md's 13 top-level sections in the same
-    # order; these names moved with that restructure. The intent is unchanged:
-    # the Chinese documentation must carry the sections it is expected to.
+    # The zh-CN README mirrors README.md's 13 top-level sections in the same order.
+    # The intent is unchanged: the Chinese documentation must carry the sections it
+    # is expected to.
     for section in (
         "为什么", "环境要求", "安装", "使用", "设置", "工作原理",
         "备份", "故障排查", "已知限制", "仓库结构", "卸载", "参与贡献", "许可证",
@@ -82,78 +125,22 @@ def test_readme_documents_every_known_limitation():
     text = _text()
     for marker in LIMITATIONS:
         assert marker in text, f"README.zh-CN does not mention {marker}"
-    for keyword in (
-        "UTC",                          # M1
-        "读写方式打开",                  # M2
-        "隐式提交",                      # M3
-        "半成品",                        # M4
-        "UI 线程",                       # M5
-        "UnicodeEncodeError",           # M6
-        "git 子进程",                    # M7
-        "容量上限",                      # M8
-        "initDone",                     # M9
-        "退出码",                        # M10
-        "重启 OpenCode",                 # M11/M12
-        "静态扫描",                      # M12
-        "allowlist",                      # M13
-        # M22, in its surviving shape: a foreign value that could carry prose is counted
-        # and never read. The keyword stayed when the reader left because the rule did —
-        # it now describes the SKILL.md body and the plugin log.
-        "只数、不读",
-        # "共用一个总截止时间" (three claude-mem endpoints under one deadline) was dropped
-        # on 2026-10-12 with D-053, in step with its English twin "one shared deadline":
-        # no HTTP probe exists in this project any more, so the keyword could only ever
-        # match prose *about* the withdrawal from now on.
-        "采集顺序",                        # M23: `(unknown)` is not anonymous work
-        # M24: the subagent stream's two promises, easy to lose in a summary.
-        "subagent_usage", "Spawned", "散文探测器",
-    ):
+    for keyword in ZH_KEYWORDS:
         assert keyword in text, f"known-limitation detail missing: {keyword}"
 
 
 def test_english_readme_documents_every_known_limitation():
     """The landing page must not fall behind the reference doc.
 
-    Regression: README.md listed "M1 through M11" while README.zh-CN.md had
+    Regression: README.md once listed "M1 through M11" while README.zh-CN.md had
     M1-M13, and nothing compared them, so an English reader was told a shorter
     story about the same database.
     """
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     for marker in LIMITATIONS:
         assert marker in text, f"README.md does not mention {marker}"
-    for keyword in (
-        "UTC",                 # M1
-        "half-written",        # M4
-        "UI thread",           # M5
-        "UnicodeEncodeError",  # M6
-        "static scan",         # M12
-        "allowlist",           # M13
-        "prompt",              # M14
-        "no row at all",       # M15
-        "COALESCE",            # M18
-        "The default now writes into",   # M19, fixed — must say where it goes
-        # M22, in its surviving shape: a foreign value that could carry prose is
-        # counted and never read. The keyword stayed when the reader left because the
-        # rule did — it now describes the SKILL.md body and the plugin log.
-        "counted, never read",
-        # "one shared deadline" (the claude-mem HTTP probe's three endpoints under one
-        # deadline) was dropped on 2026-10-12 with D-053 rather than left to pass on
-        # unrelated text: no HTTP probe exists in this project any more, so a keyword
-        # naming its shape could only match prose *about* the withdrawal. The rule that
-        # replaces it is stronger and is checked where it lives —
-        # `test_no_http_is_reachable_from_the_tui_refresh_path` arms the stdlib doors.
-        "capture order",         # M23: `(unknown)` is not anonymous work
-        # M24: the gate is a shape bound, and saying "prose detector" is the lie
-        # a future edit would tell. Both READMEs must also name the two things
-        # the owner looks for on screen.
-        "not a prose detector",
-        "subagent_usage",
-        "Spawned",
-    ):
+    for keyword in EN_KEYWORDS:
         assert keyword in text, f"English limitation detail missing: {keyword}"
-    zh = _text()
-    for keyword in ("散文探测器", "subagent_usage", "Spawned"):
-        assert keyword in zh, f"Chinese limitation detail missing: {keyword}"
 
 
 # --- maintenance checklists -----------------------------------------------
@@ -168,132 +155,83 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
     en = MAINTENANCE[0].read_text(encoding="utf-8")
     zh = MAINTENANCE[1].read_text(encoding="utf-8")
 
-    # Everything a reader needs to notice capture has decayed.
+    # The commands a reader runs when they suspect capture has decayed.
     for needle in (
-        "skillt doctor", "skillt cleanup-selftest", "skillt sync --dry-run",
-        "skillt scrub-metadata",
-        # The two commands that *change* data, named in both checklists: a checklist
-        # that describes only the read-only half teaches nobody what to run when the
-        # database or the log outgrows the machine.
-        "skillt rotate-log", "skillt prune-usage",
-        "capture.freshness", "log.errors",
-        "env.opencode_version", "backups.latest", "integrity_check",
-        "skillt-auto-backup.timer", "pytest scripts/tests", "bash -n bin/skillt",
-        # MAINTENANCE §11 — how a green is produced. Named here so a translation
-        # that drops the rule drops the build.
-        "pipestatus", "command cp -f",
+        "ocut health", "ocut sync", "ocut sync --full", "ocut backup", "ocut restore",
+        "ocut plugins", "ocut format",
     ):
         assert needle in en, f"MAINTENANCE.md missing: {needle}"
         assert needle in zh, f"MAINTENANCE.zh-CN.md missing: {needle}"
 
     # The load-bearing invariants, by the name a future editor will grep for.
-    for needle in ("UNIQUE(session_id, call_id)", "SCHEMA_VERSION", "export default",
-                   "Object.keys()", "TABLES_SQL",
-                   # The two free-text keys, named by the guard that holds each:
-                   # a one-language edit of the invariant table fails here.
-                   "test_the_session_handler_keeps_only_the_fields_it_uses",
-                   "test_a_denied_call_stores_no_title_but_still_stores_the_denial"):
+    for needle in ("SCHEMA_VERSION", "TABLES_SQL", "VIEWS_SQL", "PRAGMA query_only",
+                   "mode=ro", "unparsed", "sync_state", "plugin_surface"):
         assert needle in en, f"MAINTENANCE.md dropped an invariant: {needle}"
         assert needle in zh, f"MAINTENANCE.zh-CN.md dropped an invariant: {needle}"
 
-    # Deviations must be written down where the next reader will look, not in
-    # a commit message. Each name below is a thing a future editor is most likely
-    # to "simplify" back into a wrong answer.
-    for needle in ("set_interval", "active_app", "animation_level", "row_targets", "schema_version",
-                   "truncated", "unparsed",
-                   # The subagent round: three names a future editor would have to
-                   # delete on purpose to make the docs disagree with the code.
-                   "subagent_usage", "SUBAGENT_LABEL_RE", "Spawned",
-                   "plugin_surface_rows", "ever_called",
-                   # The selftest log isolation, named the same in both languages.
-                   "logPath()", "OPENCODE_SKILL_TRACKER_LOG",
-                   "skill-tracker-selftest.log",
-                   # The two subagent columns and the count-conserving groupings: an
-                   # English-only or Chinese-only edit fails here, not in review.
-                   "Ran as", "Spawned", "opencode.db",
-                   # `unparsed` / `unparsed_name` / `undated` stayed because all three
-                   # still name a live bucket (`plan_retention()`, `skillt sync`,
-                   # `prune-usage`). `by_project`, `projectless` and `older_days` were
-                   # dropped on 2026-10-12 with D-053: they named only the claude-mem
-                   # trace grouping, and once that reader left they could keep passing
-                   # on prose *about* the withdrawal — the same reason "one shared
-                   # deadline" came out of the limitation keywords above.
-                   "unparsed_name", "undated",
-                   # The upstream-contract module: both checklists must point at it,
-                   # or the one place to edit on an upgrade is undocumented.
-                   "opencode_compat", "CONTRACT",
-                   # The S8 UI round: four derived surfaces, each of which was
-                   # hand-written and measurably wrong before. A checklist that
-                   # stops naming them has lost the reason they are computed.
-                   "key_help", "CARD_LABELS", "_empty_note", "_offscreen_note",
-                   "call_after_refresh", "$success", "$error"):
+    # Deviations that must not be "fixed" back, named in both languages.
+    for needle in ("OCUT_HOOK_DISABLE", "OCUT_HOOK_EVENTS", "OCUT_CONFIG",
+                   "OCUT_OPENCODE_CONFIG", "ocut-hook.js", "plugin-events.jsonl",
+                   "BACKUP_KEEP"):
         assert needle in en and needle in zh, f"deviation not documented in both: {needle}"
 
-    assert "M14" in en and "M16" in en, "MAINTENANCE.md must point at the limitations"
-    assert "M14" in zh and "M16" in zh, "MAINTENANCE.zh-CN.md must point at the limitations"
+    assert "M1" in en and "M12" in en, "MAINTENANCE.md must point at the limitations"
+    assert "M1" in zh and "M12" in zh, "MAINTENANCE.zh-CN.md must point at the limitations"
 
 
-def test_readme_documents_selftest_isolation_and_duplicates():
-    text = _text()
-    assert "OPENCODE_SKILL_TRACKER_DB" in text
-    assert "Selftest requires isolated database" in text
-    assert "同名" in text
-    assert "没有唯一约束" in text or "没有**唯一约束" in text
+def test_readme_documents_the_hook_is_the_only_plugin_writer_and_can_be_disabled():
+    """The one writer outside the host database, and its kill switch.
+
+    Repointed from `skillt`'s `__selftest` isolation (that plugin is gone). The
+    surviving promise has the same shape: a second input must be named, and it must
+    have an off switch a reader can find.
+    """
+    for name in ("README.md", "README.zh-CN.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert "OCUT_HOOK_DISABLE" in text, f"{name} never names the hook kill switch"
+        assert "ocut-hook.js" in text, f"{name} never names the one hook"
 
 
 def test_readme_documents_commands_and_backup_ops():
-    text = _text()
-    for cmd in (
-        "skillt health", "skillt auto-backup", "skillt doctor", "skillt sync",
-        "skillt insight", "skillt export", "skillt cleanup-selftest",
-        "skillt scrub-metadata",
-        # The two that arrived with the settings layer: `config` is the only way to
-        # edit the file, and `prune-usage` is the only command that deletes history,
-        # so both have to be findable in the language the reader reads.
-        "skillt prune-usage", "skillt config",
-    ):
-        assert cmd in text, f"command not documented: {cmd}"
-    # the new headless surface must be documented where readers look for it
-    en = (ROOT / "README.md").read_text(encoding="utf-8")
-    for cmd in ("skillt scrub-metadata", "skillt doctor", "--freshness-days"):
-        assert cmd in en, f"README.md does not document: {cmd}"
-    assert "enable-linger" in text
-    assert "120 秒" in text or "120" in text
-    assert "最近 30 个每日" in text
-    assert "最近 12 个月每月" in text
+    for name in ("README.md", "README.zh-CN.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        for cmd in (
+            "ocut sync", "ocut stats", "ocut tools", "ocut skills", "ocut agents",
+            "ocut plugins", "ocut mcp", "ocut models", "ocut show", "ocut recent",
+            "ocut inventory", "ocut export", "ocut health", "ocut format",
+            # The two that touch the database file itself: a backup is the only
+            # deliberate snapshot, and restore is the only way back from a bad one.
+            "ocut backup", "ocut restore",
+        ):
+            assert cmd in text, f"{name} does not document: {cmd}"
+    assert "`--limit" in _text()
 
 
-def test_readme_documents_ctrl_shortcuts_and_dashboard_cards():
+def test_readme_documents_the_dashboard_panels():
     text = _text()
-    # ctrl+s / ctrl+r are the always-available alternates (search box steals letters)
-    assert "ctrl+s" in text
-    assert "ctrl+r" in text
-    # the six Dashboard cards must be named
-    for card in ("Skills", "Skill calls", "MCP calls", "Plugin calls", "Today (all)", "Skill success"):
-        assert card in text, f"Dashboard card not documented: {card}"
-    # the Data-page delete entry is gone; deletion lives on the Skills tab
-    assert "删除选中 skill" not in text
-    assert "删除 skill 的入口**只**在 Skills 页" in text
+    # The KPI labels are what `_put_panel` writes; a rename there must fail here.
+    for label in ("Tool calls", "Skills", "Agents", "MCP", "Plugins inst."):
+        assert label in text, f"Dashboard KPI not documented: {label}"
+    # The token, cache and runtime panels.
+    for label in ("Requests", "Input", "Output", "API Total", "Prompt Total",
+                  "Cache read", "Cache write", "Hit rate",
+                  "Completed", "Failed", "Avg tool time", "Sessions", "Projects"):
+        assert label in text, f"Dashboard panel not documented: {label}"
 
 
 def test_readmes_list_every_tab_page():
     """A reader must find exactly the tabs that exist — no more, no fewer.
-
-    The Advisor tab was removed on 2026-10-03 and both page lists still advertised
-    it; that is the drift this catches from the documentation side. The widget-tree
-    half of the pair is `test_tui_tab_order_is_pinned`, which compares the real
-    `TabPane` ids.
 
     The list is compared *item by item, in order*, against what the app composes —
     so a page that exists but is undocumented fails, and so does a page the docs
     invented. Reading the ids out of the source instead of launching Textual keeps
     this runnable on an interpreter with no textual installed.
     """
-    src = (ROOT / "scripts" / "skill-tui.py").read_text(encoding="utf-8")
+    src = (ROOT / "scripts" / "ocut-tui.py").read_text(encoding="utf-8")
     panes = re.findall(r'with TabPane\("([^"]+)", id="(tab-[^"]+)"\)', src)
     assert panes, "no TabPane found — the compose() shape changed, fix this test"
     labels = [label for label, _ in panes]
-    assert [tid for _, tid in panes][-1] == "tab-data", panes
+    assert [tid for _, tid in panes][-1] == "tab-usage", panes
 
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
@@ -309,7 +247,6 @@ def test_readmes_list_every_tab_page():
     for label, items in (("README.md", listed(en, "Pages: ")),
                          ("README.zh-CN.md", listed(zh, "页面："))):
         assert items == labels, f"{label} page list {items} != the app's {labels}"
-        assert "Advisor" not in items, f"{label} advertises a tab that is gone"
 
 
 def test_readme_documents_top_limit_alias():
@@ -319,7 +256,7 @@ def test_readme_documents_top_limit_alias():
 
 # --- S8 doc gates -----------------------------------------------------------
 def test_the_documented_limitation_range_is_the_range_the_gate_pins():
-    """Every `M1–M23` is a claim about how many limitations there are.
+    """Every `M1–M12` is a claim about how many limitations there are.
 
     Four documents make that claim in two languages and none of them is the list
     itself, so each one quietly froze at whatever the newest id was when it was
@@ -340,20 +277,16 @@ def test_the_documented_limitation_range_is_the_range_the_gate_pins():
 
 
 def test_readmes_document_every_key_the_screen_binds():
-    """The in-screen help is generated; the README tables are the other copy of the promise.
+    """The README tables are the human copy of the promise the app binds.
 
-    A key that reaches neither is a key nobody finds: the footer hides eight of the
-    thirteen bindings, and the pre-S8 help named three of them. Read out of the
-    source, so this runs on an interpreter with no textual, like the tab-page gate.
+    A key that reaches neither is a key nobody finds. Read out of the source, so
+    this runs on an interpreter with no textual, like the tab-page gate.
     """
-    src = (ROOT / "scripts" / "skill-tui.py").read_text(encoding="utf-8")
-    screen = src.split("class MainScreen(Screen):", 1)[1]
-    bindings = screen.split("class SkillTUI(App):", 1)[0]
-    keys = re.findall(r'Binding\("([^"]+)"', bindings)
-    assert len(keys) >= 13, f"the binding list shrank to {keys}"
-    display = dict(re.findall(r'"([^"]+)": "([^"]+)"',
-                              re.search(r"_KEY_DISPLAY = \{([^}]*)\}", src).group(1)))
-    shown = sorted({display.get(k, k) for k in keys})
+    src = (ROOT / "scripts" / "ocut-tui.py").read_text(encoding="utf-8")
+    app = src.split("class TrackerApp(", 1)[1]
+    block = app.split("BINDINGS = [", 1)[1].split("]", 1)[0]
+    keys = re.findall(r'Binding\("([^"]+)"', block)
+    assert len(keys) >= 5, f"the binding list shrank to {keys}"
 
     for name, marker in (("README.md", "| Key"), ("README.zh-CN.md", "| 按键")):
         text = (ROOT / name).read_text(encoding="utf-8")
@@ -363,14 +296,14 @@ def test_readmes_document_every_key_the_screen_binds():
                 break
             rows.append(line)
         table = " ".join(rows).lower()
-        for key in shown:
+        for key in keys:
             assert f"`{key.lower()}`" in table, (
                 f"{name}'s key table does not document `{key}` "
-                f"(bound in MainScreen.BINDINGS)")
+                f"(bound in TrackerApp.BINDINGS)")
 
 
 def test_readme_does_not_claim_message_text_is_stored():
-    """`metadata.summary` was removed; the docs must not advertise storing it."""
+    """No message text is stored, and the docs must not advertise storing it."""
     for name in ("README.md", "README.zh-CN.md"):
         text = (ROOT / name).read_text(encoding="utf-8")
         assert "branch / summary" not in text, f"{name} still lists summary in metadata"
@@ -444,48 +377,35 @@ def test_every_dated_reading_in_measurements_sits_under_a_command():
 
 
 def test_measurements_quotes_the_cap_the_code_actually_resolves():
-    """`4 MiB` in prose is a claim about a default; the default is a number in code.
+    """A cap printed in prose is a claim about a default; the default is in code.
 
-    The cheap version of this file's job is to restate the cap. The version worth a
-    test is to restate *the resolved value*: if `log.max_bytes` moves and this
-    document still says 4,194,304, every reading derived from it — the ~600-day
-    figure, when `truncated=` flips — is described by a number that no longer exists.
-
-    Nothing here hard-codes 4 MiB. If it did, the test would go red for the wrong
-    reason when the cap moves *and the doc follows it*, which is the case the check
-    is supposed to allow through.
+    Repointed from `skillt`'s `settings` module (deleted) to `ocut_db`, whose
+    resolved `name_cap` is the widest cell a table renders. The spirit is unchanged:
+    the number in the document is read out of the code, not restated by hand, so a
+    value that moves and a document that follows it do not go red for the wrong
+    reason.
     """
-    import settings as cfg
-
-    cap = cfg.spec("log.max_bytes")["default"]
+    cap = db.DEFAULTS["name_cap"]
     text = (MAINT_DOCS / "measurements.md").read_text(encoding="utf-8")
     assert f"{cap:,}" in text, (
-        f"measurements.md must print the resolved log cap ({cap:,} B) where it "
-        f"reports a truncation reading"
+        f"measurements.md must print the resolved name cap ({cap:,}) where it "
+        f"reports the clipping reading"
     )
-    assert f"{cap // (1024 * 1024)} MiB" in text, (
+    assert f"{cap} columns" in text, (
         "and the human spelling of the same number, derived from the same value"
     )
 
 
-def test_systemd_units_exist_and_use_absolute_execstart():
-    service = SYSTEMD / "skillt-auto-backup.service"
-    timer = SYSTEMD / "skillt-auto-backup.timer"
-    assert service.is_file() and timer.is_file()
-
-    svc = service.read_text(encoding="utf-8")
-    line = next(l for l in svc.splitlines() if l.startswith("ExecStart="))
-    target = line.split("=", 1)[1].split()[0]
-    assert target.startswith(("/", "%h")), "ExecStart must be absolute or %h-relative"
-
-    tmr = timer.read_text(encoding="utf-8")
-    assert "OnCalendar=daily" in tmr
-    assert "Persistent=true" in tmr
-    assert "WantedBy=timers.target" in tmr
+# `test_systemd_units_exist_and_use_absolute_execstart` was deleted with the
+# artifact it guarded: `ocut` ships **no** systemd unit any more. Backups are
+# manual and pre-destructive only (README M12), so there is no ExecStart, no
+# OnCalendar and no timer file left to pin. The `SYSTEMD` constant went with it.
 
 
 # --- source hygiene --------------------------------------------------------
-SOURCE_DIRS = ("scripts", "plugin", "bin", "skill-tracker")
+# `skill-tracker` was dropped from this tuple when that directory was deleted;
+# the surviving source trees are the ones that ship.
+SOURCE_DIRS = ("scripts", "plugin", "bin")
 SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh", ".service", ".timer"}
 # A red-check edits the thing it pins and then puts it back. A marker that
 # survives is not a comment, it is the guard's own off switch left installed: one
@@ -497,7 +417,7 @@ CANARY_RE = re.compile(r"TEMP[-_]|CAN[0-9A-Z]ARY|FIXME-REMOV[E]")
 
 
 def test_no_canary_or_scratch_marker_survives_in_tracked_source():
-    """Docs may *name* these markers (MAINTENANCE §11 does); source may not hold one."""
+    """Docs may *name* these markers; source may not hold one."""
     offenders = []
     for directory in SOURCE_DIRS:
         base = ROOT / directory
@@ -590,12 +510,11 @@ def _invariant_row_mismatches(text: str) -> list:
 def test_every_invariant_rows_command_selects_the_checks_it_names():
     """A row that names five checks and runs four of them is a row that lies.
 
-    Found by hand twice in one sitting: the schedule row's
-    `-k "timer or scheduled"` did not select the
-    `test_an_unreachable_systemd_…` check it names, and the interface row's
-    `key_help` needle did not select `…_documents_itself_in_the_help`. Both read
-    as documentation, which is exactly why nobody re-ran them: a maintenance
-    engineer who runs the row's own command gets a green that omits the guard.
+    Found by hand twice in one sitting: a `-k "timer or scheduled"` needle did not
+    select a check the row named, and a `key_help` needle did not select the
+    binding-help check. Both read as documentation, which is exactly why nobody
+    re-ran them: a maintenance engineer who runs the row's own command gets a green
+    that omits the guard.
     """
     text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert list(_invariant_rows(text)), "AGENTS.md's table has no pytest row to check"

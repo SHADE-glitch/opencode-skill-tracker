@@ -1,19 +1,19 @@
 # Maintenance checklist
 
-Companion to [README.md](README.md) (features) and
+Companion to [README.md](README.md) (English landing page) and
 [README.zh-CN.md](README.zh-CN.md) (exhaustive reference). This file is the
 **operating** document: what to check, in what order, what "healthy" looks like,
-and what is deliberately left broken.
+and what is deliberately left as it is.
 
 Chinese version: [MAINTENANCE.zh-CN.md](MAINTENANCE.zh-CN.md).
 
 The long-form maintenance assets are indexed at
 [`docs/maintenance/README.md`](docs/maintenance/README.md) — the version matrix, the
-host-interface list and the measurements — and the rules for working in this repository live in
-[`AGENTS.md`](AGENTS.md). This file is the **operating checklist** rather than a pointer to them:
-its numbered sections are stable anchors cited from `AGENTS.md`, both READMEs and the documents
-below, so renumbering one is a rename. Do not copy a table out of `docs/maintenance/` into here —
-a duplicated fact is the thing that drifts.
+host-interface list and the measurements — and the rules for working in this repository
+live in [`AGENTS.md`](AGENTS.md). This file is the **operating checklist** rather than a
+pointer to them: its numbered sections are stable anchors cited from `AGENTS.md`, both
+READMEs and the documents below, so renumbering one is a rename. Do not copy a table out
+of `docs/maintenance/` into here — a duplicated fact is the thing that drifts.
 
 | Document | Read it when |
 |---|---|
@@ -23,630 +23,223 @@ a duplicated fact is the thing that drifts.
 
 ## 0. Facts about the machine this was last verified on
 
-Machine identity (OpenCode, Bun, interpreters, textual) is in
+Machine identity (OpenCode, interpreters, textual) is in
 [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §1; the host's
 interface this project leans on, by name, is
 [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md);
 and every size, rate and duration below is a **run**, so it lives with its command in
 [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) rather than here.
-The rule that moved them: a count in a checklist is read as current forever, and two of
-the numbers this table used to hold were already wrong when they were relocated
-("`~69 lines/day`" against a measured 74.4, "8.2–15.8 ms" against a measured 12.2–14.0).
+A count in a checklist is read as current forever, so this file states shapes, not
+volumes.
 
 | Item | Value |
 |---|---|
-| OpenCode | **which release is running is a reading, not a fact of this file** — compatibility §1 records the four pins and the host's current release, and `skillt doctor`'s `env.opencode_version` compares the running version to the allowlist pin (`PIN_TOOL_IDS`). The builtin allowlist was re-read from the host on 2026-10-03 and the fourteen ids had not changed |
-| Plugin SDK | `@opencode-ai/plugin` 1.18.4 — `PIN_SDK_TYPES`, and it is recorded **because it disagreed with the running host** (M20), not because anything imports it |
-| Runtime for the plugin | Bun (`~/.bun/bin/bun`) — `bun:sqlite` |
-| TUI venv | `.venv` (Python 3.13.14, textual 8.2.8) |
-| Database | `~/.local/share/opencode/skill-usage.db`, mode 0600, WAL — size, `-wal` and per-table counts: measurements §2 |
-| Rows | per-table counts and the `metadata` key census: measurements §2 and §3. What is *stable* here is the shape — seven tables, `skills` plus four usage streams — and the fact that `title` reads **0 keys**, which is S1's promise and `test_the_writer_never_names_a_permission_title`'s job. The 12-surfaces-of-which-10-never-called inventory claim was last read 2026-10-09 through `skillt plugins`; re-read it there, not here |
-| Schema | `PRAGMA user_version = 2`, `SCHEMA_VERSION = 2`. `subagent_usage` was added 2026-10-04 **without** a bump: the counter exists because a view cannot be redefined by `CREATE VIEW IF NOT EXISTS`, and this is a table, which `ensure_schema()` creates idempotently on every run |
-| Export document | `schema_version = 6` (4 = metadata is allowlisted, 5 = `plugin_inventory.scope`, 6 = the `subagent_usage` key). `PRAGMA user_version` / `SCHEMA_VERSION` stayed at **2**: that counter exists because `CREATE VIEW IF NOT EXISTS` cannot re-define a view, and this round added a table, not a view — `ensure_schema()` runs the table DDL every time, so no bump was owed |
-| Test suite | three commands, in this order, and what each one proves: measurements §10. The pass count is a *run* (it differs between the system interpreter, the venv, and CI, and AGENTS.md forbids copying it into a document), so it is not stated here any more — it was 530 here when this row was written and is not 530 now. What is stable: the shipped `__selftest()` floor is `test_selftest_is_green_end_to_end`, the recipe is measurements §5, and the third command (`OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/does-not-exist`) is the one that proves the green was not bought with this machine's real files |
-| Read set — what this project opens outside its own database | **Nothing that used to be here is read any more.** The two read-only neighbours were retired on 2026-10-12 (D-053): the AgentOS advisor's store (`store/aos.db` + `store/loops/*.json`) and claude-mem's ledger with its three files and its three HTTP endpoints — the modules, the `skillt agentos` / `skillt claude-mem` commands, the `claude_mem.capture` doctor line and the Plugins page's dim activity line all went together, so no reader here opens a foreign database or a socket any more. What is still opened, and under which rule: the host's skills tree (`SKILL.md` frontmatter only — `name`, plus the `source`/`category` derived from the path, **never the body**), the host's config (read-only, and a parse failure is never read as "empty config"), and this project's **own** plugin log — the file its own writer appends to between runs — scanned from the **start** under the resolved `log.max_bytes` so a capped count says `truncated` and reads as a floor. `opencode.db` is still not opened at all — §8 records the declined backfill. The same list as a **contract**, not a run, is [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §4, and every host name in it is declared in [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) and `scripts/opencode_compat.py`. Guards: `test_scan_sync.py`, `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`, `test_the_rotation_cap_is_the_number_the_reader_reads`. The rule outlives its subjects: the first foreign **store** read again comes back under AGENTS.md's — read-only URI, field-whitelisted, never `open_db()`, never from a repaint — with its own check named in that file's invariant table. The dated readings of the two retired neighbours are kept in [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §6 and §7, marked withdrawn |
-| Tracker log | `~/.config/opencode/logs/skill-tracker.log`. Its size, line count, lines/day and error count are a growth measurement with a command: measurements §4. What belongs here is the *shape* of what it contains. It holds **4 `[err]` lines, all `selftest FAIL: …`, written by this project on 2026-10-04 07:32Z** while the subagent assertions were still red — `doctor`'s `log.errors` warns on them, and they are residue from a test run, not a capture fault, which is why they are still here and still reported. **The gap they exposed is fixed** (2026-10-04): `__selftest()` now redirects its own log to `skill-tracker-selftest.log` beside its temp database unless `OPENCODE_SKILL_TRACKER_LOG` names a path explicitly, so the documented hand-run recipe can no longer touch this file — re-verified 2026-10-09 by running that recipe (measurements §5) and comparing this log's sha256 before and after: unchanged. Do not delete lines from a live log by hand |
-| Backup timer | **NOT INSTALLED as of 2026-10-10 00:07** — `systemctl --user is-enabled skillt-auto-backup.timer` → `not-found`, no `skillt*` unit file exists anywhere under `~/.config/systemd`, `/etc/systemd` or `~/.local/share/systemd`, and `journalctl --user -u skillt-auto-backup.timer` ends at `Stopped … 2026-10-07 21:48:34`. The service's last successful run was **2026-10-07 00:18**, which is why `backups.latest` is 3.0 d and will trip its 7-day WARN around **2026-10-14**. `Linger=yes` is still set, so nothing about the session prevents the unit — it is simply gone. **Nobody in this round removed it and nobody in this round will put it back**: installing a systemd unit is a change outside this project, and the owner's decision for S7 was that `install.sh` keeps it behind `--with-timer`. **Decided on 2026-10-10 12:5x: the owner does not want the unit installed.** An empty schedule is therefore a *choice*, not an outage — `backups.scheduled` will keep WARNING, `backups.latest` will trip its 7-day line around 2026-10-14, and **neither is a new fault**. A backup becomes a deliberate act: `skillt auto-backup`. If that ever changes, re-arm with `./install.sh --with-timer`, then read `systemctl --user status skillt-auto-backup.timer` and `skillt doctor`'s `backups.latest`. What *is* verified about the unit itself: `systemd-analyze verify --user` accepts both files, and the exact `ExecStart` pair was run by hand through the installed launcher (`below the cap; nothing to rotate`, log sha256 unchanged). Note that starting it also prunes real backups per retention, so that hand-run is not a routine check |
-| What `doctor`'s WARNs mean on this host | Measured 2026-10-10 12:2x: **17 PASS / 4 WARN / 0 FAIL**. A future reader will hit the survivors again and may spend a round "fixing" things that are supposed to warn, so every line of that dated set is named with what it actually is. ① `backups.scheduled` — **by owner decision** (the row above: no systemd unit wanted); it can only ever WARN, never FAIL. ② `log.errors` — 4 lines, all stamped `2026-10-04T07:32:13Z` / `07:32:25Z`, which are **two distinct `selftest FAIL` labels written twice each** during the red-before-green step of `0c8f41d`; `d1884cd` stopped `__selftest` from writing into the shared log, and since then 169 newer lines added **0** `[err]`. The check counts lines, not age, so it will WARN on history forever unless the log is rotated. ③ ~~`claude_mem.capture`~~ — **no longer a check**: it WARNed on an ERROR line in *claude-mem's own* worker log, a neighbour process this project only read, and the reader went on 2026-10-12 (D-053). A reader of this row who counts four WARNs is reading the 2026-10-10 record, not this host. ④ `env.opencode_version` — the host moved to 1.18.35 while `DEFAULT_BUILTIN_TOOLS` is pinned to 1.18.34; clearing it needs the live `/experimental/tool/ids` probe (measurements §5), which is the owner's call, not a routine fix. **So of that dated set: ①④ are expected, ② is history, ③ is retired. None of the four was a defect in the tracker, and `0 FAIL` is the part that actually gates work** |
-| What `doctor` could not see, and now can | Until 2026-10-10 there was **no check asking whether the timer is installed**, and this row is the evidence: for three days `backups.latest` read PASS — truthfully, the backup was 3.0 d old and the threshold is 7 — while the thing that makes backups had been removed. **A schedule is not a file.** `backups.scheduled` now asks `systemctl --user is-enabled skillt-auto-backup.timer` and WARNs on anything but `enabled`, including "cannot ask systemd" (a machine with no user systemd is *unknown*, not healthy). It never FAILs, because not installing the unit is a legitimate choice the owner made. The two checks are meant to be able to disagree: on this host today `backups.latest` is PASS and `backups.scheduled` is WARN, and that pair is the whole finding |
-| Loose backups (M19) | **Closed for the part this row used to describe** — re-read 2026-10-10: `ls ~/.local/share/opencode/` holds no `skill-usage-backup-*.db` outside `BACKUP_DIR` at all; the six backups are all inside it, which is what retention sweeps. One loose artifact remains and it is not a backup: `skill-usage-export-20260923-100620.json`, `schema_version = 1`, 40,390 B. A full key walk of it (all 32 distinct keys, every list element) finds **no** `summary`, `title`, `error`, `text`, `prompt` or `body` key, so it carries none of the M14 metadata text — but it does carry skill `description` and `path` values and the exporting machine's `db_path`, which is what an export of a skill inventory is for. Every backup in `BACKUP_DIR` was checked the same way for rows whose `metadata` carries `summary`/`title`: **0 in all six** |
-| Backup default path | **fixed** (M19): manual `skillt backup`, the TUI's `b`, and the automatic pre-`--yes` rollback backups all land in `BACKUP_DIR` now. The last stray beside the database was moved in on 2026-10-01, so retention sees everything: its first dry-run said `kept: 2, delete: 1` (the older of two same-day 09-23 snapshots). **That deletion has not happened**, because the timer that would have run it was stopped on 2026-10-07 — with both backups still present today, which is the row above's evidence that a schedule is not a file |
-| Metadata scrub | Applied 2026-10-01: `scrub-metadata --yes` stripped 40 rows (17 skill / 10 mcp / 13 plugin), usage rows and all 46 `error` texts kept; 3 loose backups still holding the text were deleted and the live DB vacuumed. `skillt scrub-metadata` must now report 0, and `grep -l '<a known excerpt>' ~/.local/share/opencode/skill-usage.db*` must find nothing |
+| OpenCode | **which release is running is a reading, not a fact of this file** — compatibility §1 records the pins, and `ocut sync` reads whatever `~/.local/share/opencode/opencode.db` holds today |
+| Host database | `~/.local/share/opencode/opencode.db` — opened `mode=ro` with `PRAGMA query_only = ON`, **never written** |
+| Host config | `~/.config/opencode` — read-only; a parse failure is never read as "empty config" |
+| Tracker database | `~/.local/share/opencode-usage-tracker/usage.db`, WAL, written only by `ocut` |
+| Plugin sidecar | `~/.local/share/opencode-usage-tracker/plugin-events.jsonl`, appended by `plugin/ocut-hook.js`, ingested by `ocut sync` |
+| TUI venv | `./.venv` (textual `>=8.2,<9`) |
+| Settings | `~/.config/ocut/config.toml` (or `OCUT_CONFIG`) — resolved environment > file > default |
+| Schema | `SCHEMA_VERSION` in `ocut_db.py`; a bump clears the sync cursors, forcing one clean re-read |
+| Snapshots | `~/.local/share/opencode-usage-tracker/backups/`, newest `BACKUP_KEEP` (5) kept |
+| Install layout | two symlinks: `~/.local/bin/ocut -> <repo>/bin/ocut` and `~/.config/opencode/plugin/ocut-hook.js -> <repo>/plugin/ocut-hook.js` |
 
-Install layout — all four are **symlinks back into this repo**, so editing the
-repo is live (no reinstall needed) except that OpenCode must be restarted to
-reload the plugin:
+Install layout — both are **symlinks back into this repo**, so editing the repo is live
+(no reinstall needed) except that OpenCode must be restarted to reload the hook:
 
 ```
-~/.local/bin/skillt                          -> <repo>/bin/skillt
-~/.config/opencode/scripts                   -> <repo>/scripts
-~/.config/opencode/skill-tracker             -> <repo>/skill-tracker
-~/.config/opencode/plugin/skill-tracker.js   -> <repo>/plugin/skill-tracker.js
+~/.local/bin/ocut                        -> <repo>/bin/ocut
+~/.config/opencode/plugin/ocut-hook.js   -> <repo>/plugin/ocut-hook.js
 ```
 
-Verify with `skillt doctor` (`plugin.exists`, `env.*`) or:
+Verify with:
 
 ```bash
-readlink -f ~/.local/bin/skillt ~/.config/opencode/scripts
+readlink -f ~/.local/bin/ocut ~/.config/opencode/plugin/ocut-hook.js
+ocut health
 ```
 
-If any of them is a **plain copy**, it will silently stop tracking the repo.
-`install.sh` refuses to overwrite a non-symlink; re-run it with `--force` only
-after confirming the copy holds nothing you need.
+If either is a **plain copy**, it silently stops tracking the repo. `install.sh` refuses
+to overwrite a non-symlink; re-run it with `--force` only after confirming the copy holds
+nothing you need.
 
 ## 1. Invariants — never break these
 
-Each of these is enforced by a test. If a test below goes red, the invariant,
-not the test, is what changed.
+Each of these is enforced by a test. If a test below goes red, the invariant, not the
+test, is what changed.
 
 | Invariant | Guard |
 |---|---|
-| The plugin is the **only writer**. `skill_db.py` / the TUI / the legacy CLI never record usage. | `AGENTS.md`, `scripts/tests/test_plugin_db.py` |
-| Export contract: `export default { id, server }`. A named `export function`, or a bare function default, aborts the **whole** plugin load and recording stops silently. | `test_loader_does_not_enumerate_exports` |
-| One row per call: `UNIQUE(session_id, call_id)` + `ON CONFLICT` upsert. | `test_plugin_db.py`, `test_mcp_db.py` |
-| Status is monotonic: an observed `error` may override an optimistic `success`, never the reverse. | `UPSERT_*_SQL` CASE branches |
-| MCP records argument **names** only. `mcpArgNames()` calls `Object.keys()` and must never read a value. | `test_plugin.py` |
-| Message bodies are never read, so never stored — and neither is a session `title`, which the host derives from the user's first message. The writer keeps only the fields anything reads. | `test_readme.py`, `test_the_session_handler_keeps_only_the_fields_it_uses`, `__selftest` assertion |
-| A permission `title` is never read by the writer either — no scrubbing run is what keeps it out. `skillt scrub-metadata` still lists `title` for rows older builds wrote. | `test_the_writer_never_names_a_permission_title`, `test_a_denied_call_stores_no_title_but_still_stores_the_denial`, `__selftest` |
-| The schema lives in two copies: `TABLES_SQL`/`VIEWS_SQL` (plugin) and `SCHEMA_SQL` (Python). Change both in the same commit. | `test_plugin_and_python_schema_do_not_drift` |
-| A view change requires a `SCHEMA_VERSION` bump, or existing databases keep the old view (`CREATE VIEW IF NOT EXISTS` never updates). | `test_migration.py`, `test_schema_sync.py` |
-| Capture tests are hermetic: nothing may read the real `~/.config/opencode/skills`, the real plugin log, **or this machine's `systemctl`**. | `temp_skills` fixture, `_isolated()` env, `test_doctor.py` monkeypatches, `never_query_the_hosts_service_manager` (conftest) — it records the call *and* raises it, because every host question in `doctor` sits inside `except Exception`, which turned a raising-only guard back into a green run |
-| Tables are sized by `fit_columns()` at render time; Textual's own auto-width pass
-  runs in `_on_idle` and is one frame late, which truncates every column to its
-  header width. | `test_tui_dashboard_tables_fit_their_content_before_idle`,
-  `test_tui_page_tables_cover_every_tab` |
-| A schedule is checked as a schedule, never inferred from the file it produces. `backups.latest` being fresh does **not** prove the next backup is coming, "cannot ask systemd" is unknown and never healthy, and `disabled` and `not-found` name different commands. | `test_a_removed_timer_is_warned_about_even_though_the_backup_is_recent`, `test_a_disabled_timer_is_named_as_disabled_not_as_missing`, `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`, `test_the_timer_check_never_fails_and_never_shells_out_uninvited`, `test_the_timer_check_asks_about_the_unit_install_sh_installs` |
-| The suite is green before pushing, on **both** documented commands. | `AGENTS.md` |
+| OpenCode's own database and config are **never written**. The host database is opened `mode=ro` with `PRAGMA query_only = ON`; the tracker's own store is the only thing this project writes. | `scripts/tests/test_ocut_sync.py`, `test_the_host_database_is_never_opened_for_writing`, `test_open_source_refuses_to_create_a_host` |
+| Message and tool **prose is never read**, so never stored. A `tool` part's `output`/`title`/`metadata`/`error`, a `text`/`reasoning` body and a session `title` are named nowhere. | `scripts/tests/test_ocut_sync.py`, `test_no_prose_field_is_copied_out_of_the_host` |
+| The hook `plugin/ocut-hook.js` is the **only writer of `plugin_usage`**, and it never opens OpenCode's database. | `scripts/tests/test_ocut_hook.py`, `test_the_hook_records_a_surface_and_only_plugin_owned_calls` |
+| The hook exports its factory **only** as `export default { id, server }`. A named export makes OpenCode call it as a factory and aborts the whole plugin load. | `scripts/tests/test_ocut_hook.py`, `test_default_export_is_the_loader_contract_and_nothing_else` |
+| The two token granularities — per-step `model_calls` and the host's per-session rollup `sessions` — are one measurement at two levels and are **never added**. | `scripts/tests/test_ocut_sync.py`, `test_two_granularities_of_the_same_measurement_agree`; `scripts/tests/test_ocut_tui.py`, `test_no_panel_repeats_the_input_number_under_a_second_label` |
+| A record the reader cannot use is **counted**, never dropped: an unknown part type, an unparseable JSON blob, an unparseable sidecar line each land in `unparsed`. | `scripts/tests/test_ocut_sync.py`, `test_a_json_blob_that_does_not_parse_is_counted_not_skipped`, `test_an_unknown_part_type_is_counted_per_type`, `test_an_unparseable_sidecar_line_is_counted_not_skipped` |
+| A schema or view change requires a `SCHEMA_VERSION` bump, and the bump **clears the sync cursors** so the new shape is re-read instead of trusted. | `scripts/tests/test_ocut_windows.py`, `test_a_version_bump_clears_the_cursors_so_nothing_is_read_again` |
+| A database written by a **newer** build is left alone (tables ensured, views untouched) and reported as newer, never rewritten. | `scripts/tests/test_ocut_windows.py`, `test_a_database_from_a_future_build_is_left_alone_and_says_so` |
+| Settings are one registry: **environment > file > default**, a bad value is a hard error that names the key, and zero-config creates nothing. | `scripts/tests/test_ocut_settings.py`, `test_environment_beats_the_file_and_the_file_beats_the_default`, `test_an_unknown_key_is_refused_and_names_the_real_ones`, `test_no_file_is_the_normal_case_and_creates_nothing` |
+| The suite is green before pushing. | `AGENTS.md` |
 
 ## 2. Daily (before trusting the numbers)
 
 ```bash
-skillt doctor            # expect: 0 FAIL
+ocut health
+ocut sync
 ```
 
-Healthy today means, at minimum:
+Healthy means:
 
-- `db.quick_check` → `ok`
-- `plugin.exists` / `plugin.hooks` / `plugin.mcp_hooks` / `plugin.plugin_hooks` → PASS
-- `capture.freshness` → PASS listing **every** stream's age (`skill_usage 0.0d ·
-  mcp_usage 2.2d · plugin_usage 0.0d`); **WARN names the stalled one**, which is the
-  failure this check exists for. It used to take the newest row across the three
-  tables, so one live stream made it permanently green: not a false alarm, a false
-  silence. A stream that never recorded a row reads `no rows` and is not stalled;
-  `OPENCODE_SKILL_TRACKER_STREAMS` excludes a stream from the verdict while still
-  printing its age
-- `log.errors` → `0 error line(s)`; any other number means a hook threw and the
-  detail is the last `[err]` line
-- `env.opencode_version` → PASS only while the installed version equals the pin
-- `backups.latest` → within ~1 day once §3 is enabled
-- `backups.scheduled` → `skillt-auto-backup.timer enabled`. **This line and the one
-  above are different facts**: `not-found` with a `backups.latest` PASS is exactly the
-  state of a machine whose timer was removed while its last backup still looks fresh.
-  If it says "cannot ask systemd", that is *unknown*, not healthy — on a host with no
-  user systemd, decide who runs `auto-backup` and `rotate-log` instead of trusting silence
+- `ocut health` finds the host database (`ok, N MiB`) and the host config (`ok`).
+- `ocut health` prints a `schema version` equal to `SCHEMA_VERSION` in `ocut_db.py`.
+- Each `cursor` line shows a cursor at or below the host's own `host max`, with no
+  `note` — a note means a pruned or renumbered host table, which is expected to happen
+  but should be read, not ignored.
+- `ocut health` prints `unparsed 0 — every record type was claimed`. A non-zero line is
+  the signal that OpenCode's persisted format moved; the reason string names it.
+- `ocut sync` ends without an `UNPARSED … this run` line and reports plausible
+  `tool_calls` / `sessions` counts.
 
 ## 3. Weekly
 
 ```bash
-skillt cleanup-selftest          # dry run; must report no synthetic rows
-skillt scrub-metadata            # dry run; must report 0 rows (M14 is closed)
-skillt sync --dry-run            # scanned == skills row count, changed == 0
-# growth watch (M17): size, lines, lines/day, error count and whether the read is
-# truncated — one recipe, one place: docs/maintenance/measurements.md §4. Do not
-# re-derive it with a bare `wc -l` here: a line count without the cap comparison
-# cannot tell a total from a floor, which is the only thing that matters for M17.
-skillt rotate-log                # the same cap, applied: renames the log aside at
-                                 # 4 MiB and keeps log.keep_files (5) generations.
-                                 # Renames — never truncates — so the `[err]` lines
-                                 # doctor counts stay on disk. --yes to apply, and the
-                                 # backup timer does that daily *when it is installed*
-                                 # (on this host it is not — §0's Backup timer row)
+ocut sync --full          # rebuild from scratch (snapshots first) when counts look wrong
+ocut backup               # a deliberate snapshot before anything risky
+ocut plugins              # installed ∪ used; a plugin with 0 uses means the hook saw nothing
+ocut format               # the OpenCode format surface, read out of the parser's registry
 ```
 
-A redaction removes the *value*; under WAL the *bytes* stay in the `-wal` file
-until a checkpoint, which is why `scrub-metadata --yes` ends with
-`wal_checkpoint(TRUNCATE)` and says so if the database is busy. Prove it with the
-marker you know is in an old row:
-
-```bash
-grep -l 'an excerpt you know you wrote' ~/.local/share/opencode/skill-usage.db*   # must print nothing
-```
-
-Then confirm nothing is hiding outside the directory retention can reach. There
-should be **no** matches (M19 fixed the default, and the older strays were dealt
-with on 2026-10-01):
-
-```bash
-for f in ~/.local/share/opencode/skill-usage-backup-*.db; do
-  printf '%s  summary_rows=%s\n' "$(basename "$f")" \
-    "$(sqlite3 -readonly "file:$f?mode=ro" "SELECT (SELECT COUNT(*) FROM skill_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM mcp_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL)+(SELECT COUNT(*) FROM plugin_usage WHERE json_extract(metadata,'\$.summary') IS NOT NULL);" 2>/dev/null || echo 'pre-migration')"
-done
-```
-
-Then confirm the capture is still telling the truth against OpenCode's own
-record — this is the single most valuable check in this file, because it catches
-"recording silently changed shape" that every other check misses:
-
-```bash
-# 1. what the tracker recorded, per MCP server, over the window it covers
-sqlite3 -readonly ~/.local/share/opencode/skill-usage.db \
-  "SELECT server_name, COUNT(*), SUM(status='success'), SUM(status='error')
-   FROM mcp_usage GROUP BY 1;"
-
-# 2. ground truth from OpenCode's part table, same window
-sqlite3 -readonly "file:$HOME/.local/share/opencode/opencode.db?mode=ro" \
-  "WITH t AS (SELECT json_extract(data,'\$.tool') tool,
-                    json_extract(data,'\$.state.status') st, time_created tc
-             FROM part WHERE json_extract(data,'\$.type')='tool')
-   SELECT substr(tool,1,instr(tool,'_')-1) server, COUNT(*), SUM(st='completed'), SUM(st='error')
-   FROM t WHERE tc > strftime('%s','2026-09-28T11:55:00Z')*1000
-        AND tool LIKE 'playwright_%' OR tool LIKE 'basic-memory_%'
-   GROUP BY 1;"
-```
-
-Per-server counts must match. Known, explained differences: rows whose session
-was later deleted (the tracker keeps them, `part` loses them), and calls that
-predate the tracker's install. **A new unexplained gap is a capture regression** —
-check `log.errors` and whether OpenCode restarted without reloading the plugin.
+- `ocut sync --full` wipes the tracker tables and re-indexes. It snapshots the database
+  first, but the **host** is the source of truth: a session OpenCode has already deleted
+  cannot be recovered from it.
+- Plugin usage is recorded **only** by the hook, and only after an OpenCode restart. If
+  every plugin shows `0 uses`, check that `~/.config/opencode/plugin/ocut-hook.js`
+  exists, that `OCUT_HOOK_DISABLE` is unset, and that the sidecar
+  `~/.local/share/opencode-usage-tracker/plugin-events.jsonl` is being appended to. A
+  `0` is "nothing recorded", not "not used".
+- `ocut format` prints the host names the reader depends on. Compare it with
+  [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md)
+  after any OpenCode upgrade.
 
 ## 4. Monthly / after any change
 
 ```bash
-systemctl --user is-enabled skillt-auto-backup.timer   # must print: enabled
-                                 # `not-found` here means nothing is scheduled: §0's
-                                 # Backup timer row is that case, live on this host
-sqlite3 -readonly ~/.local/share/opencode/skill-usage.db "PRAGMA integrity_check;"
+sqlite3 -readonly ~/.local/share/opencode-usage-tracker/usage.db "PRAGMA integrity_check;"
 python3 -m pytest scripts/tests -q                     # no venv needed
 .venv/bin/python -m pytest scripts/tests -q            # full suite incl. TUI
-OPENCODE_SKILL_TRACKER_SKILLS_DIR=/tmp/nope python3 -m pytest scripts/tests -q   # hermetic proof
-bash -n bin/skillt                                     # dispatcher still parses
+bash -n bin/ocut                                       # dispatcher still parses
 ```
 
-Backups are only real if retention is running. Enable it once:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp skill-tracker/systemd/skillt-auto-backup.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now skillt-auto-backup.timer
-loginctl enable-linger "$USER"       # so it runs without a logged-in session
-```
-
-Retention policy (`skill_db.py`): keep the 30 most recent daily and 12 monthly;
-never touch a file younger than 120 s or one whose name doesn't match
-`skill-usage-backup-<date>-<time>.db`.
+The second and third commands are the same suite on two interpreters; the TUI files skip
+where textual is not installed, which is why both are run.
 
 ## 5. After upgrading OpenCode
 
 Start with [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) §2 —
-it lists which release each claim in this project belongs to, and which consequences we
-already carry — and with [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md),
-which is the full list of host names, payload paths and directories this project reads.
-`scripts/opencode_compat.py` is where they are declared (Python side); the writer's
-`CONTRACT` block is the other copy. The builtin-tool allowlist is pinned to one release
-(M13), and MCP/plugin inventories resolve only at init (M11/M12). So:
+it lists which release each claim in this project belongs to — and with
+[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md), which
+is the full list of host names, payload paths and directories this project reads. Then:
 
 1. `opencode --version` — note the number.
-2. `skillt doctor` → `env.opencode_version` must WARN with the drift.
-3. Get the real list: `curl -s http://127.0.0.1:<port>/experimental/tool/ids`.
-   A running TUI does not necessarily expose it — the port you find may belong to
-   a *plugin's* web server, not the host. So start one that loads nothing:
-   `~/.opencode/bin/opencode serve --pure --port 14096 --hostname 127.0.0.1`,
-   curl it, kill it. `--pure` is what makes this safe while another OpenCode
-   session is live: no plugin is loaded, so nothing is captured and nothing is
-   written. It still needs the owner's go-ahead — starting a second host instance
-   is their call, not a routine check.
-   Do **not** substitute `strings` on the installed binary: its TUI view registry
-   also carries `batch`, `list`, `lsp` and `plan_exit`, none of which the host
-   reports as tool ids (measured 2026-10-03, right after that exact inference had
-   already been written into a report as a fact).
-4. Update `DEFAULT_BUILTIN_TOOLS` in `plugin/skill-tracker.js` **and** the
-   `verified against OpenCode X.Y.Z` comment on the same line — that comment is
-   what `doctor` parses, so leaving it behind re-creates the drift it detects.
-   `scripts/opencode_compat.py` carries the same claim as `PIN_TOOL_IDS`, plus
-   `PIN_LOADER` / `PIN_PERMISSION_SHAPE`; `test_compat.py` fails if the comment and
-   `PIN_TOOL_IDS` diverge, so edit them together.
-5. Restart OpenCode. Confirm with `skillt plugins` that the inventory refreshed.
-
-6. Re-measure the event payloads after any major upgrade. Payload names have
-   already bitten once (M20: the code followed the SDK types while the host sent
-   different ones), so the check is to **observe, not to trust the docs**. Build
-   a throwaway project under `/tmp` with a probe plugin that logs the *keys and
-   enum values* of `permission.asked` / `permission.replied` /
-   `command.execute.before`, run it with `OPENCODE_SKILL_TRACKER_DB` pointed at a
-   temp database, and compare what arrives with what the tracker reads. Keep the
-   probe in `/tmp`: it dumps field values, which is fine for a synthetic sandbox
-   session and not fine anywhere real text lives.
-
-   A rename you *do* find is a two-file edit, in one commit: the `CONTRACT` block in
-   `plugin/skill-tracker.js` and `scripts/opencode_compat.py`. Nothing else may hold
-   a hook id or an event type — `test_compat.py` compares the two sets by value and
-   checks the writer registers through `CONTRACT`, so a half-edit fails the build
-   instead of silently recording nothing.
-
-If you don't want to touch the plugin, set `OPENCODE_SKILL_TRACKER_BUILTIN_TOOLS`
-instead — but then `env.opencode_version` keeps WARNING on purpose.
+2. `ocut sync` — if it prints an `UNPARSED … this run` line, the host's format moved.
+   `ocut health` lists the reasons (`unknown_part_type:<type>`, `unparseable_part_data`,
+   …); each one names what the reader could not use.
+3. Re-read the format registry: `ocut format`. It is generated from
+   `scripts/ocut-sync.py`'s constants, so it cannot describe a surface the code no longer
+   reads.
+4. If a host field was renamed, fix it in `scripts/ocut-sync.py` and add its declaration
+   to the registry **in the same change**; `scripts/tests/test_ocut_sync.py` locks both
+   directions — no field may be read without being registered, and no registered field
+   may go unread.
+5. `ocut sync --full` to re-index under the new shape (it snapshots first).
+6. Restart OpenCode so the hook reloads and re-scans plugin surfaces.
 
 ## 6. Deliberate deviations
 
-Recorded so the next reader does not "helpfully" fix them back into a broken
-state.
+Recorded so the next reader does not "helpfully" fix them back into a broken state.
 
-- **No background timer in the TUI.** Refresh is event-driven and per page: a
-  keystroke (5 s throttle) and a tab activation re-read only the page on
-  screen, `r` and the first paint re-read every page, and each page prints its
-  own `data as of HH:MM:SS`.
-  A `set_interval` was tried first: on textual 8.2.8 **any** app timer created
-  after the screens mount makes `run_test`'s teardown raise
-  `LookupError: <ContextVar name='active_app'>` — reproduced with an empty
-  callback, on both App and Screen, and after `timer.stop()`. That takes the whole
-  TUI file down with it: one app timer is enough to fail every test in `test_tui.py` at once, because the teardown belongs to the app, not to the case that added the timer. `test_tui_creates_no_app_timers` pins this.
-- **The TUI disables Textual's animations.** `SkillTUI.animation_level` is
-  `"none"`, so the tab-bar underline snaps instead of sliding. Textual's `Tabs`
-  animates it for 0.3 s at level `"basic"` (`_tabs.py`'s `_highlight_active`), so
-  the global `"basic"` level does **not** remove it — only `"none"` does. Measured
-  on a 44-skill database: a Dashboard→Skills switch is ~500 ms with the animation
-  and ~190 ms without; the animation is ~305 ms of that, against ~70 ms for the
-  page's own re-read and ~125 ms for Textual's layout/render floor.
-  `test_tui_disables_textual_animations` pins the setting. Do not re-enable it as
-  "cosmetic" — it is the largest single cost of switching tabs.
-- **A visual assertion must not ask the widget's own helper what it returned.**
-  When the Dashboard ranking bars were being built, every rendered bar was
-  compared to `rank_bar_width(...)` itself; flattening that ladder to a constant
-  left all of them green — an expectation derived from the thing under test is not
-  a guard. The column was later removed at the owner's request, and the lesson
-  stays: `test_tui_trend_rows_are_a_fixed_width` names the absolute row width
-  (20) in its own breath, not just the equality between the lines.
-- **Nothing outside this project's own database is read.** The Advisor tab was removed on
-  2026-10-03 at the owner's request; the two read-only neighbours that fed `skillt agentos`
-  and `skillt claude-mem` were withdrawn with their commands on 2026-10-12 (D-053), so there
-  is no foreign store left anywhere in the read set to keep off a repaint path — and
-  `test_tui_never_reads_the_advisor_store` went with the store it spied on. What survives
-  has subjects and checks: the repaint path carries no HTTP and no subprocess at all
-  (`test_no_http_is_reachable_from_the_tui_refresh_path`), and a foreign **file** is read as
-  counts, never as content (`test_scan_sync.py`,
-  `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`). The rule outlives its
-  subjects, so the first foreign store read again comes back under AGENTS.md's — read-only
-  URI, field-whitelisted, never `open_db()`, never from a repaint — with its own check named
-  in that file's invariant table, because a promise naming a check nobody wrote is worse
-  than no promise.
-- **Two counts that mean different things never merge, and the fixture that pins them never
-  gives them the same value.** The case that taught this was the advisor's recall triple —
-  `retrieved` (the engine's self-report), `recalled` (`len(memory_ids)`), `injected`
-  (`len(injected_memory_ids)`) — and a hypothesis can be injected on its own, so collapsing
-  them hides a real fact; printing one of them under a header that said "recall" was a
-  reporting error, not a style problem. That reader and
-  `test_the_recall_counts_surface_and_the_query_dict_does_not` were withdrawn on 2026-10-12
-  (D-053); the two live pairs are `Spawned`/`Ran as` against `Total`
-  (`test_spawns_and_runs_are_two_columns_and_never_inside_total`) and `registered`/`ever_called`
-  on the Plugins page. The half that does not depend on the subject is the fixture rule: the
-  advisor's loop deliberately carried three different numbers, because with equal ones no
-  assertion can tell a merge from a coincidence — the same reason a fixture holding **one**
-  row produces a negative (see the double-click entry below).
-- **Row dispatch is an explicit kind list ending in `else: return`.** It used to
-  end in the plugin call, so any kind it had not heard of was handed three
-  positional arguments it did not have and the handler raised `IndexError`. A new
-  kind needs a branch, never the `else` —
-  `test_tui_row_dispatch_ignores_unknown_kinds` still pins it now that the advisor
-  kind is gone with its tab. Row identity never comes out of the key string: the
-  key is an opaque lookup token (`dash-skill:<name>`, `recent#<n>`) and the target
-  is the tuple stored in `app.row_targets`, because parsing a name back out of a
-  key — or out of a rendered cell — is how a value containing the separator turns
-  into the wrong row.
-- **`bar(value, peak, width)` overflows when `value > peak` and raises on `None`.**
-  The advisor's per-stage chart learned this on real data: with the peak taken from
-  the stages alone, a loop whose slowest stage was 18 ms against a 1200 ms budget
-  drew **1467 blocks** and wrapped the page — the fixture loop had a 4000 ms stage,
-  which hid it completely. That chart went with the tab and the reader that fed it
-  was withdrawn on 2026-10-12 (D-053); the arithmetic did not, and neither did the
-  reason the fixture mattered — a sample whose own maximum sits above the reference
-  line is exactly what hides an overflow. The dashboard trend charts still call the
-  same helper and are safe for the same two reasons: their peak is `max()` of the
-  values they plot, and a day with no calls is `0`, never `None`.
-- **Double-click needs no new code, but does need a coordinate that is on a row.**
-  Textual posts `RowSelected` when a click lands on the cell that already holds the
-  row cursor, i.e. the second click; no click-chain timer, so the no-app-timers rule
-  still holds. Measured again on `#dash-top` at 120x40 with five rows: every body
-  coordinate tried — `(4, 1)`, `(2, 1)`, `(60, 1)`, `(3, 5)` — opens that row's
-  detail page, and `(4, 0)`, the header, opens nothing.
-  `test_tui_dashboard_row_double_click_opens_detail` asserts the header first so the
-  positive case cannot be vacuous. Note for anyone carrying old numbers over: the
-  Advisor table's `(4, 2)` negative was an artifact of that fixture holding **one**
-  row — on a table with several rows y=2 is a row and it opens the page. That table is
-  gone (2026-10-12, D-053); the trap is not, and it is the reason a coordinate claim here
-  has to state how many rows the fixture holds before anyone reuses the number.
-- **The plugin surface scan is one hop wide, and the entry is never size-capped.**
-  A published `main` is often a shim: `opencode-mem@2.28.1`'s `dist/plugin.js` is
-  407 bytes and registers nothing — its tool lives in the chunk the shim pulls in
-  with `await import("./index.js")`. Scanning only the entry therefore listed
-  `tools=[]` for a plugin that does register a tool, and every call it made landed
-  in `(unknown)`. The scan now follows the entry's own relative imports:
-  `PLUGIN_SCAN_HOPS_MAX` (3), `PLUGIN_SCAN_HOP_MAX_BYTES` (256 KiB each), only
-  inside the entry's directory, never transitively — discovery runs inside
-  `init()`, which the host watches a deadline on. Both edges of that were found by
-  breaking the other one: a first attempt capped the entry too and silently lost
-  DCP's `compress` (a 300 KiB bundle that had always been read in full), and a
-  stricter tool-key rule (`id: {`) lost it again, because DCP registers
-  `compress: cond ? a() : b()`. Guards:
-  `test_scan_follows_the_entry_shim_one_hop`, `test_scan_hops_are_bounded`,
-  `test_scan_reads_a_large_entry_file_in_full`. Measured cost of the whole `init()`
-  over the three real plugins: median 45.1 ms before, 44.7 ms after.
-- **Tool ids are the keys at the shallowest level that has any — not "level one".**
-  The block used to be matched with a regex that stopped at the first `}`, which did
-  two wrong things at once: it invented tools (the keys of a nested
-  `args: { query: … }` — the miscount was first seen on claude-mem, which listed
-  `query` beside its real `claude_mem_search`; the attribution scan and its guard
-  are still live, while the reader of claude-mem's own ledger was withdrawn
-  2026-10-12, D-053) and it lost them (any tool written *after* a nested object).
-  The walk now skips string literals and takes the shallowest populated level, which
-  is the level where DCP's `tool:{ ...cond && { compress: … } }` and opencode-mem's
-  `tool: { memory: tool({ args: {…} }) }` both come out right. An ALL_CAPS filter
-  was tried first and has been removed: it patched the symptom, and a tool genuinely
-  named after a constant reference would have been dropped by it. Guards:
-  `test_scan_reports_tool_ids_not_parameter_names`,
-  `test_scan_finds_a_tool_registered_behind_a_spread`.
-- **The inventory is a union, and only two of its four claims are prunable.**
-  `scope` records which config listed a plugin. `global` and `localdir` are read by
-  *every* session, so a row of theirs that this init did not see again is a plugin
-  the user removed, and it is deleted at the end of `loadPlugins()` — that is what
-  lets the page's list mean "loaded at the last start" instead of "seen once since
-  this database was created". `project` rows are never deleted from elsewhere (a
-  session started in another directory cannot see them), and a row that predates the
-  column reads as `global`: being wrong there costs only the row, since usage stays
-  and the next session from that project re-adds it. Two more guards, each provoked
-  by disabling it: an `OPENCODE_SKILL_TRACKER_PLUGINS` override never prunes, and
-  nothing prunes unless a global config file actually parsed — a broken or missing
-  config looks exactly like "no plugins installed". Guards:
-  `test_the_inventory_prunes_a_plugin_the_global_config_dropped`,
-  `test_a_project_scoped_plugin_survives_a_session_started_elsewhere`,
-  `test_the_env_spec_override_never_prunes`,
-  `test_an_unreadable_global_config_never_prunes`,
-  `test_a_project_scope_row_is_never_downgraded`.
-- **Table column widths are measured here, not by Textual.** `DataTable` recomputes
-  auto widths in `_on_idle`, so the first painted frame gives every column its
-  header's width (`frozen-gnome-fork-maintenance` → `froze`) and later frames lag by
-  one. `fit_columns()` measures the cells it already has and sets `auto_width = False`;
-  `_PAGE_TABLES` says which tables each page owns so only the page just written is
-  re-measured 2026-10-04 on a read-only snapshot of the live database, with the
-  Agents tab in: **≈1 ms for all nine tables** (four runs, 0.7–2.0 ms) and the whole
-  `refresh_all()` around it 8.9–14.8 ms. The 2026-10-03 figures — 2.7–3.1 ms over
-  eight tables, 21–24 ms for the sweep — were taken while the Recent table still
-  held 100 rows; the owner had cleared usage before the re-run, so both passes got
-  cheaper on data, not on code. `plain_len`'s no-bracket fast path is what took that
-  pass from ~21 ms to ~3 ms when it was introduced.
-  The tests read widths **without** a `pilot.pause()` first — pausing lets the idle
-  pass repair the frame and the assertion would pass on broken code.
-- **A selftest isolates its log, not only its database.** `logPath()` is a `let`
-  that `__selftest()` moves to `skill-tracker-selftest.log` beside its temp DB, and
-  restores at **both** exits — normal and aborted. Restoring matters: a selftest and
-  a live session can share one module instance in the same process, and if the
-  override stayed, every later real `[err]` would be written where `doctor` cannot
-  see it. An explicit `OPENCODE_SKILL_TRACKER_LOG` is honoured (the suite's harness
-  always sets one, which is why CI never showed this); only the shared default is
-  redirected. Proved by the recipe in README's "Self-test isolation" section — run
-  once clean and once deliberately failed — with the shared log's sha256 compared
-  before/after both times.
-- **A drawn chart row must not depend on its data for width.** The trend rows
-  are a fixed `TREND_ROW_WIDTH` (20) and `.trend` pins the height to
-  `TREND_LINES`; `fmt_count` caps a count at five characters. Neither leg is
-  decoration: with only one removed the other hides the drift, and the pinned
-  height deliberately trades **staggering for clipping** below 70 columns (measured, not estimated). The
-  three series are still scaled to their **own** peak on purpose. The guards are
-  `test_tui_trend_charts_share_one_line_when_a_series_is_huge`,
-  `test_tui_trend_css_height_matches_the_line_count` and
-  `test_tui_trend_rows_are_a_fixed_width` — the last measures the rendered text
-  with the markup stripped, because `Static.content` keeps it.
-- **The two subagent roles get two columns.** `Spawned` is what this agent started, `Ran as` how often this name was somebody's child; they never merge into one number and neither enters `Total`, which stays skill + MCP + plugin on every row — pinned row by row in `test_spawns_and_runs_are_two_columns_and_never_inside_total`, not just against totals that happen to exist. A child-only row's `Success rate` is over its runs (the only outcome it has) and carries `⟨sub⟩` so it cannot be read as a lazy primary agent.
-- **A grouping conserves, and a value that will not parse is counted, never dropped.** The
-  trace grouping that taught this — `by_project` and `by_day` of the claude-mem injection line,
-  with `projectless`, `older_days` and `undated` catching every line that would not group, and
-  `test_grouping_never_loses_a_count` asserting the buckets add back to the total — left with
-  that reader on 2026-10-12 (D-053). The rule did not, and three live subjects still obey it:
-  `plan_retention()` buckets the backups `by_day` and `by_month` and puts every name that will
-  not parse into `unparsed`, which is **never** scheduled for deletion (`test_backup.py`);
-  `skillt sync` counts a skill whose frontmatter name it cannot read as `unparsed_name` instead
-  of losing the row (`test_sync_counts_unparsed_names`); and `skillt prune-usage` counts every
-  row whose timestamp will not parse as `undated` and keeps it, because "older than N days" is a
-  claim that row cannot support (`test_row_retention.py`). A split whose buckets do not add back
-  to the total is a loss dressed as a report. Usage windows keep grouping by the **local**
-  calendar day — the day buckets come from `local_day_bounds()` and `date(timestamp,'localtime')`,
-  which is the fix M1 records — while backup and rotation filenames stay a UTC stamp, because the
-  rows inside them are UTC. And a foreign label is admitted only through a shape gate:
-  `SUBAGENT_LABEL_RE` takes a slug-shaped name and counts everything else as `(unnamed)`, so a
-  sentence in somebody else's field becomes a number, never a label.
-- **Row identity is never parsed out of the row key.** Names contain the
-  separators (`@scope/pkg`, `conductor:newTrack`, server names with `_`), so
-  every table registers `(kind, ...parts)` in `app.row_targets`. Don't reintroduce
-  `split()` on a key.
-- **`unified_recent_rows` returns detail columns** (`skill_name`,
-  `server_name`+`tool_name`, `plugin_name`+`item_kind`+`item_name`) in addition to
-  the display `name`. The display string is not a key.
-- **Export allowlists metadata** (`EXPORT_METADATA_KEYS`) instead of dumping the
-  column. That changed the document to `schema_version = 4`; adding
-  `plugin_inventory.scope` made it 5, and adding the `subagent_usage` key made
-  it 6. Bump on any further shape change and update
-  `test_export.py` / `test_plugin_db.py` — the shape test now pins the full key
-  set, so a new key cannot arrive silently.
-- **`scrub-metadata` edits rows in place rather than deleting them**, and only
-  after a backup when `--yes`.
-- **A log is scanned from the start, not from the tail, and a capped read is a floor.**
-  The rule was earned on claude-mem's worker log — **57 ERROR lines**, every one of them in
-  the early part of the file, so a 64 KB tail reported 0 of them — and that reader went on
-  2026-10-12 (D-053), taking `CLAUDE_MEM_LOG_BYTES_CAP` and its bracket-position parser
-  (`_LOG_LINE_RE` read the level from the second bracket and the category from the third, and
-  counted a line matching neither as `unparsed` rather than dropping it) with it. Nothing
-  here parses a foreign log's levels any more. The cap that survives is this project's own
-  `log.max_bytes`, **resolved once and used by both sides**: `doctor log.errors` counts the
-  first N bytes of the plugin log from the **start** and says "a floor, not a total" when the
-  cap bites, and `skillt rotate-log` renames the file at that same number. Guards:
-  `test_a_bounded_log_read_reports_a_floor_never_a_clean_bill`,
-  `test_the_rotation_cap_is_the_number_the_reader_reads`,
-  `test_the_reader_bound_moves_with_the_writer_bound`. The cost half of the old lesson is
-  what makes it a rule rather than a preference: "1–2 ms to read the whole file" was written
-  into that plan before anyone measured, and the readings came back **8.2–15.8 ms**
-  (2026-10-04) then **12.2–14.0 ms** (2026-10-09) — measurements §6, kept as what was true at
-  those commits, withdrawn with the reader. Two readings of the same command five days apart
-  differing by 4 ms says the cost is the size of a file another process appends to, never a
-  property of the code that counts it.
-- **No HTTP anywhere, and nothing on the repaint path.** `claude_mem_worker()` read
-  `worker.pid` and called `os.kill(pid, 0)` — a syscall, so liveness and port cost
-  microseconds and still answered when nothing was running — and only then did that one
-  command ask the running worker three questions under **one shared deadline**, projecting
-  the answers by field name **and** by type. All of it left on 2026-10-12 (D-053): there is
-  no code path in this project that opens a socket now, and the only HTTP in it is the
-  `curl` a human runs by hand from §5. "Files before HTTP, and never inside the TUI" is the
-  shape that survives, and it is checked without any history to lean on:
-  `test_no_http_is_reachable_from_the_tui_refresh_path` arms `urllib.request.urlopen`,
-  `http.client.HTTPConnection` and `socket.create_connection`, requires each stub to have
-  answered, then visits every page plus `s` and `r` — no door may answer.
-- **A thing that is not running is a state, not a fault.** `claude_mem.capture` carried this
-  line: a stopped on-demand worker printed `worker down` and stayed PASS, because "did not
-  run" is not the claim "ran badly" makes. The check was deleted with its reader on
-  2026-10-12 (D-053); the rule lives on in the schedule checks, which is where it bites now —
-  `backups.scheduled` WARNs and never FAILs a machine whose owner chose not to install the
-  unit, `disabled` / `not-found` / "cannot ask systemd" are three different statements, and an
-  absent schedule is reported as absent rather than inferred from the last file it produced
-  (`test_a_disabled_timer_is_named_as_disabled_not_as_missing`,
-  `test_an_unreachable_systemd_is_reported_as_unknown_never_as_healthy`). What still warns on
-  evidence rather than on absence is `log.errors`, the one signal a row count cannot give: a
-  writer can fail every attempt while its newest row still looks fresh.
-- **The Agents page has no sort, on purpose.** `action_cycle_sort` returns for
-  `tab-agents`; falling through to the `else` would cycle the *Skills* sort while
-  the user stands on Agents and sees nothing change. Its `(unknown)` row is real
-  and explained on the page (M23).
-- **The Plugins page is a union, and `plugin_stats_rows` is not.** The page and
-  `skillt plugins` read `plugin_surface_rows` (inventory ∪ usage) because a
-  registered tool nobody called produced no row at all — eleven surfaces rendered
-  as one line, and the owner read that as a broken recorder. The dashboard's
-  Top Plugins still uses the usage-only view: a top-10 of zeros is not a ranking.
-  Excluded plugins get no 0 rows; they have no surface by decision. `registered`
-  and `ever_called` stay two separate fields so no consumer can merge them into
-  one ambiguous zero.
-- **A subagent is recorded as an event, never as a fourth stream.** `Spawned` sits
-  beside `Total` and not inside it, because `task` is a builtin and its run may
-  contain zero measured calls — folding it in would let one column mean "calls"
-  or "calls plus events" depending on whether a session delegated. Held by
-  `test_agent_rows_gain_a_spawned_count_and_total_stays_the_three_streams`.
-- **The TUI's own help and geometry are derived, not typed out.** Four places where
-  a hand-written version was measurably wrong, and each is now computed:
-  `MainScreen.key_help()` builds the Data page's key list from `BINDINGS` (the old
-  text named `b`/`e`/`v` and never mentioned `d` or `j`/`k`, which the footer hides as
-  `show=False`); `MainScreen.CARD_LABELS` is the single source of the six card labels,
-  because `_card_columns()` needs the longest one to pick a grid that cannot wrap;
-  `_empty_note()` writes the reason a table is empty into the page's own status line,
-  which is where the freshness suffix already lives, so a page never carries two
-  competing claims about its data; and the status block is **one flat `[dim]` span per
-  line** — a nested `[dim]` age tail inside a dimmed line is what made the Plugins
-  block read as two kinds of information, and it is also what made the rule checkable
-  by a regex at all. Guards: `test_a_new_binding_documents_itself_in_the_help`,
-  `test_the_data_page_key_help_is_generated_from_the_bindings`,
-  `test_every_table_page_status_line_is_dimmed_throughout`,
-  `test_the_card_grid_switches_where_the_layout_actually_fits`.
-- **Narrow-terminal numbers are measured, so do not "correct" them from the CSS.**
-  The card grid is 4 columns narrower than the screen and Textual splits the remainder
-  unevenly, so the narrowest card decides: six across needs 111 columns, three needs
-  57, two is the floor (the longest label wraps below 40 — deliberately, rather than
-  doubling the height of a page that already scrolls). A first version of
-  `_card_columns()` counted that inset as 2 and so picked three across at 55 and six
-  at 109, widths where the narrowest card is 16 and a 13-column label wraps. The
-  confirm dialog is `width: 100%; max-width: 60`: at `width: 60` a 48-column terminal
-  got a 60-column box pinned at `x=0` with `Confirm (y)` ending at `x=56`.
-- **Nothing in the TUI sets a colour imperatively.** `#data-result.ok` / `.bad`
-  resolve to `$success` / `$error`, so a theme reaches them; the literal assignment
-  this replaced could not. `test_the_result_colour_is_a_theme_token_and_not_a_literal`
-  scans the source for it as well as checking the class and the CSS rule.
-- **The status line is painted after the layout pass, not during it.** An
-  un-laid-out `DataTable` reports `region.width == 0`, and the column-overflow note
-  would then claim every column is off-screen — a statement about the instrument, so
-  `_offscreen_note` skips a zero-width table and `_refresh_pages` repaints through
-  `call_after_refresh`. Same reason `fit_columns` exists. The note is about
-  discoverability only: `right` already scrolls the trailing columns (measured at 48
-  columns — `virtual_size.width` 96 against `region.width` 44, `max_scroll_x` 52),
-  which is why no `min_width` was added to the tables.
-- **Both write paths are wired, because which one the host fires for a builtin is
-  not known and not assumed.** The hook pair and `message.part.updated` each call
-  the writer, and `UNIQUE(parent_session_id, call_id)` with a fill-only rule turns
-  the two into one row: the event adds the child session id a hook cannot know,
-  and never overwrites a name already recorded. `__selftest` drives both and
-  asserts one row. **Which path a real OpenCode uses is still unverified** — that
-  needs one live session after a restart, and the answer would not change the code.
-- **`subagent_type` is gated by shape, not by meaning.** `SUBAGENT_LABEL_RE`
-  admits no spaces, no path, at most 40 characters; anything else is counted as
-  `(unnamed)`. That is a bound, not a prose detector — a 39-character hyphenated
-  token passes it, and this round's own sentinel slipped through exactly that way
-  until the test value was made a sentence. The payload's prose fields
-  (`prompt`, `description`, `title`, `output`, `error`) are named nowhere in the
-  writer; `test_the_subagent_writer_never_names_a_text_field` reads those three
-  function bodies to keep it true, and a source scan that cries wolf on its own
-  comment is a scan nobody can edit.
+- **The host is read, never written.** `open_source()` opens
+  `file:<host>?mode=ro` with `PRAGMA query_only = ON` and raises when the file is
+  missing, rather than creating an empty one. This is why the reader can never repair or
+  backfill OpenCode; `ocut sync --full` rebuilds only the tracker's own copy.
+- **Plugin usage comes from a sidecar, not from the host.** OpenCode names no plugin
+  behind a tool call and records nothing for a command, so `plugin_usage` is the one
+  table fed from outside the host database — by `plugin/ocut-hook.js` appending to
+  `plugin-events.jsonl`. The hook never opens OpenCode's database and never reads a
+  tool's arguments, output or any message text. `OCUT_HOOK_DISABLE=1` turns it off;
+  `OCUT_HOOK_EVENTS` moves the sidecar, and the hook and `ocut sync` must agree on it.
+- **The hook's attribution is a best-effort static scan.** It reads each installed
+  plugin's source for the `tool: { … }` object and the two command-registration shapes,
+  one hop into a bundle's relative imports. A plugin whose surface it cannot parse
+  records nothing — a guessed owner would be worse than a missing row.
+- **A plugin call has no status.** A tool's after-hook carries none and a command has no
+  after-hook at all, so `plugin_usage.status` is NULL and the interface prints `-`, not
+  `0`. Its `ts` is the hook's own clock, not the host's.
+- **The sidecar is capped and rotated by truncation.** `ocut-hook.js` truncates the file
+  past 8 MiB; `ocut sync` detects it (the file is shorter than its byte-offset cursor)
+  and re-reads from the start — idempotent, because every record is keyed by its own id.
+  `OCUT_HOOK_DISABLE`, `OCUT_HOOK_EVENTS`, `OCUT_HOOK_PACKAGES` and
+  `OCUT_OPENCODE_CONFIG` are the hook's knobs.
+- **The reader counts what it cannot use.** `unparsed` accumulates by reason instead of
+  dropping an unknown part type or an unparseable blob; a run that quietly claims nothing
+  still prints "done", and the count is what turns a format change into something
+  visible. `ocut health` prints the zero case too, so the line itself proves the check
+  ran.
+- **Two token granularities are shown beside each other and never summed.** `model_calls`
+  is the per-step record; `sessions` is the host's per-session rollup. They are one
+  measurement at two levels, so adding them would double-count every token.
+- **MCP is attributed by name, longest prefix first.** A tool name no configured server
+  owns stays `builtin` and is reported as server-shaped-unowned rather than guessed into
+  a server.
+- **Settings live outside the host's tree.** `~/.config/ocut/config.toml` (or
+  `OCUT_CONFIG`), never anything under `~/.config/opencode/**`, which is the host's. A
+  file that does not parse is an error that names the key, not a silent fallback.
+- **Backups are manual.** `ocut backup` is the deliberate act; `ocut sync --full`, a
+  schema bump and `ocut restore` each snapshot first. There is **no systemd** timer any
+  more, and retention keeps the newest `BACKUP_KEEP` (5) managed snapshots, never a
+  hand-made `usage.db.bak-*` copy.
+- **The schema is one copy, in `ocut_db.py`.** `TABLES_SQL` creates the tables and
+  `VIEWS_SQL` the views; `SCHEMA_VERSION` is bumped whenever a view changes, and the
+  bump clears `sync_state` so the cursors are re-read rather than trusted.
+  `plugin_surface` (the hook's tool/command ids) is folded back into `inventory` after
+  each filesystem rewrite, so the surfaces survive it.
 
 ## 7. Known limitations
 
-M1–M24, with reproduction notes:
+M1–M12, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
 [README.md](README.md#-known-limitations).
-The ones most likely to bite during maintenance: **M14** (historical prompt text
-in rows — scrubbed 2026-10-01, and the backups predating it were deleted),
-**M19** (fixed: backups had two destinations and retention only reached one —
-re-check that no `skill-usage-backup-*.db` sits beside the database again),
-**M15** (calls that never completed leave no row), **M16** (one failed git
-lookup silences `branch` for a directory), **M17** (the log grows; both sides are
-capped now — the reader and the rotator both at the resolved `log.max_bytes`),
-**M18** (a
-late error text can be dropped by the `COALESCE` on metadata) and **M23** (that
-same `COALESCE` freezes `agent`, so the Agents page counts the agent a session
-*first* reported and `(unknown)` measures capture order, not anonymous work).
+The ones most likely to bite during maintenance: **M1** (the host is the source of truth;
+a call it never persisted is invisible), **M3** (plugin usage needs the hook *and* an
+OpenCode restart), **M4** (the scan is best-effort), **M6** (`unparsed` is the format-move
+signal) and **M10** (the sidecar rotates by truncation).
 
-## 8. Deferred (P2) — ranked, with why they are not fixed
+## 8. Deferred — ranked, with why they are not fixed
 
 | Item | Cost | Why deferred |
 |---|---|---|
-| `branchByDir` negative cache has no TTL (M16) | small | touches the capture path; AGENTS.md requires tests for capture changes, and the dominant cause of nulls here is non-git session dirs |
-| `metadata` COALESCE drops a late error text (M18) | medium | inside the load-bearing dedup upsert |
-| Init blocks ~1.5 s on MCP discovery (p90 of 164 inits) | medium | lowering `MCP_STATUS_TIMEOUT_MS` risks mis-detecting servers, which is worse than slow startup |
-| `plugin_inventory` shows absolute paths for local plugins | cosmetic | needs a display-only shortening plus a test |
-| Row retention runs only by hand (M17 is closed; `retention.usage_days` defaults to 0) | small | arming it deletes recorded history on a schedule nobody chose, so the default is off and `skillt prune-usage --yes` is the decision point. `skill_versions` is bounded by `retention.max_skill_versions`, off by the same reason |
-| Backfill `subagent_usage` from OpenCode's own `part` table (the 84 pre-restart spawns: `explore` 61, `general` 13, `auditor` 5, `researcher` 3, `reviewer` 2, `verifier` 1) | small — one read-only pass, 8 whitelisted json paths, idempotent on `(parent_session_id, call_id)` | **the owner declined it 2026-10-04**: it would add a live foreign database (OpenCode's own, WAL, being written while a session runs) to this project's read set for history nobody is asked about daily. `Ran as` therefore says "since OpenCode last started", and M24 says so on the page. Revisit only if a real question needs the older numbers. |
-
-### Resolved by live verification (2026-10-01)
-
-Both previously-unproven capture paths were exercised against a real
-`opencode run` session in a `/tmp` sandbox (isolated DB via
-`OPENCODE_SKILL_TRACKER_DB`, model `opencode/space-bunny-free`, synthetic
-prompts, binary invoked by absolute path so the shell alias never applies):
-
-- **Plugin command capture works.** `--command dcp-compress` fired
-  `command.execute.before` and wrote
-  `@tarquinen/opencode-dcp@3.2.0 / command / dcp-compress / command_call / unknown`.
-- **The denial path was broken, and is fixed.** OpenCode 1.18.33 emits
-  `permission.asked` then `permission.replied`, with the id in `id`, the refused
-  call in `tool.callID`, and the answer in `reply` keyed by `requestID`. The
-  tracker listened for `permission.updated` and read `permissionID` / `response`
-  — names this host never sends — so **every real rejection wrote nothing**,
-  which is why `denied` was 0 in production rather than merely unobserved.
-  Rejections now land correctly, but M20 still holds: the host gates only
-  `edit`/`bash`/`webfetch`/`doom_loop`/`external_directory`, none of which the
-  tracker measures, so expect 0 `denied` rows regardless.
+| Backfill plugin usage for calls the hook missed before it existed | medium | the host names no plugin behind a tool call, so there is nothing to backfill *from*; recovering it would mean guessing an owner |
+| Attribute a plugin command the scan cannot parse | medium | a guessed owner is worse than a missing row (M4); the honest answer is a `0` |
+| Per-model cost charts | small | `sessions.cost` and `model_calls.cost` are the same money counted twice; only one is shown anywhere |
 
 ## 9. Rollback
 
-One commit per change, code before docs (Conventional Commits). To back out a
-phase:
+One commit per change, code before docs (Conventional Commits). To back out a phase:
 
 ```bash
 git log --oneline -12
 git revert <sha>          # prefer revert over reset; the suite must stay green
 ```
 
-`scrub-metadata --yes` is the one destructive operation in this project. It
-writes a `skill-usage-backup-*.db` next to the database **before** applying, so
-restoring is: `cp ~/.local/share/opencode/skill-usage-backup-<ts>.db
-~/.local/share/opencode/skill-usage.db` with OpenCode not running.
+`ocut restore NAME` is the way back from a bad database state: it snapshots the live
+database before replacing it, so the restore itself is reversible. Close the TUI first —
+it holds the file open.
 
 ## 10. Report format for each phase
 
-Every change here is reported with the same five items, so a reader can accept
-or reject it without re-deriving anything:
+Every change here is reported with the same five items, so a reader can accept or reject
+it without re-deriving anything:
 
 1. **What changed** — behaviour, not code.
 2. **How to see it** — the exact command or keystroke that demonstrates it.
@@ -656,31 +249,21 @@ or reject it without re-deriving anything:
 
 ## 11. How a `green` is produced
 
-The suite is only evidence if the command that ran it could have failed loudly.
-Four traps, all of them paid for on this machine:
+The suite is only evidence if the command that ran it could have failed loudly. Four
+traps, all of them paid for on this machine:
 
 - **Chaining swallows failures.** `a && b` reports only `b`'s status, and
-  `pytest -q | grep -c passed` reports `grep`'s. One command per check, its own
-  status, no pipe: `python3 -m pytest scripts/tests -q > /tmp/pt.log 2>&1;
-  echo "exit=$?"`.
-- **`${PIPESTATUS[0]}` is bash.** This project is driven from **zsh**, where the
-  array is `$pipestatus` and is 1-indexed; the bash spelling expands to nothing,
-  so a failed `git push` printed `push exit=` — a blank status that reads as
-  though the check had run. Verified here: `false | true` then
-  `${pipestatus[1]}` = `1` and `${PIPESTATUS[0]}` = *empty*. Take statuses
-  without a pipe.
-- **A tail is not a conclusion.** A `tail -3` once described a backup as already
-  pruned while it was still on disk. There is no pytest config in this repo — no
-  `addopts`, no summary line a second `-q` could suppress — so the count is
-  always there: read the last line of the log file, not a fragment of a screen.
-- **A red-check leaves a canary behind.** Proving a guard can fail means editing
-  the implementation or the fixture for a moment, and a moment that survives the
-  edit is a fake green. `TEMP-` markers in tracked source are refused by
-  `test_no_canary_or_scratch_marker_survives_in_tracked_source`; one in a
-  conftest fixture passed 318 tests, so the sweep is not paranoia. Restore by
-  re-reading the file, not by trusting that the last edit undid the first. The restore
-  command can abort on its own: `rm` and `cp` are aliased interactive here, so
-  `cp a b && pytest …` stopped at an unanswered prompt, left the canary in the file,
-  and the green check after it never ran at all. Use `command cp -f` / `command rm -f`,
-  and print `git diff --stat` after restoring — an empty diff is the proof, not an
-  `exit=0` from a command that was skipped.
+  `pytest -q | grep -c passed` reports `grep`'s. One command per check, its own status,
+  no pipe: `python3 -m pytest scripts/tests -q > /tmp/pt.log 2>&1; echo "exit=$?"`.
+- **`${PIPESTATUS[0]}` is bash.** This project is driven from **zsh**, where the array is
+  `$pipestatus` and is 1-indexed; the bash spelling expands to nothing, so a failed
+  `git push` prints `push exit=` — a blank status that reads as though the check had run.
+  Take statuses without a pipe.
+- **A tail is not a conclusion.** There is no pytest config in this repo — no `addopts`,
+  no summary line a second `-q` could suppress — so the count is always there: read the
+  last line of the log file, not a fragment of a screen.
+- **A red-check leaves a canary behind.** Proving a guard can fail means editing the
+  implementation or the fixture for a moment, and a moment that survives the edit is a
+  fake green. `TEMP-` markers in tracked source are refused by
+  `test_no_canary_or_scratch_marker_survives_in_tracked_source`. Restore by re-reading
+  the file, not by trusting that the last edit undid the first.
