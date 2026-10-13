@@ -1216,3 +1216,31 @@ Cost     The manifest and ignore lists are hard-coded, so a deliberate second ma
          repository root by walking up to `.git`, so it reads the same tree from `scripts/tests/`.
 
 Commit   b190e60
+### D-067 · 2026-10-14 · guard
+Symptom  Nothing stopped a reader from importing `socket`, `httpx` or `subprocess`. The one check
+         that talked about a network call — `test_no_http_is_reachable_while_the_tui_paints` —
+         proves the property at runtime rather than at the import: it shows a request could not be
+         made, not that no module was added that could make one, and the sentence the READMEs
+         borrow from it describes the wrong thing. `import os` was likewise unremarkable to every
+         existing check while being the one import that buys a shell.
+Change   Add `scripts/tests/test_ocut_imports.py` (5 cases, standard library only). It scans the
+         four production scripts' ASTs against an allowlist keyed per file: `ocut_db.py`,
+         `ocut-sync.py` and `ocut-stats.py` are standard library only, and only `ocut-tui.py` may
+         reach for a third-party package (`textual`, `rich`). Third-party roots come from
+         `sys.stdlib_module_names`, not a typed list, so a dependency added tonight is caught
+         tonight. `os.system`/`popen`/`spawn*`/`exec*` are caught as attribute calls, because the
+         allowlist alone would pass `import os`. `AGENTS.md` gains the invariant row, whose
+         `Run it` selector is checked against the real test names by the existing gate.
+Evidence `python3 -m pytest scripts/tests -q` 295 passed (3 subtests), run with the final content of
+         this entry in the tree. Provoked for real: inserting `import httpx` into `ocut-stats.py`
+         turns two cases red and names the file and line — `ocut-stats.py: httpx (line 22) is a
+         network module` — and removing it turns the suite green again. The guard's own meta-case
+         provokes on strings rather than on the repository, so its evidence is the same and nothing
+         is ever left edited.
+Cost     `threading` is deliberately not forbidden and the file says so where a reader will see it:
+         the TUI's 30-second sync worker is a thread, so a rule satisfiable only by rewriting the
+         rule teaches the next person to route around it. The allowlist is per-file, so a reader
+         that genuinely needs a dependency is a deliberate edit to this file rather than a silent
+         import. The module does not cover the hook, which runs inside the host process and has its
+         own contract in `test_ocut_hook.py`.
+Commit   9839bd3
