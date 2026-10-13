@@ -1133,3 +1133,20 @@ Cost     The suite drives Textual, so it inherits the pinned textual range and a
          asserted against a fixture built through the real indexer, which is a
          stronger claim about the code than about the screen.
 Commit   04b2da6
+
+### D-063 · 2026-10-13 · fix
+Symptom  `ocut --db X stats` and `ocut stats --db X` both failed with "unrecognized
+         arguments: --db X". The launcher always places the subcommand first (argparse
+         needs it there to match a subparser), so a `--db` typed before the subcommand
+         was re-emitted after it, where a top-level-only `--db` is rejected.
+Change   Give every subparser its own `--db` with `default=argparse.SUPPRESS`, so the
+         flag is accepted on either side; SUPPRESS keeps the subparser from overwriting
+         the top-level value with DB_PATH when `--db` is given only up front.
+Evidence `scripts/tests/test_ocut_dispatcher.py::test_db_survives_being_placed_after_the_subcommand`
+         (new) runs the real `ocut-stats.py` on both orders and proves the value reached
+         the parser; the file re-run green, 34 passed. The stub-based routing cases above
+         it never run the real parser, which is why this survived them.
+Cost     `--db` is now declared twice (top level and each subparser); the subparser
+         default must stay SUPPRESS or the top-level value is clobbered, and that trap
+         is silent.
+Commit   ef49533
