@@ -208,6 +208,18 @@ MESSAGE_LOOKUP_CHUNK = 400
 # ``sync_state.name`` values.
 CURSOR_PART = "part"
 STATE_SESSIONS = "session"
+# The plugin-usage sidecar (see ``ingest_plugin_events``). Its cursor is a byte
+# offset, not a rowid: the file is not OpenCode's, it is one this project owns.
+STATE_PLUGIN_EVENTS = "plugin-events"
+
+# Record types in the sidecar. ``surface`` names a plugin's registered tool and
+# command ids; ``call`` is one invocation; ``reset`` is written by the hook when it
+# truncates an oversized sidecar (the truncation is otherwise detected by the
+# file being shorter than the cursor).
+EVENT_SURFACE = "surface"
+EVENT_CALL = "call"
+EVENT_RESET = "reset"
+UNPARSEABLE_EVENT = "unparseable_plugin_event"
 
 UNPARSEABLE_DATA = "unparseable_part_data"
 UNPARSEABLE_MESSAGE = "unparseable_message_data"
@@ -762,6 +774,131 @@ def _plugin_name_version(entry):
     return text, None
 
 
+# --- plugin-usage sidecar ---------------------------------------------------
+#
+# The one input that does not come from OpenCode's own files. The host names no
+# plugin behind a tool call and records nothing at all for a command, so
+# `plugin/ocut-hook.js` appends what it sees to a JSONL file this project owns,
+# and these functions fold it in.
+
+def _plugin_key(name):
+    """The inventory's own short name for a plugin, from whatever the hook called it.
+
+    The hook names a plugin the way the host's config spells it — an npm spec with
+    its version (`@scope/pkg@1.2.3`) or an absolute path (`…/claude-mem.js`) — while
+    ``scan_inventory`` shortens both to a bare stem (`pkg`, `claude-mem`). The two
+    have to agree, or the Plugins tab lists one plugin twice: once with the hook's
+    usage and once, empty, from the config.
+    """
+    if not isinstance(name, str) or not name:
+        return ""
+    return _plugin_name_version(name)[0]
+
+
+def _apply_surface(conn, rec) -> None:
+    """Replace one plugin's recorded surface in ``plugin_surface``."""
+    plugin = _plugin_key(rec.get("plugin"))
+    if not plugin:
+        return
+    conn.execute("DELETE FROM plugin_surface WHERE plugin=?", (plugin,))
+    for kind, key in (("tool", "tools"), ("command", "commands")):
+        names = rec.get(key)
+        if not isinstance(names, list):
+            continue
+        for name in names:
+            if isinstance(name, str) and name:
+                conn.execute(
+                    "INSERT OR REPLACE INTO plugin_surface(plugin, kind, name)"
+                    " VALUES(?,?,?)", (plugin, kind, name))
+
+
+def _write_plugin_call(conn, rec) -> bool:
+    """One ``call`` record -> one ``plugin_usage`` row. False if unusable."""
+    plugin = _plugin_key(rec.get("plugin"))
+    item = rec.get("item")
+    if not plugin:
+        return False
+    if not isinstance(item, str) or not item:
+        return False
+    kind = rec.get("kind")
+    kind = kind if kind in ("tool", "command") else "tool"
+    call_id = rec.get("cid")
+    if not isinstance(call_id, str) or not call_id:
+        # No host id (a command, or a tool part without one): key the row on the
+        # session, the timestamp and the item so a re-read replaces it rather than
+        # inserting a twin.
+        call_id = f"{rec.get('sid') or ''}:{rec.get('ts') or ''}:{item}"
+    conn.execute(
+        "INSERT OR REPLACE INTO plugin_usage(call_id, plugin, kind, item,"
+        " session_id, ts, status, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
+        (call_id, plugin, kind, item, rec.get("sid"), _int_or_none(rec.get("ts")),
+         rec.get("status"), _int_or_none(rec.get("ms"))),
+    )
+    return True
+
+
+def _rebuild_plugin_inventory(conn) -> None:
+    """Fold ``plugin_surface`` into ``inventory`` as tool/command rows.
+
+    Must run AFTER ``scan_inventory``, which DELETEs and rewrites ``inventory`` from
+    the filesystem: the surfaces the hook reported have to be re-applied on every
+    run, or the first sync's tool rows would be deleted by the next one.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO inventory(kind, name, owner_plugin, version,"
+        " path, source) SELECT kind, name, plugin, NULL, NULL, 'hook'"
+        " FROM plugin_surface")
+
+
+def ingest_plugin_events(conn, counts: Counts, events_path=None) -> dict:
+    """Read the plugin-usage sidecar and fold it into the tracker.
+
+    Read by byte offset, the same idea as cbut's transcript cursor but over a file
+    this project owns. A file shorter than the cursor was rotated (the hook caps its
+    size): the cursor resets to 0 and the file is re-read — idempotent, because
+    every row is keyed by its own id. A missing file is not an error: it just means
+    the hook has never run.
+    """
+    path = Path(events_path if events_path is not None else db.PLUGIN_EVENTS)
+    if not path.is_file():
+        return {"events": 0, "surfaces": 0, "calls": 0}
+    size = path.stat().st_size
+    cursor = cursor_of(conn, STATE_PLUGIN_EVENTS)
+    if size < cursor:
+        cursor = 0
+    surfaces = calls = seen = 0
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        fh.seek(cursor)
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            seen += 1
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                counts.bump(UNPARSEABLE_EVENT)
+                continue
+            if not isinstance(rec, dict):
+                counts.bump(UNPARSEABLE_EVENT)
+                continue
+            kind = rec.get("t")
+            if kind == EVENT_SURFACE:
+                _apply_surface(conn, rec)
+                surfaces += 1
+            elif kind == EVENT_CALL:
+                if _write_plugin_call(conn, rec):
+                    calls += 1
+            elif kind == EVENT_RESET:
+                pass  # the truncation is already handled by the size < cursor rule
+            else:
+                counts.bump(UNPARSEABLE_EVENT)
+        cursor = fh.tell()
+    remember_state(conn, STATE_PLUGIN_EVENTS, cursor, size, size, "")
+    _rebuild_plugin_inventory(conn)
+    return {"events": seen, "surfaces": surfaces, "calls": calls}
+
+
 # --- format document -------------------------------------------------------
 
 def format_doc() -> str:
@@ -816,11 +953,15 @@ def format_doc() -> str:
         f"`{PART_BATCH_ROWS}` rows, message lookups in chunks of "
         f"`{MESSAGE_LOOKUP_CHUNK}`; `{TABLE_SESSION}` re-read in full each run "
         f"(the host rewrites its rollup)\n",
+        f"- **Plugin-usage sidecar**: `{db.PLUGIN_EVENTS}` — append-only JSONL, read "
+        f"by byte offset (`{STATE_PLUGIN_EVENTS}`); record types "
+        f"`{EVENT_SURFACE}` (a plugin's tool/command ids), `{EVENT_CALL}` (one "
+        f"invocation), `{EVENT_RESET}` (the hook truncated an oversized file)\n",
         "- **Unparsed reasons counted**: "
         + ", ".join(f"`{r}`" for r in (
             UNPARSEABLE_DATA, UNPARSEABLE_MESSAGE, NO_TOKENS, NO_TOOL_NAME,
             NO_SKILL_NAME, NO_TASK_TYPE, MESSAGE_ROW_ABSENT, UNKNOWN_PART_TYPE,
-            HELD_GAVE_UP))
+            HELD_GAVE_UP, UNPARSEABLE_EVENT))
         + f", and per name for `{UNKNOWN_PART_TYPE}:<type>`\n",
     ])
 
@@ -828,7 +969,7 @@ def format_doc() -> str:
 # --- entry points ----------------------------------------------------------
 
 def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
-        host_db=None, host_config=None) -> dict:
+        host_db=None, host_config=None, plugin_events=None) -> dict:
     """Index the host database into the tracker. Never raises for a missing host.
 
     Returns a status dict. A missing or unreadable ``opencode.db`` is reported in
@@ -855,7 +996,8 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
             return {"ok": False, "error": str(exc), "schema": status,
                     "unparsed_this_run": 0}
         try:
-            stats = _run(conn, src, status, quiet=quiet, host_config=host_config)
+            stats = _run(conn, src, status, quiet=quiet, host_config=host_config,
+                         plugin_events=plugin_events)
         finally:
             src.close()
         return stats
@@ -866,9 +1008,13 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
         conn.close()
 
 
-def _run(conn, src, status: str, quiet: bool = False, host_config=None) -> dict:
+def _run(conn, src, status: str, quiet: bool = False, host_config=None,
+         plugin_events=None) -> dict:
     counts = Counts()
     inventory = scan_inventory(conn, host_config)
+    # After scan_inventory: that DELETEs `inventory`, and this re-applies the hook's
+    # tool/command surfaces into it.
+    plugin = ingest_plugin_events(conn, counts, plugin_events)
     servers = mcp_servers(host_config)
     conn.commit()
     index_sessions(conn, src, counts)
@@ -890,6 +1036,7 @@ def _run(conn, src, status: str, quiet: bool = False, host_config=None) -> dict:
         "mcp_servers_configured": len(servers),
         "sessions": counts.sessions,
         "inventory": inventory,
+        "plugin_events": plugin,
         "cursor": cursor_of(conn, CURSOR_PART),
         # Per-run and cumulative: a format change moves both, while an old
         # unaddressed count only shows in the total.
@@ -905,6 +1052,8 @@ def _run(conn, src, status: str, quiet: bool = False, host_config=None) -> dict:
         "rows_sessions": conn.execute(
             "SELECT COUNT(*) FROM sessions").fetchone()[0],
         "rows_mcp": conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0],
+        "rows_plugin_usage": conn.execute(
+            "SELECT COUNT(*) FROM plugin_usage").fetchone()[0],
         # Measured, not alarmed: recorded calls with the MCP name shape that no
         # config entry owns today.
         "mcp_shape_unowned_calls": conn.execute(MCP_SHAPE_QUERY).fetchone()[0],
@@ -933,6 +1082,9 @@ def _run(conn, src, status: str, quiet: bool = False, host_config=None) -> dict:
               f"{stats['mcp_shape_unowned_calls']}")
         print(f"  inventory: " + ", ".join(
             f"{k}={v}" for k, v in sorted(inventory.items())))
+        print(f"  plugin sidecar: events={plugin['events']} "
+              f"surfaces={plugin['surfaces']} calls={plugin['calls']} "
+              f"-> plugin_usage={stats['rows_plugin_usage']}")
     return stats
 
 
@@ -946,10 +1098,13 @@ def main(argv=None) -> int:
                     help="override the OpenCode database to read (tests, dry runs)")
     ap.add_argument("--host-config", default=None,
                     help="override the OpenCode config home to inventory")
+    ap.add_argument("--plugin-events", default=None,
+                    help="override the plugin-usage sidecar to ingest (tests)")
     args = ap.parse_args(argv)
     t0 = time.time()
     stats = run(full=args.full, quiet=args.quiet, db_path=args.db,
-                host_db=args.host_db, host_config=args.host_config)
+                host_db=args.host_db, host_config=args.host_config,
+                plugin_events=args.plugin_events)
     if not stats.get("ok"):
         print(f"nothing indexed: {stats.get('error')}", file=sys.stderr)
         return 1

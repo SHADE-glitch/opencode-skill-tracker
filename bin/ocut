@@ -88,7 +88,7 @@ fi
 # `add_argument` calls by test_the_value_flag_list_is_the_scripts_own_one — a list
 # kept honest only against a test's copy of itself is how this file once advertised
 # --days, --out, --keep and --hours, none of which anything accepted.
-VALUES_FOR=("--db" "--kind" "--limit" "--host-db" "--host-config")
+VALUES_FOR=("--db" "--kind" "--limit" "--host-db" "--host-config" "--plugin-events")
 cmd=""; rest=(); skip_next=0
 for a in "$@"; do
   if [ "$skip_next" -eq 1 ]; then skip_next=0; rest+=("$a"); continue; fi

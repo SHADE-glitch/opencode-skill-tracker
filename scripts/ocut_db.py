@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # --- locations -------------------------------------------------------------
 
@@ -48,6 +48,18 @@ DB_PATH = Path(
     os.environ.get(
         "OCUT_DB",
         str(Path.home() / ".local" / "share" / "opencode-usage-tracker" / "usage.db"),
+    )
+)
+
+# The sidecar `plugin/ocut-hook.js` appends to. It is the one input to this
+# database that does not come from OpenCode's own files, so it lives here beside
+# the tracker's own store rather than under OpenCode's data home. The hook and the
+# reader must agree on the path; `OCUT_HOOK_EVENTS` moves both.
+PLUGIN_EVENTS = Path(
+    os.environ.get(
+        "OCUT_HOOK_EVENTS",
+        str(Path.home() / ".local" / "share" / "opencode-usage-tracker"
+            / "plugin-events.jsonl"),
     )
 )
 
@@ -342,6 +354,45 @@ CREATE TABLE IF NOT EXISTS inventory (
     PRIMARY KEY (kind, name, owner_plugin)
 );
 
+-- Plugin usage, and ONLY plugin usage, comes from somewhere other than the host
+-- database. OpenCode records a plugin's tool under the tool's own name, with
+-- nothing naming the plugin, and records nothing at all for a plugin command —
+-- so a passive reader can never attribute a call. This one table is fed by the
+-- sidecar `plugin/ocut-hook.js` appends to and `ocut sync` ingests: a row is one
+-- call of a tool or command the plugin registers.
+--
+-- `call_id` is the host's own call id for a tool, and a synthetic
+-- `cmd:<session>:<ms>` for a command (there is no command.execute.after, so a
+-- command has no host id and every invocation must stay its own row). `status`
+-- is NULL: a tool's after-hook carries no status, and a command has no
+-- after-hook at all. `ts` is the hook's clock, not the host's.
+CREATE TABLE IF NOT EXISTS plugin_usage (
+    call_id      TEXT PRIMARY KEY,
+    plugin       TEXT,
+    kind         TEXT,      -- tool | command
+    item         TEXT,      -- the tool id or command id that ran
+    session_id   TEXT,
+    ts           INTEGER,   -- epoch ms, the hook's own clock
+    status       TEXT,      -- NULL: see above
+    duration_ms  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_plugin_usage_plugin ON plugin_usage(plugin);
+CREATE INDEX IF NOT EXISTS idx_plugin_usage_ts     ON plugin_usage(ts);
+CREATE INDEX IF NOT EXISTS idx_plugin_usage_item   ON plugin_usage(item);
+
+-- The tool and command ids each installed plugin registers, as scanned by
+-- `plugin/ocut-hook.js` at load. Kept apart from `inventory` on purpose: the hook
+-- reports a whole plugin's surface at once and only at process start, while
+-- `inventory` is DELETEd and rewritten from the filesystem on every sync — so
+-- `ocut sync` folds this table back into `inventory` (kind='tool'/'command',
+-- owner_plugin=plugin) AFTER that rewrite, and the surfaces survive it.
+CREATE TABLE IF NOT EXISTS plugin_surface (
+    plugin  TEXT NOT NULL,
+    kind    TEXT NOT NULL,   -- tool | command
+    name    TEXT NOT NULL,
+    PRIMARY KEY (plugin, kind, name)
+);
+
 -- One row per host table the reader tracks: `part` (read by rowid cursor) and
 -- `session` (re-read in full, because the host rewrites its rollup). `host_count`
 -- and `host_max` are the host's own numbers at the moment the run finished, and
@@ -390,7 +441,8 @@ _AGENT_NAMES_CTE = (
 _PLUGIN_NAMES_CTE = (
     "WITH names AS ("
     " SELECT name FROM inventory WHERE kind='plugin'"
-    " UNION SELECT DISTINCT owner_plugin FROM inventory WHERE owner_plugin <> '')")
+    " UNION SELECT DISTINCT owner_plugin FROM inventory WHERE owner_plugin <> ''"
+    " UNION SELECT DISTINCT plugin FROM plugin_usage WHERE plugin IS NOT NULL)")
 # MCP is keyed by (server, tool). A configured server with no usage yet is listed
 # once as (server, NULL) so the tab shows configured-but-unused servers without
 # forking a server that already has recorded calls.
@@ -446,12 +498,14 @@ DROP VIEW IF EXISTS v_plugins;
 CREATE VIEW v_plugins AS
 {_PLUGIN_NAMES_CTE}
 SELECT n.name AS plugin,
-       COUNT(DISTINCT i.name) AS surfaces,
-       COUNT(c.call_id) AS calls,
-       MAX(c.ts) AS last_ts
+       (SELECT COUNT(*) FROM inventory i
+          WHERE i.owner_plugin = n.name AND i.kind = 'tool') AS tools,
+       (SELECT COUNT(*) FROM inventory i
+          WHERE i.owner_plugin = n.name AND i.kind = 'command') AS commands,
+       COUNT(u.call_id) AS uses,
+       MAX(u.ts) AS last_ts
 FROM names n
-LEFT JOIN inventory i ON i.owner_plugin = n.name AND i.kind = 'tool'
-LEFT JOIN tool_calls c ON c.tool_name = i.name
+LEFT JOIN plugin_usage u ON u.plugin = n.name
 GROUP BY n.name;
 """
 
@@ -808,17 +862,16 @@ def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
 
 
 def q_plugins(conn):
-    """Every plugin the host's own config declares, with what it ships.
+    """Every plugin the host's config declares, what it ships, and how often it ran.
 
-    There is no plugin *usage* table, and that is not an oversight: OpenCode
-    records no evidence that a plugin ran — a tool a plugin registers appears in
-    the host's `part` under the tool's own name, with nothing naming the plugin.
-    Attributing ``claude_mem_search`` to ``./plugins/claude-mem.js`` would mean
-    reading a name out of a string, so this panel states what is installed and how
-    much of it the tracker can attribute, and lets ``uses`` be what the config
-    actually proves. ``owner_plugin`` is the column that would carry an
-    attribution the host *did* make, which is why it is part of the inventory key
-    rather than assumed to be empty.
+    Usage comes from ``plugin_usage``, which only ``plugin/ocut-hook.js`` writes:
+    OpenCode's own database records a plugin's tool under the tool's own name with
+    nothing naming the plugin, and records nothing at all for a plugin command, so
+    a passive reader can never attribute a call. ``uses`` is therefore 0 for a
+    plugin whose hook has recorded nothing — which is the honest answer, not a
+    verdict: the plugin may be installed and unused, or its surface may be one the
+    hook's static scan cannot parse. ``tools``/``commands`` count what the scan
+    found; ``skills``/``agents`` come from ``owner_plugin``, which the host sets.
     """
     return conn.execute(
         f"{_PLUGIN_NAMES_CTE}"
@@ -841,9 +894,7 @@ def q_plugins(conn):
         "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name"
         "   AND x.kind = 'tool') AS tools"
         " FROM names n"
-        " LEFT JOIN tool_calls u ON u.tool_name IN"
-        "   (SELECT t.name FROM inventory t WHERE t.kind = 'tool'"
-        "    AND t.owner_plugin = n.name)"
+        " LEFT JOIN plugin_usage u ON u.plugin = n.name"
         " GROUP BY n.name ORDER BY uses DESC, n.name",
     ).fetchall()
 
@@ -968,39 +1019,40 @@ def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None, server=None):
 
 
 def q_plugin_history(conn, plugin, limit=50, start_ts=None, end_ts=None):
-    """Recent calls of the tools one plugin registers, newest first.
+    """Recent calls of one plugin's tools/commands, newest first.
 
-    Empty on a host whose config names no tool ownership — see :func:`q_plugins`.
-    ``call_id`` rides along as the row key for the detail screen.
+    Reads ``plugin_usage`` (the hook's sidecar), not ``tool_calls``: the host names
+    no plugin, so the passive tables cannot attribute a call. ``project`` is joined
+    from ``sessions`` on the session id, and ``call_id`` rides along as the row key
+    for the detail screen.
     """
-    conds = [("tool_name IN (SELECT name FROM inventory WHERE kind = 'tool'"
-              " AND owner_plugin = ?)", plugin)] + \
-        _time_conds(start_ts, end_ts, col="ts")
+    conds = [("p.plugin = ?", plugin)] + _time_conds(start_ts, end_ts, col="p.ts")
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
-        "SELECT ts, tool_name, status, duration_ms, session_id, project, call_id"
-        f" FROM tool_calls{where} ORDER BY ts DESC LIMIT ?",
+        "SELECT p.ts, p.kind, p.item, p.status, p.duration_ms, p.session_id,"
+        " s.project, p.call_id"
+        f" FROM plugin_usage p LEFT JOIN sessions s ON s.session_id = p.session_id"
+        f"{where} ORDER BY p.ts DESC LIMIT ?",
         [p for _, p in conds] + [int(limit)],
     ).fetchall()
 
 
 def q_plugin_summary(conn, plugin, start_ts=None, end_ts=None):
-    """Windowed call counts for the tools one plugin registers.
+    """Windowed call counts for one plugin.
 
     The static inventory counts (skills/agents/commands/tools it ships) are not
     here — they have no timestamp and come from ``q_plugins``.
     """
-    conds = [("tool_name IN (SELECT name FROM inventory WHERE kind = 'tool'"
-              " AND owner_plugin = ?)", plugin)] + \
-        _time_conds(start_ts, end_ts, col="ts")
+    conds = [("p.plugin = ?", plugin)] + _time_conds(start_ts, end_ts, col="p.ts")
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
         "SELECT COUNT(*) AS uses,"
-        " COUNT(DISTINCT tool_name) AS targets,"
-        " COUNT(DISTINCT project) AS projects,"
-        " COUNT(DISTINCT session_id) AS sessions,"
-        " MIN(ts) AS first_used, MAX(ts) AS last_used"
-        f" FROM tool_calls{where}",
+        " COUNT(DISTINCT p.item) AS targets,"
+        " COUNT(DISTINCT s.project) AS projects,"
+        " COUNT(DISTINCT p.session_id) AS sessions,"
+        " MIN(p.ts) AS first_used, MAX(p.ts) AS last_used"
+        " FROM plugin_usage p LEFT JOIN sessions s ON s.session_id = p.session_id"
+        f"{where}",
         [p for _, p in conds],
     ).fetchone()
 

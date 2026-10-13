@@ -185,9 +185,9 @@ def test_a_version_bump_clears_the_cursors_so_nothing_is_read_again(
 
     A cursor into the host's rowid space plus rows written under the old DDL would
     re-index nothing while every panel still showed last version's numbers. The
-    bump is simulated by moving the constant, because at SCHEMA_VERSION 1 there is
-    no older version a real file could have been written at — waiting for v2 to
-    find out whether this branch works would be the worse plan.
+    bump is simulated by moving the constant one past its current value, because
+    the file just written is always at the current version — waiting for a real v3
+    to find out whether this branch works would be the worse plan.
     """
     path = tmp_path / "usage.db"
     conn = db.open_db(path)
@@ -199,7 +199,7 @@ def test_a_version_bump_clears_the_cursors_so_nothing_is_read_again(
     assert db.ensure_schema(conn) == "current"   # no bump: nothing is cleared
     assert conn.execute("SELECT cursor FROM sync_state"
                         " WHERE name='part'").fetchone()[0] == 100
-    monkeypatch.setattr(db, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(db, "SCHEMA_VERSION", db.SCHEMA_VERSION + 1)
     assert db.ensure_schema(conn) == "migrated"
     assert conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0] == 0
     # rows are kept: they are re-derivable, and dropping them would silently empty

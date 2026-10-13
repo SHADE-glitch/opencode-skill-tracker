@@ -849,11 +849,20 @@ def test_format_doc_names_every_registered_field():
 
 def test_format_doc_does_not_claim_a_field_the_registry_dropped():
     """The other direction: a needle the code no longer reads must not survive in
-    the document that claims to describe it."""
+    the document that claims to describe it.
+
+    ``jsonl`` and ``offset`` used to be on this list, because the host's records
+    are read by rowid and not by a transcript byte offset. They came back on
+    2026-10-13 with the plugin-usage sidecar, which really is an append-only JSONL
+    read by byte offset — so they are asserted *present* below instead. The point
+    of the list is unchanged: a word the code does not use must not be in the doc.
+    """
     doc = sync.format_doc()
     for gone in ("prompt_cache_hit_tokens", "conversation_request_id",
-                 "marketplace", "tokenDelta", "jsonl", "offset"):
+                 "marketplace", "tokenDelta"):
         assert gone not in doc
+    assert str(sync.db.PLUGIN_EVENTS) in doc
+    assert "byte offset" in doc
 
 
 # --- registry integrity ----------------------------------------------------
