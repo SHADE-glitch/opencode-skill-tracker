@@ -189,6 +189,7 @@ what you touched.
 | Two granularities of the same measurement agree and are never added | a panel summing `model_calls` and `sessions`, one metric printed under two labels | `test_two_granularities_of_the_same_measurement_agree`, `test_no_panel_repeats_the_input_number_under_a_second_label` | `python3 -m pytest scripts/tests -q -k "two_granularities or repeats_the_input_number"` |
 | The window a tab shows is the window it queries, and a row opens the entity it names | a picked window leaking to every tab, a `(server, tool)` row queried by tool alone | `test_a_picked_window_lands_on_the_tab_that_asked_and_on_no_other`, `test_two_servers_sharing_a_tool_name_open_two_different_histories` | `python3 -m pytest scripts/tests/test_ocut_calendar.py scripts/tests/test_ocut_drill.py -q -k "lands_on_the_tab or sharing_a_tool_name"` |
 | The two languages say the same thing, including how many limitations there are | a one-language edit, a document that froze its `M1–M<n>` at the number of the day | `test_readmes_document_every_key_the_screen_binds`, `test_the_documented_limitation_range_is_the_range_the_gate_pins` | `python3 -m pytest scripts/tests -q` |
+| No production script imports a network, process-spawning or exit-hook module, and only the TUI may import a third-party one | a `socket`/`httpx`/`subprocess` import added to a reader, a reader importing `textual` or `rich` | `test_no_production_script_imports_the_network_a_process_or_a_socket`, `test_the_three_non_tui_scripts_are_standard_library_only`, `test_the_tui_may_import_textual_and_rich_and_nothing_else` | `python3 -m pytest scripts/tests/test_ocut_imports.py -q` |
 
 Two of these are about documents, not code, and they are the ones an agent is most likely to
 break while "just" writing: **never copy an aggregate count into a doc** (the suite prints
@@ -239,6 +240,13 @@ selector that quietly deselects is worse than no selector, because it is run and
   installed.
 - `Symptom` names the mechanism, never the session: no prompt text, no command lines, no
   paths from a real config. This repo's whole privacy stance is "counts, never content".
+- **A case named by `Evidence` must be one that goes red without the change, and you must
+  have read it go red.** "The new test passes" is not verification: a case can pass for a
+  reason the change never touched, and a change can ship with no case at all and still be
+  described as covered. Undo the change on purpose and run the named case. This one is a
+  reviewer-level convention, **not a gate** — nothing in `scripts/tests` can prove that a
+  historical commit once went red, so there is no command to run and no red to expect. It
+  holds only because whoever writes the entry does the provoking.
 
 ## Listed on the GitHub profile
 
