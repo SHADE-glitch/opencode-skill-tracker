@@ -1102,6 +1102,12 @@ _CALL_DETAIL = {
     "mcp": ("mcp_usage", "call_id",
             ("call_id", "server", "tool", "status",
              "ts", "duration_ms", "session_id", "project")),
+    # A plugin call is our own record (plugin_usage, the hook's sidecar), keyed by
+    # its own call_id — not a tool_calls row. No `project` column here; the history
+    # list joins it in, but the point record does not carry it.
+    "plugin": ("plugin_usage", "call_id",
+               ("call_id", "plugin", "kind", "item", "status",
+                "ts", "duration_ms", "session_id")),
 }
 # A step's detail is a plain row of model_calls plus the derived totals, so it
 # shares the list's expressions rather than the plain table map above.

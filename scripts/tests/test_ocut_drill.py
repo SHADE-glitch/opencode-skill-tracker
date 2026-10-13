@@ -254,12 +254,12 @@ def test_the_header_counts_are_the_lists_own_window_and_scope(tracker, clock):
 
 
 def test_the_plugins_row_opens_a_screen_that_names_the_missing_evidence(tracker, clock):
-    """"no uses" would be a statistic; this reader has no tool ownership to base it on.
+    """The fixture runs no hook, so the drill-down says which evidence is absent.
 
-    `q_plugin_history` can only match a call when the inventory names the plugin that
-    owns the tool, and the passive reader records no such row — so the count is 0
-    whatever the plugin did. Both the header and the table's empty row have to say
-    which evidence is absent instead of sounding like a usage figure.
+    Usage now comes from `plugin/ocut-hook.js`'s sidecar, and this fixture has none —
+    so `q_plugin_history` finds nothing. Both the header and the table's empty row have
+    to say the hook recorded nothing, instead of sounding like a usage figure ("no
+    uses") or blaming an inventory for ownership the host never records.
     """
     async def body(pilot, app):
         await tui_tests.activate(app, pilot, "tab-plugins")
@@ -268,11 +268,11 @@ def test_the_plugins_row_opens_a_screen_that_names_the_missing_evidence(tracker,
         screen = await open_row(app, pilot, "#t-plugins", 0)
         assert isinstance(screen, tui.HistoryScreen), type(screen)
         summary = text_of(screen, "#hist-summary")
-        assert "attributable" in summary, summary
+        assert "no calls recorded by the hook" in summary, summary
         assert "no uses" not in summary, summary
         hist = screen.query_one("#hist-table", DataTable)
         assert hist.row_count == 1, rows_of(hist)
-        assert "attributable" in str(hist.get_cell_at((0, 0)))
+        assert "recorded by the hook" in str(hist.get_cell_at((0, 0)))
     tui_tests.drive(make_app(tracker, clock), body)
 
 

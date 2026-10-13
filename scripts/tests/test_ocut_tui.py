@@ -377,21 +377,26 @@ def test_no_panel_repeats_the_input_number_under_a_second_label(tracker):
 
 # --- the absent metrics ----------------------------------------------------
 
-def test_the_plugins_tab_shows_no_usage_column(tracker):
-    """A column that can only ever hold 0 turns "no evidence" into "not used".
+def test_the_plugins_tab_shows_a_uses_column(tracker):
+    """`uses` is real now — the hook writes it, so 0 means "nothing recorded".
 
-    Pinned as the exact header list, so re-adding `uses` is a decision with a red
-    test in front of it rather than a quiet edit.
+    Pinned as the exact header list, so changing the column set is a decision with a
+    red test in front of it rather than a quiet edit. The fixture runs `sync` with no
+    hook sidecar, so both plugins show 0 uses and no last-used time — the honest
+    reading of "the hook recorded nothing", never "not used".
     """
     async def body(pilot, app):
         await activate(app, pilot, "tab-plugins")
         table = app.query_one("#t-plugins", DataTable)
-        assert headers(table) == ["plugin", "version", "declared as"]
+        assert headers(table) == ["plugin", "version", "uses", "last used",
+                                  "declared as"]
         assert table.row_count == 2, first_column(table)
-        rows = {cell(table, i, 0): (cell(table, i, 1), cell(table, i, 2))
+        rows = {cell(table, i, 0): (cell(table, i, 1), cell(table, i, 2),
+                                    cell(table, i, 3), cell(table, i, 4))
                 for i in range(table.row_count)}
-        assert rows["demo-plugin"] == ("1.2.3", "@acme/demo-plugin@1.2.3"), rows
-        assert rows["local-one"] == ("-", "./plugins/local-one.js"), rows
+        assert rows["demo-plugin"] == ("1.2.3", "0", "-",
+                                       "@acme/demo-plugin@1.2.3"), rows
+        assert rows["local-one"] == ("-", "0", "-", "./plugins/local-one.js"), rows
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
 

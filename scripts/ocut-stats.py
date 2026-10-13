@@ -268,12 +268,15 @@ def cmd_models(conn, args):
 
 
 def cmd_plugins(conn, args):
-    # No usage column: see q_plugins(). Same three fields as the TUI's Plugins tab,
-    # so the two surfaces cannot disagree about what is known.
+    # `uses`/`last used` come from plugin_usage, written only by
+    # plugin/ocut-hook.js; a plugin the hook has not seen shows 0 / "-". Same
+    # fields as the TUI's Plugins tab, so the two surfaces cannot disagree about
+    # what is known.
     rows = _rows(db.q_plugins(conn),
-                 ["plugin", "version", "path"])
-    print(table_or(["plugin", "version", "declared as"],
-                   [[r[0], r[1] or "-", r[2] or "-"] for r in rows],
+                 ["plugin", "version", "uses", "last_used", "path"])
+    print(table_or(["plugin", "version", "uses", "last used", "declared as"],
+                   [[r[0], r[1] or "-", f"{r[2]:,}", ts(r[3]), r[4] or "-"]
+                    for r in rows],
                    empty="  (none)"))
 
 

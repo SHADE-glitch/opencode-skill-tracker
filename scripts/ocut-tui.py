@@ -116,17 +116,20 @@ TOKEN_COLUMNS = ("Model", "Provider", "Prompt Total", "Requests", "Input",
 TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used")
 SKILLS_COLUMNS = ("skill", "calls", "ok", "last used")
 AGENTS_COLUMNS = ("agent", "calls", "last used")
-# Name, version, and where the host says it came from. No usage column: a passive
-# reader has no evidence that a plugin ran, and a column that can only ever hold 0
-# makes "nothing recorded" look like "nothing used" — see q_plugins().
-PLUGINS_COLUMNS = ("plugin", "version", "declared as")
+# Name, version, where the host says it came from, and — now that plugin/ocut-hook.js
+# is a writer — how often the hook saw it run. `uses` is real, not structural: a 0
+# means the hook recorded nothing (the plugin may be unused, or its surface may be one
+# the hook's static scan cannot parse), so the column is honest about the difference
+# between "nothing recorded" and "nothing used" — see q_plugins(). The long `declared
+# as` path sits last, so a narrow terminal drops it before the usage counts.
+PLUGINS_COLUMNS = ("plugin", "version", "uses", "last used", "declared as")
 MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used")
 HISTORY_COLUMNS = ("when", "project", "session", "status", "duration")
-# q_plugin_history selects from `tool_calls`, so one row here is one call of a
-# tool that the host's config attributes to that plugin: it names the tool and
-# carries the host's own status, which HISTORY_COLUMNS (keyed by project) does not.
-PLUGIN_HISTORY_COLUMNS = ("when", "tool", "status", "duration", "session",
-                          "project")
+# q_plugin_history selects from `plugin_usage` (the hook's sidecar), so one row
+# here is one tool or command call the hook saw a plugin make. It carries the
+# plugin's own `kind` and `item`, which HISTORY_COLUMNS (keyed by project) does not.
+PLUGIN_HISTORY_COLUMNS = ("when", "kind", "item", "status", "duration",
+                          "session", "project")
 # Nine columns still need ~150 cells: on an 80-wide terminal more than half of this
 # table used to sit past the right edge with no key that would bring it back.
 RESPONSE_COLUMNS = ("when", "model", "prompt", "completion", "total",
@@ -140,6 +143,7 @@ CALL_DETAIL_LABELS = {
     "agent_type": "agent", "child_session_id": "child session",
     "skill": "skill", "category": "category", "model": "model",
     "provider": "provider", "server": "server",
+    "plugin": "plugin", "kind": "kind", "item": "item",
     "variant": "variant", "finish": "finish", "status": "status",
     "ts": "when", "duration_ms": "duration",
     "session_id": "session", "project": "project", "directory": "directory",
@@ -962,13 +966,15 @@ if HAVE_TEXTUAL:
                     found = db.q_plugin_history(
                         conn, self.entity, self.app.DETAIL_LIMIT,
                         start_ts=self.start_ts, end_ts=self.end_ts)
-                    rows = [[ts(r["ts"]), r["tool_name"] or "-", r["status"] or "-",
-                             ms(r["duration_ms"]),
+                    rows = [[ts(r["ts"]), r["kind"] or "-", r["item"] or "-",
+                             r["status"] or "-", ms(r["duration_ms"]),
                              (r["session_id"] or "")[:8], r["project"] or "-"]
                             for r in found]
-                    # A plugin's history rows come out of `tool_calls`, so the call
-                    # they open is a TOOL call — there is no "plugin" detail kind.
-                    keys = [["tool", r["call_id"]] for r in found]
+                    # A plugin's history rows come out of `plugin_usage`, our own
+                    # table, so the detail they open is a "plugin" record keyed by
+                    # its own call_id — not a tool_calls row (the host names no
+                    # plugin, so a tool call cannot be attributed back).
+                    keys = [["plugin", r["call_id"]] for r in found]
                     summary = db.q_plugin_summary(
                         conn, self.entity, start_ts=self.start_ts,
                         end_ts=self.end_ts)
@@ -993,7 +999,7 @@ if HAVE_TEXTUAL:
             # selected call can open its own detail.
             self._fill_wide(
                 "hist-table", rows,
-                ("No calls attributable to this plugin" if self.kind == "plugin"
+                ("No plugin calls recorded by the hook" if self.kind == "plugin"
                  else "No calls recorded for this name"),
                 key_index=(0, 1), key_kind="call", key_rows=keys)
 
@@ -1001,11 +1007,12 @@ if HAVE_TEXTUAL:
             """One line of the entity's windowed counts, for the header."""
             if self.kind == "plugin":
                 if not s["uses"]:
-                    # Not "no uses": `q_plugin_history` can only find a call when the
-                    # inventory names the plugin that owns the tool, and this reader
-                    # records no tool ownership at all, so the count is 0 whatever the
-                    # plugin did. Say which evidence is missing.
-                    return f"no calls attributable to this plugin · {self.window_label}"
+                    # Not "no uses": usage comes from plugin/ocut-hook.js, and a 0
+                    # means the hook recorded nothing for this plugin — it may be
+                    # unused, or its surface may be one the hook's static scan
+                    # cannot parse. Name the evidence that is absent.
+                    return (f"no calls recorded by the hook · "
+                            f"{self.window_label}")
                 return (f"{count_n(s['uses'], 'use')} · {s['targets']} targets · "
                         f"{s['projects']} projects · {s['sessions']} sessions · "
                         f"{ts(s['first_used'])} → {ts(s['last_used'])} · "
@@ -1473,13 +1480,16 @@ if HAVE_TEXTUAL:
             # No time window: the plugin list is all-time (the inventory carries
             # no timestamps), so start/end are accepted for the shared fill
             # signature but ignored. Name is the row key, so Enter/double-click
-            # opens the plugin's own drill-down.
+            # opens the plugin's own drill-down. `uses`/`last_used` come from
+            # plugin_usage, written only by plugin/ocut-hook.js; a plugin the hook
+            # has not seen shows 0 / "-".
             self._fill_wide(
                 "t-plugins",
                 # `source` is which root the reader walked ("config"), which says
                 # nothing a person can act on; `path` is the entry the host's own
                 # config spells — an npm name or a local file — so that is the column.
-                [[r["plugin"], r["version"] or "-", r["path"] or "-"]
+                [[r["plugin"], r["version"] or "-", f"{r['uses']:,}",
+                  ts(r["last_used"]), r["path"] or "-"]
                  for r in db.q_plugins(conn)],
                 "No plugins installed", key_kind="plugin")
 
@@ -1574,8 +1584,10 @@ if HAVE_TEXTUAL:
                 f"db={self.db_path} · {count_n(o['tool_calls'], 'tool call')} · "
                 f"{count_n(o['skills'], 'skill')} · "
                 f"{count_n(o['agents'], 'agent')} · "
-                # Installed, never "used": a passive reader has no evidence that a
-                # plugin ran, so this counts the host's config, not a usage stream.
+                # Installed, not a use count: the inventory is the host's config,
+                # so this is a different measure from the Plugins tab's `uses`
+                # column (which the hook fills). "installed" is what keeps the two
+                # from being read as the same number.
                 f"{o['plugins_installed']:,} plugins installed · "
                 f"{o['mcp']:,} mcp · "
                 f"{count_n(o['model_calls'], 'model response')} · "
@@ -1887,9 +1899,10 @@ if HAVE_TEXTUAL:
                 tools = db.q_tools(conn, limit=self.DASH_TOP,
                                    start_ts=start, end_ts=end)
                 daily = db.q_usage_daily(conn, start, end)
-                # q_usage_kpi has no plugin count — a passive reader has no evidence
-                # that a plugin ran — so this line counts what the host's config
-                # installs, all-time and from the same query as the Plugins tab.
+                # q_usage_kpi has no plugin count, so this line counts what the
+                # host's config installs — all-time, from the same query as the
+                # Plugins tab. It is an install count, not the tab's `uses`: the
+                # card says "inst." to keep the two from being read as one number.
                 plugins_installed = len(db.q_plugins(conn))
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
@@ -1921,7 +1934,7 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
             self._put_panel("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
             self._put_panel("#dash-kpi-mcp", "MCP", f"{k['mcp']:,}")
-            # "inst.", not a use count — the one thing a passive reader can prove.
+            # "inst." — the install count, distinct from the Plugins tab's `uses`.
             self._put_panel("#dash-kpi-plugins", "Plugins inst.",
                             f"{plugins_installed:,}")
 
