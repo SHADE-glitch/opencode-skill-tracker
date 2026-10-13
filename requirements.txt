@@ -2,3 +2,10 @@
 # Every headless subcommand (sync/stats/tools/health/export/backup/…) needs only
 # the Python standard library.
 textual>=8.2,<9
+
+# The TUI dims a `removed` row's state cell with `rich.text.Text`, which DataTable
+# accepts as a renderable but does not style on its own. Declared because we import
+# it directly rather than through textual, so that the import is a decision on the
+# dependency list and not an accident of textual re-exporting it — textual requires
+# rich itself, so this adds no new package to an install that already has textual.
+rich>=14.2.0

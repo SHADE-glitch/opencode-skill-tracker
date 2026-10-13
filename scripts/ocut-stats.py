@@ -95,6 +95,17 @@ def _rows(cur, keys):
     return [[r[k] for k in keys] for r in cur]
 
 
+def _state(row):
+    """The `state` cell for an entity row, from the row's trailing flag pair.
+
+    Every entity query ends with `installed, ever_used` and every list here ends
+    with those two, so the flags are addressed from the end of the row rather
+    than by a magic index per table. The word comes from `db.entity_state`, the
+    same place the TUI gets it: one label per state, one function to change it.
+    """
+    return db.entity_state(row[-2], row[-1])
+
+
 # --- subcommands -----------------------------------------------------------
 
 
@@ -134,34 +145,42 @@ def cmd_stats(conn, args):
 
     print("Top tools")
     rows = _rows(db.q_tools(conn, 10), ["tool_name", "calls", "completed",
-                                        "errored", "avg_ms", "last_used"])
-    print(table(["tool", "calls", "ok", "fail", "avg", "last used"],
-                [[r[0], r[1], r[2], r[3], ms(r[4]), ts(r[5])] for r in rows]))
+                                        "errored", "avg_ms", "last_used",
+                                        "installed", "ever_used"])
+    print(table(["tool", "state", "calls", "ok", "fail", "avg", "last used"],
+                [[r[0], _state(r), r[1], r[2], r[3], ms(r[4]), ts(r[5])]
+                 for r in rows]))
     print()
 
     print("Skills")
-    rows = _rows(db.q_skills(conn), ["skill", "calls", "last_used"])
-    print(table_or(["skill", "calls", "last used"],
-                   [[r[0], r[1], ts(r[2])] for r in rows], empty="  (none)"))
+    rows = _rows(db.q_skills(conn), ["skill", "calls", "last_used",
+                                     "installed", "ever_used"])
+    print(table_or(["skill", "state", "calls", "last used"],
+                   [[r[0], _state(r), r[1], ts(r[2])] for r in rows],
+                   empty="  (none)"))
     print()
 
     print("Agents")
-    rows = _rows(db.q_agents(conn), ["agent_type", "calls", "last_used"])
-    print(table_or(["agent", "calls", "last used"],
-                   [[r[0], r[1], ts(r[2])] for r in rows], empty="  (none)"))
+    rows = _rows(db.q_agents(conn), ["agent_type", "calls", "last_used",
+                                     "installed", "ever_used"])
+    print(table_or(["agent", "state", "calls", "last used"],
+                   [[r[0], _state(r), r[1], ts(r[2])] for r in rows],
+                   empty="  (none)"))
     print()
 
     print("Plugins (installed ∪ used, by attributed usage)")
-    rows = _rows(db.q_plugins(conn), ["plugin", "uses", "skills", "agents", "commands"])
-    print(table(["plugin", "uses", "skills", "agents", "cmds"],
-                [[r[0], r[1], r[2], r[3], r[4]] for r in rows]))
+    rows = _rows(db.q_plugins(conn), ["plugin", "uses", "skills", "agents",
+                                      "commands", "installed", "ever_used"])
+    print(table(["plugin", "state", "uses", "skills", "agents", "cmds"],
+                [[r[0], _state(r), r[1], r[2], r[3], r[4]] for r in rows]))
     print()
 
     print("MCP")
-    rows = _rows(db.q_mcp(conn), ["server", "tool", "calls", "last_used"])
+    rows = _rows(db.q_mcp(conn), ["server", "tool", "calls", "last_used",
+                                  "installed", "ever_used"])
     if rows:
-        print(table(["server", "tool", "calls", "last used"],
-                    [[r[0], r[1], r[2], ts(r[3])] for r in rows]))
+        print(table(["server", "tool", "state", "calls", "last used"],
+                    [[r[0], r[1], _state(r), r[2], ts(r[3])] for r in rows]))
     else:
         print("  (no MCP tool invocations recorded)")
 
@@ -169,33 +188,39 @@ def cmd_stats(conn, args):
 def cmd_tools(conn, args):
     rows = _rows(db.q_tools(conn, args.limit),
                  ["tool_name", "calls", "completed", "errored", "running",
-                  "avg_ms", "last_used", "projects"])
+                  "avg_ms", "last_used", "projects", "installed", "ever_used"])
     # `run` is the host's own `running` state, not a third outcome: a call that is
     # still in flight. Counting it as a failure would report an interrupted tool as
     # a broken one.
-    print(table(["tool", "calls", "ok", "fail", "run", "avg", "last used", "proj"],
-                [[r[0], r[1], r[2], r[3], r[4], ms(r[5]), ts(r[6]), r[7]] for r in rows]))
+    print(table(["tool", "state", "calls", "ok", "fail", "run", "avg",
+                 "last used", "proj"],
+                [[r[0], _state(r), r[1], r[2], r[3], r[4], ms(r[5]), ts(r[6]),
+                  r[7]] for r in rows]))
 
 
 def cmd_skills(conn, args):
     rows = _rows(db.q_skills(conn, args.limit),
-                 ["skill", "calls", "completed", "last_used", "projects"])
-    print(table_or(["skill", "calls", "ok", "last used", "proj"],
-                   [[r[0], r[1], r[2], ts(r[3]), r[4]] for r in rows]))
+                 ["skill", "calls", "completed", "last_used", "projects",
+                  "installed", "ever_used"])
+    print(table_or(["skill", "state", "calls", "ok", "last used", "proj"],
+                   [[r[0], _state(r), r[1], r[2], ts(r[3]), r[4]]
+                    for r in rows]))
 
 
 def cmd_agents(conn, args):
     rows = _rows(db.q_agents(conn, args.limit),
-                 ["agent_type", "calls", "last_used", "projects"])
-    print(table_or(["agent", "calls", "last used", "proj"],
-                   [[r[0], r[1], ts(r[2]), r[3]] for r in rows]))
+                 ["agent_type", "calls", "last_used", "projects",
+                  "installed", "ever_used"])
+    print(table_or(["agent", "state", "calls", "last used", "proj"],
+                   [[r[0], _state(r), r[1], ts(r[2]), r[3]] for r in rows]))
 
 
 def cmd_mcp(conn, args):
     rows = _rows(db.q_mcp(conn, args.limit),
-                 ["server", "tool", "calls", "completed", "last_used"])
-    print(table_or(["server", "tool", "calls", "ok", "last used"],
-                   [[r[0], r[1], r[2], r[3], ts(r[4])] for r in rows]))
+                 ["server", "tool", "calls", "completed", "last_used",
+                  "installed", "ever_used"])
+    print(table_or(["server", "tool", "state", "calls", "ok", "last used"],
+                   [[r[0], r[1], _state(r), r[2], r[3], ts(r[4])] for r in rows]))
 
 
 # Per-model table: (header, q_model_tokens key). Order matters — the trailing
@@ -270,12 +295,22 @@ def cmd_models(conn, args):
 def cmd_plugins(conn, args):
     # `uses`/`last used` come from plugin_usage, written only by
     # plugin/ocut-hook.js; a plugin the hook has not seen shows 0 / "-". Same
-    # fields as the TUI's Plugins tab, so the two surfaces cannot disagree about
-    # what is known.
+    # fields IN THE SAME ORDER as the TUI's Plugins tab, so the two surfaces
+    # cannot disagree about what is known -- the claim was written when this table
+    # had five columns and the TUI five different ones.
+    #
+    # `state` sits after the name here for the same reason it does in the TUI,
+    # where the reason was the prefix column plan. There is no width trimming in a
+    # terminal report, so that reason does not apply: what it gets instead is the
+    # one that applies to both -- the label belongs to the name on its left, and a
+    # report read six columns later should not have to scroll back to find out.
     rows = _rows(db.q_plugins(conn),
-                 ["plugin", "version", "uses", "last_used", "path"])
-    print(table_or(["plugin", "version", "uses", "last used", "declared as"],
-                   [[r[0], r[1] or "-", f"{r[2]:,}", ts(r[3]), r[4] or "-"]
+                 ["plugin", "version", "uses", "last_used", "skills", "agents",
+                  "commands", "path", "installed", "ever_used"])
+    print(table_or(["plugin", "state", "version", "uses", "last used", "skills",
+                    "agents", "cmds", "declared as"],
+                   [[r[0], _state(r), r[1] or "-", f"{r[2]:,}", ts(r[3]),
+                     f"{r[4]:,}", f"{r[5]:,}", f"{r[6]:,}", r[7] or "-"]
                     for r in rows],
                    empty="  (none)"))
 

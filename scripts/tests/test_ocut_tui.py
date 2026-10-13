@@ -271,10 +271,17 @@ def test_the_tools_tab_prints_exactly_its_own_window_of_the_tools_query(
                 "fixture has no failed call: the ok column cannot be told apart"
             assert first_column(table) == [r["tool_name"] for r in rows], (rng, rows)
             for i, r in enumerate(rows):
-                assert [cell(table, i, j) for j in (1, 2, 3)] == \
+                # Column 1 is `state` now, so the counts start at 2. Read the
+                # state back through the shared helper rather than pasting the
+                # three labels here: this case is about the wiring, and a label
+                # spelled twice in two files is a label that can disagree with
+                # itself.
+                assert [cell(table, i, j) for j in (2, 3, 4)] == \
                     [f"{r['calls']:,}", f"{r['completed']:,}", f"{r['errored']:,}"], \
                     (rng, r)
-            seen[rng] = [cell(table, i, 1) for i in range(table.row_count)]
+                assert cell(table, i, 1) == db.entity_state(
+                    r["installed"], r["ever_used"]), (rng, r)
+            seen[rng] = [cell(table, i, 2) for i in range(table.row_count)]
         assert seen[default] != seen["all"], (default, seen)
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
@@ -384,21 +391,131 @@ def test_the_plugins_tab_shows_a_uses_column(tracker):
     Pinned as the exact header list, so changing the column set is a decision with a
     red test in front of it rather than a quiet edit. The fixture runs `sync` with no
     hook sidecar, so both plugins show 0 uses and no last-used time — the honest
-    reading of "the hook recorded nothing", never "not used".
+    reading of "the hook recorded nothing", never "not used". `state` sits second
+    because the column plan drops the tail first: a nine-wide Plugins table loses its
+    last four columns long before it loses "is this still here".
     """
     async def body(pilot, app):
         await activate(app, pilot, "tab-plugins")
         table = app.query_one("#t-plugins", DataTable)
-        assert headers(table) == ["plugin", "version", "uses", "last used",
+        assert headers(table) == ["plugin", "state", "version", "uses",
+                                  "last used", "skills", "agents", "cmds",
                                   "declared as"]
         assert table.row_count == 2, first_column(table)
         rows = {cell(table, i, 0): (cell(table, i, 1), cell(table, i, 2),
-                                    cell(table, i, 3), cell(table, i, 4))
+                                    cell(table, i, 3), cell(table, i, 4),
+                                    cell(table, i, 5), cell(table, i, 6),
+                                    cell(table, i, 7), cell(table, i, 8))
                 for i in range(table.row_count)}
-        assert rows["demo-plugin"] == ("1.2.3", "0", "-",
+        assert rows["demo-plugin"] == ("installed", "1.2.3", "0", "-",
+                                       "0", "0", "0",
                                        "@acme/demo-plugin@1.2.3"), rows
-        assert rows["local-one"] == ("-", "0", "-", "./plugins/local-one.js"), rows
+        assert rows["local-one"] == ("installed", "-", "0", "-",
+                                     "0", "0", "0", "./plugins/local-one.js"), rows
     drive(lambda: tui.TrackerApp(str(tracker)), body)
+
+
+# --- the state column ------------------------------------------------------
+
+ENTITY_TABS = [("tab-tools", "t-tools", tui.TOOLS_COLUMNS),
+               ("tab-skills", "t-skills", tui.SKILLS_COLUMNS),
+               ("tab-agents", "t-agents", tui.AGENTS_COLUMNS),
+               ("tab-plugins", "t-plugins", tui.PLUGINS_COLUMNS),
+               ("tab-mcp", "t-mcp", tui.MCP_COLUMNS)]
+
+STATES = {db.ENTITY_STATE_USED, db.ENTITY_STATE_INSTALLED, db.ENTITY_STATE_REMOVED}
+
+
+def test_every_entity_tab_prints_a_state_next_to_the_name(tracker):
+    """`state` is column 1 on every entity tab — or column 2 on MCP, which is keyed
+    by (server, tool) and cannot put a label between the two halves of its own key.
+
+    Not column last: the column plan keeps the longest *prefix* that fits, so the
+    last column is the first one a narrow terminal loses, and "is this still here"
+    is the one thing on the row that the count beside it cannot answer.
+    """
+    for columns in (tui.TOOLS_COLUMNS, tui.SKILLS_COLUMNS, tui.AGENTS_COLUMNS,
+                    tui.PLUGINS_COLUMNS):
+        assert columns[1] == db.ENTITY_STATE_COLUMN, columns
+    assert tui.MCP_COLUMNS[:2] == ("server", "tool"), tui.MCP_COLUMNS
+    assert tui.MCP_COLUMNS[2] == db.ENTITY_STATE_COLUMN, tui.MCP_COLUMNS
+
+
+def test_each_entity_tab_renders_a_state_label_from_the_shared_helper(tracker):
+    """Header from the tuple, cell from `db.entity_state` — and one of the three
+    labels, never anything else and never a blank.
+
+    The empty-state row spans the label set with "-" padding, so it is skipped by
+    name rather than by row index: its state cell is a filler, not a claim.
+    """
+    async def body(pilot, app):
+        for pane, table_id, columns in ENTITY_TABS:
+            await activate(app, pilot, pane)
+            table = app.query_one(f"#{table_id}", DataTable)
+            assert headers(table) == list(columns), (pane, headers(table))
+            at = list(columns).index(db.ENTITY_STATE_COLUMN)
+            for i in range(table.row_count):
+                value = str(table.get_cell_at((i, at)))
+                if value == "-":
+                    continue          # empty-state filler, not an entity
+                assert value in STATES, (pane, i, value)
+    drive(lambda: tui.TrackerApp(str(tracker)), body)
+
+
+def test_a_removed_entity_reads_removed_and_is_dimmed(tracker):
+    """The reason the column exists: a name that is no longer on disk but still has
+    history reads `removed`, and it reads it quietly.
+
+    `Textual` has no per-row style hook on `DataTable` — `add_row` takes cells, and
+    the only row-level classes are header/fixed/zebra — so the dimming covers this
+    one cell and the rest of the row stays at full contrast. That is a deliberate
+    limit, not a missing one, and asserting on the *cell* rather than the row is
+    what makes the limit visible.
+    """
+    conn = sqlite3.connect(tracker)
+    conn.row_factory = sqlite3.Row
+    gone = [r for r in db.q_tools(conn) if not r["installed"]]
+    alive = [r for r in db.q_skills(conn) if r["installed"]]
+    conn.close()
+    assert gone and alive, "the fixture needs one removed and one installed entity"
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        row = first_column(table).index(gone[0]["tool_name"])
+        cell_value = table.get_cell_at((row, 1))
+        assert str(cell_value) == db.ENTITY_STATE_REMOVED, gone[0]["tool_name"]
+        assert isinstance(cell_value, tui.Text), type(cell_value)
+        assert cell_value.style == "dim", cell_value.style
+        # Not `str` on purpose: a plain string would also satisfy `str(...) == "removed"`,
+        # so without the type assertion the dimming could go away unnoticed.
+        assert not isinstance(cell_value, str)
+
+        await activate(app, pilot, "tab-skills")
+        skills = app.query_one("#t-skills", DataTable)
+        row = first_column(skills).index(alive[0]["skill"])
+        assert skills.get_cell_at((row, 1)) == db.ENTITY_STATE_INSTALLED, \
+            alive[0]["skill"]
+    drive(lambda: tui.TrackerApp(str(tracker)), body)
+
+
+def test_a_styled_cell_survives_the_name_cap():
+    """`_cap_cell` used to be `(self, text: str) -> str` and measured with `len()`,
+    so a renderable could not pass through it with its style intact. At `name_cap`
+    below `len("installed")` the dimmed label is cut — and a cut that drops the style
+    is the same silent lie as a silent column drop.
+    """
+    class _Host(tui.WideTableMixin):
+        name_cap = 8
+
+    host = _Host()
+    clipped = host._cap_cell(tui.Text("installed", style="dim"))
+    assert str(clipped) == "install…", str(clipped)
+    assert isinstance(clipped, tui.Text) and clipped.style == "dim"
+    # The same cut on an unstyled cell stays a plain string: the cap decides the
+    # text, the incoming type decides the type.
+    plain = host._cap_cell("installed")
+    assert plain == "install…" and isinstance(plain, str)
 
 
 # --- clipping and the row key ----------------------------------------------

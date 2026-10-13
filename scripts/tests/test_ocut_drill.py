@@ -310,7 +310,10 @@ def test_the_plugins_row_opens_the_hooks_own_record(hooked_tracker):
         await tui_tests.activate(app, pilot, "tab-plugins")
         table = app.query_one("#t-plugins", DataTable)
         assert table.row_count == 1, rows_of(table)
-        assert str(table.get_cell_at((0, 2))) == "2", rows_of(table)   # uses
+        # Addressed by name, not by index: `state` moved the counts one column in,
+        # and an index here would keep saying the right thing about the wrong cell.
+        uses = tui.PLUGINS_COLUMNS.index("uses")
+        assert str(table.get_cell_at((0, uses))) == "2", rows_of(table)
         screen = await open_row(app, pilot, "#t-plugins", 0)
         assert isinstance(screen, tui.HistoryScreen), type(screen)
         hist = screen.query_one("#hist-table", DataTable)
