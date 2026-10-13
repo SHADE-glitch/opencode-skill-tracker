@@ -40,6 +40,10 @@ CODE_PATHS = [
     "scripts/ocut-tui.py",
     "scripts/ocut-stats.py",
     "bin/ocut",
+    # The one writer in the ocut world, added 2026-10-13. It is a hook, not a
+    # reader, so a bug here is exactly the kind a passive reader cannot notice:
+    # the Plugins panel would just stay empty and look like a quiet week.
+    "plugin/ocut-hook.js",
     "plugin/skill-tracker.js",
     "scripts/opencode_compat.py",
     "scripts/skill_db.py",
