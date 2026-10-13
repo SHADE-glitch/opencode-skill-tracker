@@ -1191,3 +1191,28 @@ Cost     A real plugin whose file name contains `ocut-hook` would be skipped; no
          known, and the alternative — resolving the module's own realpath — is defeated
          by the install being a symlink.
 Commit   530a45d
+
+### D-066 · 2026-10-13 · guard
+Symptom  The root-file layer was a naming convention with nothing behind it. No check in this
+         repository asserted that the finalized files sit at the repository root, that `LICENSE`
+         exists, or that `AGENTS.md` points at the machine-wide standard instead of restating it.
+         A renamed or deleted root file would only be noticed by a person reading the diff.
+Change   Add `scripts/tests/test_conventions.py` (9 cases, standard library only). It asserts the
+         finalized layer is present at the root and that `pyproject.toml` is the only manifest;
+         that `AGENTS.md` carries the one-line dimension pointer and reproduces none of the
+         standard's own numbered section headings; that `.gitignore` still covers the runtime
+         state the standard lists and that `git ls-files` tracks none of it; and that no process
+         draft is tracked anywhere. `AGENTS.md` gains the dimension line above the shared-standard
+         pointer it already had. Nothing is fetched — every assertion reads this working tree.
+Evidence `python3 -m pytest scripts/tests -q` 251 passed (3 subtests), run with the final content
+         of this entry in the tree. Provoked for real: moving `LICENSE` out of the tree turns the
+         root-layer case red with `AssertionError: Lists differ: [] != ['LICENSE: create this file
+         at the repository root']`, and restoring it turns the suite green again. Two earlier
+         drafts of the guard were themselves red and were corrected rather than suppressed — a
+         heading match that also caught this repository's own `## CI`, and an ignore-list spelling
+         that only matched `.venv/`. No test was skipped, widened or moved to make a check pass.
+Cost     The manifest and ignore lists are hard-coded, so a deliberate second manifest or a new
+         runtime artefact is a change to this file rather than a surprise failure. It finds the
+         repository root by walking up to `.git`, so it reads the same tree from `scripts/tests/`.
+
+Commit   b190e60
