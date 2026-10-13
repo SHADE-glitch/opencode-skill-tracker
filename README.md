@@ -242,7 +242,9 @@ ocut format  [--write]
 - `backup` / `restore` — snapshot the database, or list and restore a snapshot (see
   [Backups](#-backups)).
 - `format` — print the OpenCode format-dependency surface, read out of the parser's
-  registry. `--write` refreshes the generated block in `docs/maintenance/`.
+  registry. `--write` refreshes a generated block **already present** in a file, and
+  refuses to create one: the markers are the opt-in, so the flag cannot bring a document
+  into existence that nobody asked for.
 
 Global value flags (`--db`, `--kind`, `--limit`, `--host-db`, `--host-config`,
 `--plugin-events`) may sit before **or** after the subcommand: `ocut --limit 5 tools` and
@@ -412,7 +414,7 @@ is the deliberate act.
 
 ## 🚧 Known limitations
 
-The list below runs **M1–M12**. The Chinese README carries the same list with more
+The list below runs **M1–M14**. The Chinese README carries the same list with more
 detail in [§9](README.zh-CN.md#-9-已知限制).
 
 - **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
@@ -449,6 +451,17 @@ detail in [§9](README.zh-CN.md#-9-已知限制).
 - **M12** Backups are manual and pre-destructive only. There is **no systemd** timer any
   more; retention keeps the newest five managed snapshots and never touches hand-made
   copies.
+- **M13** The Tokens and Usage lists **does not carry** a cache-*miss* column or a second
+  grand total, because the host reports no such field: a `step-finish` part publishes
+  `tokens.cache.read` and `tokens.cache.write` and nothing between them. A miss column
+  would be a column of zeros that looks like a measurement, and `Prompt Total` already
+  occupies the position a second total would want.
+- **M14** The `state` column reads `installed` when there is **no evidence** to the
+  contrary, and that is what it means on the Plugins tab. Usage there is written only by
+  the optional hook (M3), so an installed plugin whose hook has recorded nothing carries
+  exactly the same label as one that was installed and never touched. The label is
+  deliberately about the inventory row, not about usage: nothing in this column is a claim
+  that the thing ran.
 
 ---
 
@@ -472,7 +485,7 @@ opencode-usage-tracker/
 ├── scripts/ocut-tui.py           # Textual TUI (eight tabs)
 ├── scripts/ocut-stats.py         # headless reports (stdlib only)
 ├── scripts/tests/                # pytest suite
-└── docs/maintenance/             # compat matrix · host interface · measurements · format
+└── docs/maintenance/             # compat matrix · host interface · measurements
 ```
 
 ### 🧑💻 Development

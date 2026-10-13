@@ -207,13 +207,15 @@ Recorded so the next reader does not "helpfully" fix them back into a broken sta
 
 ## 7. Known limitations
 
-M1–M12, with reproduction notes:
+M1–M14, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
 [README.md](README.md#-known-limitations).
 The ones most likely to bite during maintenance: **M1** (the host is the source of truth;
 a call it never persisted is invisible), **M3** (plugin usage needs the hook *and* an
 OpenCode restart), **M4** (the scan is best-effort), **M6** (`unparsed` is the format-move
-signal) and **M10** (the sidecar rotates by truncation).
+signal), **M10** (the sidecar rotates by truncation), **M13** (Tokens/Usage carry no cache-miss
+column, because the host publishes no such field) and **M14** (on the Plugins tab the `state`
+label's `installed` means *no evidence*, for the same reason as M3).
 
 ## 8. Deferred — ranked, with why they are not fixed
 
@@ -222,6 +224,7 @@ signal) and **M10** (the sidecar rotates by truncation).
 | Backfill plugin usage for calls the hook missed before it existed | medium | the host names no plugin behind a tool call, so there is nothing to backfill *from*; recovering it would mean guessing an owner |
 | Attribute a plugin command the scan cannot parse | medium | a guessed owner is worse than a missing row (M4); the honest answer is a `0` |
 | Per-model cost charts | small | `sessions.cost` and `model_calls.cost` are the same money counted twice; only one is shown anywhere |
+| `v_plugins` carries `version` / `source` / `path` | small | `q_plugins` has had them all along and the export view does not, so `ocut export` makes a consumer join `inventory` for three fields it could have been handed. Nothing reads the view programmatically yet; fixing it is a schema-visible change to an exported surface, so it waits for a consumer that asks |
 
 ## 9. Rollback
 

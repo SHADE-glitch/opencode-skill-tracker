@@ -374,7 +374,7 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
 
 ## 🚧 已知限制
 
-下面这份清单覆盖 **M1–M12**。
+下面这份清单覆盖 **M1–M14**。
 
 - **M1** OpenCode 自己的数据库是**事实来源**。`ocut` 只看得见宿主写下的东西；宿主从没为某次调用
   写下 `part`，它就是不可见，而不是被记错。
@@ -401,6 +401,13 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
   但没有 inventory 行的插件照样出现。
 - **M12** 备份是手动的、只在破坏性操作之前。**没有 systemd** timer 了；保留策略只留最新五份托管快照，
   从不碰手工副本。
+- **M13** Tokens 与 Usage 两张表**不携带** cache *miss* 列，也**不携带**第二个总计列，因为宿主根本没有
+  这个字段：一条 `step-finish` part 只公布 `tokens.cache.read` 和 `tokens.cache.write`，中间没有东西。
+  补一列 miss 只会得到一整列看起来像测量值的 0；而 `Prompt Total` 已经占了第二个总计本该在的位置。
+- **M14** `state` 列在没有相反**没有证据**时读作 `installed`，在 Plugins 页上这就是它的含义。那一页的
+  用量只有那个可选的 hook 会写（M3），所以「装了、hook 什么也没记到」的插件，与「装了、从没被碰过」的
+  插件拿到的是同一个标签。这个标签刻意只讲 inventory 行，不讲用量：这一列里没有任何一个字在说
+  「它跑过」。
 
 ---
 
@@ -415,7 +422,7 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
 | `scripts/ocut-tui.py` | Textual TUI（八个 tab） |
 | `scripts/ocut-stats.py` | 无头报表（仅标准库） |
 | `scripts/tests/` | pytest 测试 |
-| `docs/maintenance/` | 四份参考：`compatibility.md`（每条说法属于哪个版本）、`opencode-interface.md`（按名字读取的每个宿主名词）、`measurements.md`（任何体积 / 速率 / 时长背后的命令）、`opencode-format.md`（`ocut format` 生成） |
+| `docs/maintenance/` | 三份参考：`compatibility.md`（每条说法属于哪个版本）、`opencode-interface.md`（按名字读取的每个宿主名词）、`measurements.md`（任何体积 / 速率 / 时长背后的命令） |
 | `~/.local/share/opencode-usage-tracker/usage.db` | 主数据库（WAL 模式） |
 | `~/.local/share/opencode-usage-tracker/plugin-events.jsonl` | 插件用量 sidecar |
 

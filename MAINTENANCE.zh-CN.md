@@ -176,12 +176,13 @@ bash -n bin/ocut                                       # 分发器仍能解析
 
 ## 7. 已知限制
 
-M1–M12，含复现说明：
+M1–M14，含复现说明：
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
 [README.md](README.md#-known-limitations)。
 维护时最容易踩到的几条：**M1**（宿主是事实来源，它从没落盘的调用就是不可见）、**M3**（插件用量需要
 hook **以及**一次 OpenCode 重启）、**M4**（扫描是尽力而为的）、**M6**（`unparsed` 是格式变化的信号）、
-**M10**（sidecar 靠截断轮转）。
+**M10**（sidecar 靠截断轮转）、**M13**（Tokens/Usage 不带 cache miss 列，因为宿主不公布这个字段）、
+**M14**（Plugins 页上 `state` 标签的 `installed` 意思是「没有证据」，理由与 M3 同源）。
 
 ## 8. 暂缓——按代价排序，附不做的理由
 
@@ -190,6 +191,7 @@ hook **以及**一次 OpenCode 重启）、**M4**（扫描是尽力而为的）�
 | 回填 hook 存在之前漏掉的插件用量 | 中 | 宿主不标明一次工具调用属于哪个插件，所以没有可回填的**来源**；恢复它等于猜一个归属 |
 | 归属扫描解析不出的插件命令 | 中 | 猜一个归属比缺一行更糟（M4）；诚实的答案是 `0` |
 | 按模型的 cost 图 | 小 | `sessions.cost` 与 `model_calls.cost` 是同一笔钱数两遍；任何地方只显示其中一个 |
+| `v_plugins` 不带 `version` / `source` / `path` | 小 | `q_plugins` 一直都有这三个字段，导出视图没有，于是 `ocut export` 的消费者得自己 join `inventory` 才能拿到本可以直接给的三个字段。目前没有任何程序读这个视图；改它是对一个已导出面的 schema 级改动，等真有消费者来要再做 |
 
 ## 9. 回滚
 
