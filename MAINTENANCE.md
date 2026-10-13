@@ -259,9 +259,10 @@ traps, all of them paid for on this machine:
   `$pipestatus` and is 1-indexed; the bash spelling expands to nothing, so a failed
   `git push` prints `push exit=` — a blank status that reads as though the check had run.
   Take statuses without a pipe.
-- **A tail is not a conclusion.** There is no pytest config in this repo — no `addopts`,
-  no summary line a second `-q` could suppress — so the count is always there: read the
-  last line of the log file, not a fragment of a screen.
+- **A tail is not a conclusion.** There is no output-changing pytest config in this repo — no
+  `addopts`, no summary line a second `-q` could suppress (`scripts/tests/conftest.py` holds
+  fixtures only) — so the count is always there: read the last line of the log file, not a
+  fragment of a screen.
 - **A red-check leaves a canary behind.** Proving a guard can fail means editing the
   implementation or the fixture for a moment, and a moment that survives the edit is a
   fake green. `TEMP-` markers in tracked source are refused by

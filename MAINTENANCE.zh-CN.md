@@ -223,8 +223,8 @@ git revert <sha>          # 优先 revert 而不是 reset；套件必须保持�
 - **`${PIPESTATUS[0]}` 是 bash。** 本项目由 **zsh** 驱动，那里的数组是 `$pipestatus` 且从 1 开始；
   bash 写法会展开成空，于是失败的 `git push` 打印出 `push exit=`——一个看起来像检查跑过了的空白状态。
   取状态时不要接管道。
-- **`tail` 不是结论。** 本仓库没有 pytest 配置——没有 `addopts`，没有第二个 `-q` 能压掉的摘要行——
-  所以计数总是在：读日志文件的最后一行，而不是屏幕的片段。
+- **`tail` 不是结论。** 本仓库没有会改变输出的 pytest 配置——没有 `addopts`，没有第二个 `-q` 能压掉的摘要行
+  （`scripts/tests/conftest.py` 只放 fixture）——所以计数总是在：读日志文件的最后一行，而不是屏幕的片段。
 - **一次 red-check 会留下金丝雀。** 证明一个守卫能失败，意味着要临时改实现或 fixture 一下，而这一下
   如果活过了编辑，就是一个假绿。被跟踪源码里的 `TEMP-` 标记会被
   `test_no_canary_or_scratch_marker_survives_in_tracked_source` 拒绝。恢复靠重读文件，而不是相信最后
