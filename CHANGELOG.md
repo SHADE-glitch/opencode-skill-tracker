@@ -1150,3 +1150,44 @@ Cost     `--db` is now declared twice (top level and each subparser); the subpar
          default must stay SUPPRESS or the top-level value is clobbered, and that trap
          is silent.
 Commit   ef49533
+
+### D-064 · 2026-10-13 · fix
+Symptom  Quitting the TUI (`q`) could hang until an in-flight sync finished, and Ctrl+C
+         during that wait printed a KeyboardInterrupt traceback out of
+         `shutdown_default_executor`. Textual runs a thread worker on the event loop's
+         default executor (`textual/worker.py`: `loop.run_in_executor(None, …)`), and
+         `asyncio.run()` joins that executor before `app.run()` returns — so a sync
+         started with `r` (or the 30 s auto-sync) that was still running at quit blocked
+         the exit for as long as it took. Reproduced in a pty: `r` then `q` left the
+         process alive past 8 s.
+Change   Run the sync in a daemon thread the interpreter never joins
+         (`threading.Thread(..., name="ocut-sync", daemon=True)`) instead of
+         `run_worker(..., thread=True)`; hand the result back through a guarded
+         `call_from_thread` (`_post_sync`, dropping the RuntimeError once the loop is
+         gone) and skip the UI refresh in `_on_sync_done` when the app is no longer
+         running. A sync abandoned at exit is safe: its cursor advances only on a
+         finished pass, so the next sync re-reads what this one did not finish.
+Evidence `scripts/tests/test_ocut_tui.py::test_the_sync_runs_in_a_daemon_thread_so_quitting_never_waits`
+         (new) pins the thread name and the daemon flag; the file re-run green, 10 passed.
+         Real pty: `r`+`q` three times, each `EXIT=0` in ~0.5–1 s, no traceback.
+Cost     The sync thread is no longer tracked by Textual's worker manager, so nothing
+         cancels it; a sync in flight at exit is abandoned and its transaction rolls back.
+Commit   543a46f
+
+### D-065 · 2026-10-13 · fix
+Symptom  Once installed, the hook scanned its own file and advertised a tool it does not
+         own: `localPluginSpecs()` enumerates `~/.config/opencode/plugin/*.js`, exactly
+         where `install.sh` puts `ocut-hook.js`, and the hook's own source carries the
+         literal `tool:{ … { compress: … } }` in a comment explaining the scan. The
+         shape-based scanner read that as a real `compress` tool, so the Plugins tab
+         listed `ocut-hook.js` as declaring `compress`.
+Change   Exclude the hook by name: `PLUGIN_EXCLUDE_DEFAULT` gains `ocut-hook` alongside
+         `opencode-notifier`, so its own spec yields an empty surface.
+Evidence `scripts/tests/test_ocut_hook.py::test_the_hook_does_not_attribute_its_own_source`
+         (new) installs the hook into the scanned plugin dir and asserts its surface is
+         empty; the file re-run green, 4 passed. Re-run against the real config: the
+         `ocut-hook.js` surface is now `tools=[]`, while DCP and claude-mem are unchanged.
+Cost     A real plugin whose file name contains `ocut-hook` would be skipped; none is
+         known, and the alternative — resolving the module's own realpath — is defeated
+         by the install being a symlink.
+Commit   530a45d
