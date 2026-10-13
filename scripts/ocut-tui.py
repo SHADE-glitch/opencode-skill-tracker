@@ -15,6 +15,7 @@ import argparse
 import importlib.util
 import sqlite3
 import sys
+import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -2200,22 +2201,51 @@ if HAVE_TEXTUAL:
                 self._sync_pending = True
                 return
             self._sync_running = True
-            self.run_worker(self._do_sync, thread=True, group="sync")
+            # A plain daemon thread, NOT a Textual thread worker. Textual runs a
+            # thread worker on the event loop's default executor
+            # (`textual/worker.py`: `loop.run_in_executor(None, …)`), and
+            # `asyncio.run()`'s teardown joins that executor before `app.run()`
+            # returns. A sync still in flight when the user quits then blocks the
+            # exit for as long as the sync runs — pressing `r` and then `q` hung
+            # the app, and Ctrl+C surfaced a KeyboardInterrupt traceback out of
+            # `shutdown_default_executor`. A daemon thread is not in that
+            # executor, so `q` never waits on a sync; it is abandoned at exit,
+            # and the sync is idempotent (its cursor advances only on a finished
+            # pass), so the next run recovers anything this one did not finish.
+            threading.Thread(target=self._do_sync, name="ocut-sync",
+                             daemon=True).start()
 
         def _do_sync(self) -> None:
-            # Runs in a worker thread. ocut-sync.run() opens its own RW
+            # Runs in a daemon thread. ocut-sync.run() opens its own RW
             # connection and uses the incremental sync_state table, so no
             # connection is shared across threads.
             try:
                 if self.sync_mod is None:
                     self.sync_mod = db.load_sync()
                 stats = self.sync_mod.run(quiet=True, db_path=self.db_path)
-                self.call_from_thread(self._on_sync_done, True, stats, None)
+                self._post_sync(True, stats, None)
             except Exception as e:  # report, never swallow
-                self.call_from_thread(self._on_sync_done, False, None, str(e))
+                self._post_sync(False, None, str(e))
+
+        def _post_sync(self, ok: bool, stats, err) -> None:
+            # Hand the result back to the UI thread. The app may already be
+            # closing — `call_from_thread` raises RuntimeError once the loop is
+            # gone, and a sync that lands after the last screen is torn down has
+            # nothing left to update, so drop it rather than let a daemon thread
+            # raise into stderr on the way out.
+            try:
+                self.call_from_thread(self._on_sync_done, ok, stats, err)
+            except RuntimeError:
+                pass
 
         def _on_sync_done(self, ok: bool, stats, err) -> None:
             self._sync_running = False
+            # A sync can land after the app began closing (the worker is a
+            # daemon, so nothing joins it). The timers guard on is_running for
+            # the same reason: refreshing torn-down widgets would raise
+            # NoMatches from inside a callback that can no longer be seen.
+            if not self.is_running:
+                return
             # The indexer names an unreadable host database inside its status dict
             # (`ok: False`, no exception), so both spellings of failure count here.
             if ok and (stats or {}).get("ok", True):

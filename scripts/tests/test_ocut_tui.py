@@ -14,6 +14,7 @@ import importlib.util
 import json
 import sqlite3
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -491,3 +492,43 @@ def test_no_http_is_reachable_while_the_tui_paints(tracker, monkeypatch):
         await pilot.pause(0.4)
     drive(lambda: tui.TrackerApp(str(tracker)), body)
     assert hits == [], hits
+
+
+def test_the_sync_runs_in_a_daemon_thread_so_quitting_never_waits(tmp_path):
+    """`q` must never block on an in-flight sync.
+
+    Textual runs a thread worker on the event loop's default executor
+    (`textual/worker.py`: ``loop.run_in_executor(None, …)``), and ``asyncio.run()``
+    joins that executor before ``app.run()`` returns. So a sync still running when
+    the user quits blocks the exit for as long as the sync takes — measured on this
+    machine: ``r`` then ``q`` hung the app, and Ctrl+C produced a
+    ``KeyboardInterrupt`` traceback out of ``shutdown_default_executor``. The sync
+    therefore runs in a daemon thread, which the interpreter never joins.
+    """
+    host = tmp_path / "opencode.db"
+    build_host(host)
+    cfg = build_config(tmp_path / "cfg")
+    out = tmp_path / "usage.db"
+    db.load_sync().run(db_path=out, host_db=host, host_config=cfg, quiet=True)
+    seen = {}
+
+    class _RecordingSync:
+        def run(self, **kwargs):
+            t = threading.current_thread()
+            seen["name"], seen["daemon"] = t.name, t.daemon
+            return {"ok": True, "parts_read": 0}
+
+    async def body(pilot, app):
+        app.sync_mod = _RecordingSync()
+        await pilot.press("r")
+        for _ in range(400):
+            if "name" in seen:
+                break
+            await asyncio.sleep(0.01)
+
+    drive(lambda: tui.TrackerApp(str(out)), body)
+    assert seen.get("name") == "ocut-sync", (
+        "the sync did not run in the named daemon thread; it may be back on "
+        f"Textual's default executor, which blocks quit: {seen!r}")
+    assert seen.get("daemon") is True, (
+        "the sync thread must be a daemon, or quitting waits for it")
