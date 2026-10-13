@@ -124,6 +124,37 @@ def test_the_hook_records_a_surface_and_only_plugin_owned_calls(tmp_path):
 
 
 @requires_bun
+def test_the_hook_does_not_attribute_its_own_source(tmp_path):
+    """The installed hook sits in the plugin dir it scans; it must not read itself.
+
+    `localPluginSpecs()` enumerates `~/.config/opencode/plugin/*.js`, which after
+    `install.sh` includes `ocut-hook.js` itself. Its source carries the literal
+    `tool:{ … { compress: … } }` in a comment (explaining the scan), and the
+    shape-based scanner read that as a real `compress` tool — so the hook
+    advertised a tool it does not own. It is excluded by name.
+    """
+    cfg = fixture_cfg(tmp_path)
+    # Put the hook where OpenCode installs it: the plugin dir the scan enumerates.
+    hook_dir = cfg / "plugin"
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    (hook_dir / "ocut-hook.js").write_text(PLUGIN.read_text(encoding="utf-8"))
+    sidecar, env = env_for(tmp_path, cfg)
+    r = run_bun(
+        "const m = await import(process.env.PLUGIN_PATH);"
+        "await m.default.server({ directory: process.env.OCUT_OPENCODE_CONFIG });"
+        "console.log('OK');",
+        env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    surfaces = [x for x in records(sidecar) if x["t"] == "surface"]
+    assert any(s["plugin"].endswith("ocut-hook.js") for s in surfaces), \
+        f"the hook's own file was not scanned, so this test proves nothing: {surfaces}"
+    for s in surfaces:
+        if s["plugin"].endswith("ocut-hook.js"):
+            assert s["tools"] == [] and s["commands"] == [], (
+                f"the hook attributed its own source: {s}")
+
+
+@requires_bun
 def test_disable_turns_the_hook_into_a_no_op(tmp_path):
     """`OCUT_HOOK_DISABLE=1` is the off switch, and it writes nothing."""
     cfg = fixture_cfg(tmp_path)
