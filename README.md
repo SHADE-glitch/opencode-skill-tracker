@@ -10,8 +10,10 @@
 
 Record and query how every skill, **every MCP tool** and **every plugin tool /
 command** in [OpenCode](https://opencode.ai) is actually used: what ran, when,
-whether it succeeded, how long it took, and in which project. Everything lands in
-a single local SQLite file — no network, no upload, no conversation content.
+whether it succeeded, how long it took, and in which project. Usage is captured two
+ways — **live**, by an OpenCode plugin that hooks the tool lifecycle as calls happen,
+or **passively**, by syncing OpenCode's own database — and everything lands in a
+single local SQLite file: no network, no upload, no conversation content.
 
 ---
 

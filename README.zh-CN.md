@@ -9,7 +9,7 @@
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
 记录并查询 OpenCode 里每个 skill、**MCP 工具和插件工具/命令**的使用情况：谁被调用、什么时候、成功还是失败、耗时多久、属于哪个项目。
-数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
+采集有两种方式——**实时**由 OpenCode 插件 hook 工具生命周期，或**被动**同步 OpenCode 自己的数据库——数据全部落在本地一个 SQLite 文件里，不联网、不上传、不记录对话内容。
 
 > **本仓库的安装方式见 [README.md](README.md)（英文）。** 本仓库是唯一来源，
 > `~/.config/opencode/{plugin/skill-tracker.js,scripts,skill-tracker}` 与
