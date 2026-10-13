@@ -128,6 +128,29 @@ def clock(tracker):
     return lambda: pinned
 
 
+@pytest.fixture
+def hooked_tracker(tmp_path):
+    """The same host + config, plus a hook sidecar — plugin usage that is real."""
+    host = tmp_path / "opencode.db"
+    build_host(host)
+    cfg = build_config(tmp_path / "cfg")
+    events = tmp_path / "plugin-events.jsonl"
+    events.write_text("\n".join(json.dumps(r) for r in (
+        {"t": "surface", "plugin": "@acme/demo-plugin@1.2.3",
+         "tools": ["compress"], "commands": ["dcp-compress"]},
+        {"t": "call", "ts": tui_tests.now_ms() - 1_000, "sid": "ses_alpha",
+         "cid": "c1", "plugin": "@acme/demo-plugin@1.2.3", "kind": "tool",
+         "item": "compress", "status": None, "ms": 5},
+        {"t": "call", "ts": tui_tests.now_ms() - 500, "sid": "ses_alpha",
+         "cid": "cmd:ses_alpha:1", "plugin": "@acme/demo-plugin@1.2.3",
+         "kind": "command", "item": "dcp-compress", "status": None, "ms": None},
+    )) + "\n")
+    out = tmp_path / "usage.db"
+    db.load_sync().run(db_path=out, host_db=host, host_config=cfg,
+                       plugin_events=events, quiet=True)
+    return out
+
+
 def make_app(tracker, clock=None):
     return lambda: (tui.TrackerApp(str(tracker)) if clock is None
                     else tui.TrackerApp(str(tracker), clock=clock))
@@ -274,6 +297,31 @@ def test_the_plugins_row_opens_a_screen_that_names_the_missing_evidence(tracker,
         assert hist.row_count == 1, rows_of(hist)
         assert "recorded by the hook" in str(hist.get_cell_at((0, 0)))
     tui_tests.drive(make_app(tracker, clock), body)
+
+
+def test_the_plugins_row_opens_the_hooks_own_record(hooked_tracker):
+    """With a sidecar, the plugin row opens a call from plugin_usage, not tool_calls.
+
+    Two levels below the tab: the history lists the hook's tool + command, and each
+    row opens a "plugin" detail — our own record, keyed by plugin_usage.call_id. The
+    host names no plugin, so there is no tool_calls row to open instead.
+    """
+    async def body(pilot, app):
+        await tui_tests.activate(app, pilot, "tab-plugins")
+        table = app.query_one("#t-plugins", DataTable)
+        assert table.row_count == 1, rows_of(table)
+        assert str(table.get_cell_at((0, 2))) == "2", rows_of(table)   # uses
+        screen = await open_row(app, pilot, "#t-plugins", 0)
+        assert isinstance(screen, tui.HistoryScreen), type(screen)
+        hist = screen.query_one("#hist-table", DataTable)
+        assert hist.row_count == 2, rows_of(hist)
+        assert {str(hist.get_cell_at((i, 1))) for i in range(2)} == {"tool",
+                                                                     "command"}
+        detail = await open_row(app, pilot, "#hist-table", 0)
+        assert isinstance(detail, tui.CallDetailScreen), type(detail)
+        text = "\n".join(str(w.content) for w in detail.query(Static))
+        assert "compress" in text, text
+    tui_tests.drive(make_app(hooked_tracker), body)
 
 
 # --- level two: the call the row points at ---------------------------------

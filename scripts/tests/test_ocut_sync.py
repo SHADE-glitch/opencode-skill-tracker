@@ -781,6 +781,159 @@ def test_an_uninstalled_entity_loses_its_inventory_row(tmp_path, tracker):
         ["context7"]
 
 
+# --- the plugin-usage sidecar ----------------------------------------------
+
+def plugin_host(tmp_path, plugins):
+    """A host + config, so a sidecar test has somewhere for a plugin to live."""
+    path = tmp_path / "opencode.db"
+    conn = make_host(path)
+    conn.commit()
+    conn.close()
+    cfg = tmp_path / "cfg"
+    make_config(cfg, plugins=plugins)
+    return path, cfg
+
+
+def sidecar(tmp_path, *records):
+    """Write the hook's JSONL sidecar. A record is a dict or a raw line."""
+    path = tmp_path / "plugin-events.jsonl"
+    path.write_text("\n".join(
+        r if isinstance(r, str) else json.dumps(r) for r in records) + "\n")
+    return path
+
+
+def test_a_surface_record_becomes_hook_owned_inventory_rows(tmp_path, tracker):
+    """A passive scan cannot name a plugin's own tools; the hook reports them.
+
+    A `surface` record is folded into `inventory` as kind='tool'/'command' with the
+    plugin as owner — the only place the tracker ever learns those names.
+    """
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    events = sidecar(tmp_path, {
+        "t": "surface", "plugin": "@acme/demo-plugin@1.2.3",
+        "tools": ["compress"], "commands": ["dcp-compress"]})
+    sync.run(db_path=tracker, host_db=host, host_config=cfg,
+             plugin_events=events, quiet=True)
+    owned = rows(tracker, "inventory", "owner_plugin='demo-plugin'")
+    assert {(r["kind"], r["name"], r["source"]) for r in owned} == {
+        ("tool", "compress", "hook"), ("command", "dcp-compress", "hook")}
+
+
+def test_a_call_record_feeds_plugin_usage_and_q_plugins(tmp_path, tracker):
+    """A `call` record becomes one plugin_usage row, and `q_plugins().uses` counts it."""
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    events = sidecar(tmp_path, {
+        "t": "surface", "plugin": "@acme/demo-plugin@1.2.3",
+        "tools": ["compress"], "commands": ["dcp-compress"]},
+        {"t": "call", "ts": 1_700_000_300_000, "sid": "ses_parent", "cid": "c1",
+         "plugin": "@acme/demo-plugin@1.2.3", "kind": "tool", "item": "compress",
+         "status": None, "ms": 4},
+        {"t": "call", "ts": 1_700_000_400_000, "sid": "ses_parent",
+         "cid": "cmd:ses_parent:1700000400000", "plugin": "@acme/demo-plugin@1.2.3",
+         "kind": "command", "item": "dcp-compress", "status": None, "ms": None})
+    stats = sync.run(db_path=tracker, host_db=host, host_config=cfg,
+                     plugin_events=events, quiet=True)
+    assert stats["plugin_events"]["calls"] == 2
+    assert stats["rows_plugin_usage"] == 2
+    assert {(r["kind"], r["item"]) for r in rows(tracker, "plugin_usage")} == {
+        ("tool", "compress"), ("command", "dcp-compress")}
+    conn = db.open_db(tracker)
+    try:
+        plug = next(r for r in db.q_plugins(conn) if r["plugin"] == "demo-plugin")
+    finally:
+        conn.close()
+    assert plug["uses"] == 2
+    assert plug["commands"] == 1      # the command surface the hook reported
+
+
+def test_the_hook_name_is_shortened_so_one_plugin_lists_once(tmp_path, tracker):
+    """The hook spells `@scope/pkg@1.2.3`; the inventory shortens to `pkg`.
+
+    Without the fold the Plugins tab would list the plugin twice — once with the
+    hook's usage and once, empty, from the config.
+    """
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    events = sidecar(tmp_path, {
+        "t": "call", "ts": 1_700_000_300_000, "sid": "ses_parent", "cid": "c1",
+        "plugin": "@acme/demo-plugin@1.2.3", "kind": "tool", "item": "compress",
+        "status": None, "ms": 1})
+    sync.run(db_path=tracker, host_db=host, host_config=cfg,
+             plugin_events=events, quiet=True)
+    conn = db.open_db(tracker)
+    try:
+        names = [r["plugin"] for r in db.q_plugins(conn)]
+    finally:
+        conn.close()
+    assert names.count("demo-plugin") == 1, names
+
+
+def test_a_surface_survives_the_next_syncs_inventory_rewrite(tmp_path, tracker):
+    """scan_inventory DELETEs `inventory` every run; the hook's rows have to return."""
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    events = sidecar(tmp_path, {
+        "t": "surface", "plugin": "@acme/demo-plugin@1.2.3",
+        "tools": ["compress"], "commands": []})
+    sync.run(db_path=tracker, host_db=host, host_config=cfg,
+             plugin_events=events, quiet=True)
+    assert rows(tracker, "inventory", "source='hook'")
+    # A second run reads no new events (the cursor moved), and the rewrite must not
+    # have dropped the tool row.
+    stats = sync.run(db_path=tracker, host_db=host, host_config=cfg,
+                     plugin_events=events, quiet=True)
+    assert stats["plugin_events"]["events"] == 0
+    assert [r["name"] for r in rows(
+        tracker, "inventory", "kind='tool' AND owner_plugin='demo-plugin'")] \
+        == ["compress"]
+
+
+def test_a_missing_sidecar_is_not_an_error(tmp_path, tracker):
+    """The hook may never have run; that is an empty plugin list, not a failure."""
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    stats = sync.run(db_path=tracker, host_db=host, host_config=cfg,
+                     plugin_events=tmp_path / "absent.jsonl", quiet=True)
+    assert stats["ok"] is True
+    assert stats["plugin_events"]["events"] == 0
+    assert rows(tracker, "plugin_usage") == []
+
+
+def test_a_truncated_sidecar_is_reread_from_the_start(tmp_path, tracker):
+    """The hook caps and rotates its file; a shorter file means "start over"."""
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    events = sidecar(tmp_path, {
+        "t": "call", "ts": 1_700_000_300_000, "sid": "ses_parent", "cid": "c1",
+        "plugin": "@acme/demo-plugin@1.2.3", "kind": "tool", "item": "compress",
+        "status": None, "ms": 1}, {
+        "t": "call", "ts": 1_700_000_400_000, "sid": "ses_parent", "cid": "c2",
+        "plugin": "@acme/demo-plugin@1.2.3", "kind": "tool", "item": "compress",
+        "status": None, "ms": 2})
+    sync.run(db_path=tracker, host_db=host, host_config=cfg,
+             plugin_events=events, quiet=True)
+    assert {r["call_id"] for r in rows(tracker, "plugin_usage")} == {"c1", "c2"}
+    # Rotated: a fresh, strictly shorter file. The cursor is past its end, so it
+    # resets to 0 and the one record is read — rather than being skipped as "already
+    # seen" because the offset happened to land past the new EOF.
+    events.write_text(json.dumps({
+        "t": "call", "ts": 1_700_000_500_000, "sid": "ses_parent", "cid": "c3",
+        "plugin": "@acme/demo-plugin@1.2.3", "kind": "tool", "item": "compress",
+        "status": None, "ms": 3}) + "\n")
+    stats = sync.run(db_path=tracker, host_db=host, host_config=cfg,
+                     plugin_events=events, quiet=True)
+    assert stats["plugin_events"]["calls"] == 1
+    assert {r["call_id"] for r in rows(tracker, "plugin_usage")} == {"c1", "c2", "c3"}
+
+
+def test_an_unparseable_sidecar_line_is_counted_not_skipped(tmp_path, tracker):
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    events = sidecar(tmp_path, {
+        "t": "call", "ts": 1_700_000_300_000, "sid": "ses_parent", "cid": "c1",
+        "plugin": "@acme/demo-plugin@1.2.3", "kind": "tool", "item": "compress",
+        "status": None, "ms": 1}, "not json at all")
+    stats = sync.run(db_path=tracker, host_db=host, host_config=cfg,
+                     plugin_events=events, quiet=True)
+    assert stats["unparsed_this_run"] == 1
+    assert stats["plugin_events"]["calls"] == 1
+
+
 # --- the host file itself --------------------------------------------------
 
 def test_a_missing_host_db_is_an_explicit_failure_not_an_empty_success(tmp_path):
