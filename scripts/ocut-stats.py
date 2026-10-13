@@ -490,20 +490,35 @@ def main(argv=None) -> int:
     ap.add_argument("--db", default=str(db.DB_PATH))
     sub = ap.add_subparsers(dest="cmd")
 
+    def sub_with_db(name, **kw):
+        """A subparser that also accepts the global ``--db`` AFTER the subcommand.
+
+        ``bin/ocut`` always places the subcommand first (argparse requires it there
+        for the subparser to match), so a ``--db`` given *before* the subcommand
+        ends up *after* it — and without this the flag is rejected. The top-level
+        ``--db`` stays for direct `python3 ocut-stats.py --db X stats` use.
+        ``default=argparse.SUPPRESS`` is load-bearing: a plain default here would
+        clobber the top-level value with ``DB_PATH`` whenever ``--db`` was given
+        only up front.
+        """
+        p = sub.add_parser(name, **kw)
+        p.add_argument("--db", default=argparse.SUPPRESS)
+        return p
+
     for name in ("stats", "health", "plugins", "inventory", "export"):
-        p = sub.add_parser(name)
+        p = sub_with_db(name)
         p.add_argument("--kind", default=None, help="inventory only: filter by kind")
     for name in ("tools", "skills", "agents", "mcp", "recent", "models"):
-        sub.add_parser(name).add_argument("--limit", type=int, default=30)
-    sp = sub.add_parser("show")
+        sub_with_db(name).add_argument("--limit", type=int, default=30)
+    sp = sub_with_db("show")
     sp.add_argument("kind", choices=["tool", "skill", "agent", "mcp"])
     sp.add_argument("name")
     sp.add_argument("--limit", type=int, default=50)
-    sub.add_parser("backup", help="snapshot the database before a risky step")
-    rp = sub.add_parser("restore", help="restore a snapshot (omit NAME to list)")
+    sub_with_db("backup", help="snapshot the database before a risky step")
+    rp = sub_with_db("restore", help="restore a snapshot (omit NAME to list)")
     rp.add_argument("name", nargs="?", default=None)
-    fp = sub.add_parser("format",
-                        help="print the OpenCode format-dependency surface")
+    fp = sub_with_db("format",
+                     help="print the OpenCode format-dependency surface")
     fp.add_argument("--write", action="store_true",
                     help="refresh the generated block in docs/maintenance/")
 

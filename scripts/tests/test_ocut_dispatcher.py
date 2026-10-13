@@ -255,3 +255,24 @@ def test_bash_is_not_strict_about_unset_array_elements(scripts):
     r = run("health", scripts=scripts)
     assert r.returncode == 0, r.stderr
     assert "unbound variable" not in r.stderr, r.stderr
+
+
+def test_db_survives_being_placed_after_the_subcommand(tmp_path):
+    """`bin/ocut` always puts the subcommand first, so `--db` must work after it.
+
+    The dispatcher execs `ocut-stats.py <subcommand> <rest…>`, so a `--db` typed
+    before the subcommand is re-emitted *after* it. While `--db` was only a
+    top-level argument, argparse rejected it there and `ocut --db X stats` failed
+    with "unrecognized arguments" — a real break the stub-based routing tests above
+    cannot see, because they never run the real parser. Both orders are checked,
+    against the real script, by proving the value reached the parser: a missing
+    database is named with the path that was passed.
+    """
+    script = REPO / "scripts" / "ocut-stats.py"
+    missing = tmp_path / "nope.db"
+    for argv in (["stats", "--db", str(missing)],
+                 ["--db", str(missing), "stats"]):
+        r = subprocess.run([sys.executable, str(script), *argv],
+                           capture_output=True, text=True, timeout=30)
+        assert r.returncode == 1, (argv, r.returncode, r.stdout, r.stderr)
+        assert f"no database at {missing}" in r.stderr, (argv, r.stderr)
