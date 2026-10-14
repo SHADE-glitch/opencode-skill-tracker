@@ -176,13 +176,13 @@ bash -n bin/ocut                                       # 分发器仍能解析
 
 ## 7. 已知限制
 
-M1–M14，含复现说明：
+M1–M16，含复现说明：
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
 [README.md](README.md#-known-limitations)。
 维护时最容易踩到的几条：**M1**（宿主是事实来源，它从没落盘的调用就是不可见）、**M3**（插件用量需要
 hook **以及**一次 OpenCode 重启）、**M4**（扫描是尽力而为的）、**M6**（`unparsed` 是格式变化的信号）、
 **M10**（sidecar 靠截断轮转）、**M13**（Tokens/Usage 不带 cache miss 列，因为宿主不公布这个字段）、
-**M14**（Plugins 页上 `state` 标签的 `installed` 意思是「没有证据」，理由与 M3 同源）。
+**M14**（Plugins 页上 `state` 标签的 `installed` 意思是「没有证据」，理由与 M3 同源）、**M15**（Tools 与 Agents 上缺 inventory 行读 `not reported` 而不是 `removed`，因为不把宿主跑起来就枚举不到内置目录）、**M16**（只读两个全局外部技能根，项目级的没读）。
 
 ## 8. 暂缓——按代价排序，附不做的理由
 

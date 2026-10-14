@@ -414,7 +414,7 @@ is the deliberate act.
 
 ## 🚧 Known limitations
 
-The list below runs **M1–M14**. The Chinese README carries the same list with more
+The list below runs **M1–M16**. The Chinese README carries the same list with more
 detail in [§9](README.zh-CN.md#-9-已知限制).
 
 - **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
@@ -451,6 +451,22 @@ detail in [§9](README.zh-CN.md#-9-已知限制).
 - **M12** Backups are manual and pre-destructive only. There is **no systemd** timer any
   more; retention keeps the newest five managed snapshots and never touches hand-made
   copies.
+- **M15** The `state` column has four labels, and the fourth means **no evidence**.
+  OpenCode's builtin tool and agent ids live in its compiled registry: there is no
+  file on disk that enumerates them, and the API that would answer needs the server
+  running. So on Tools and Agents, a name with history and no inventory row reads
+  `not reported`, not `removed` — this reader will not call a builtin deleted. On
+  Skills, Plugins and MCP the inventory is a complete census, so `removed` there
+  means what it says.
+- **M16** Only the two **global** external skill roots are read:
+  `~/.claude/skills` and `~/.agents/skills`. OpenCode also loads skills from each
+  project — `.claude/` and `.agents/` walked from a session's directory up to its
+  worktree root — plus `~/.opencode`, `$OPENCODE_CONFIG_DIR` and the
+  `skills.paths` / `skills.urls` config keys. None of those are inventoried: the
+  first needs a session directory to start from and the last downloads something
+  this reader does not do. A skill installed only at project level therefore does
+  not appear as installed. Put shared skills in one of the two roots above and they
+  will.
 - **M13** The Tokens and Usage lists **does not carry** a cache-*miss* column or a second
   grand total, because the host reports no such field: a `step-finish` part publishes
   `tokens.cache.read` and `tokens.cache.write` and nothing between them. A miss column

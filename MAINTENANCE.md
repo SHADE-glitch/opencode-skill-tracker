@@ -207,7 +207,7 @@ Recorded so the next reader does not "helpfully" fix them back into a broken sta
 
 ## 7. Known limitations
 
-M1–M14, with reproduction notes:
+M1–M16, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
 [README.md](README.md#-known-limitations).
 The ones most likely to bite during maintenance: **M1** (the host is the source of truth;
@@ -215,7 +215,10 @@ a call it never persisted is invisible), **M3** (plugin usage needs the hook *an
 OpenCode restart), **M4** (the scan is best-effort), **M6** (`unparsed` is the format-move
 signal), **M10** (the sidecar rotates by truncation), **M13** (Tokens/Usage carry no cache-miss
 column, because the host publishes no such field) and **M14** (on the Plugins tab the `state`
-label's `installed` means *no evidence*, for the same reason as M3).
+label's `installed` means *no evidence*, for the same reason as M3), **M15** (on Tools and
+Agents, a missing inventory row reads `not reported` rather than `removed`, because the
+builtins cannot be enumerated without running the host) and **M16** (only the two global
+external skill roots are read; project-level ones are not).
 
 ## 8. Deferred — ranked, with why they are not fixed
 

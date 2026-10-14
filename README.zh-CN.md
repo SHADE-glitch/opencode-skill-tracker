@@ -374,7 +374,7 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
 
 ## 🚧 已知限制
 
-下面这份清单覆盖 **M1–M14**。
+下面这份清单覆盖 **M1–M16**。
 
 - **M1** OpenCode 自己的数据库是**事实来源**。`ocut` 只看得见宿主写下的东西；宿主从没为某次调用
   写下 `part`，它就是不可见，而不是被记错。
@@ -401,6 +401,16 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
   但没有 inventory 行的插件照样出现。
 - **M12** 备份是手动的、只在破坏性操作之前。**没有 systemd** timer 了；保留策略只留最新五份托管快照，
   从不碰手工副本。
+- **M15** `state` 列有四个标签，第四个的意思是**没有证据**。OpenCode 的内置工具与内置 agent id
+  存在于它编译后的注册表里：磁盘上没有任何文件能枚举它们，而能回答的 API 需要把 server 跑起来。
+  所以在 Tools 与 Agents 上，一个「有历史、但没有 inventory 行」的名字读作 `not reported`，而不是
+  `removed` —— 这个读取器不会把一个内置工具说成被删了。在 Skills / Plugins / MCP 上 inventory 是
+  完整普查，所以那里的 `removed` 就是字面意思。
+- **M16** 只读**全局**的两个外部技能根：`~/.claude/skills` 与 `~/.agents/skills`。OpenCode 还会
+  从每个项目加载技能 —— 从会话目录一路向上走到 worktree 根的 `.claude/` 与 `.agents/` —— 外加
+  `~/.opencode`、`$OPENCODE_CONFIG_DIR` 和 `skills.paths` / `skills.urls` 配置键。这些**没有**进入
+  inventory：前一组需要一个会话目录作为起点，后一组要下载东西，而这个读取器不下载。只装在项目层
+  的技能因此不会显示为已安装。把共享技能放进上面两个根之一就会被认到。
 - **M13** Tokens 与 Usage 两张表**不携带** cache *miss* 列，也**不携带**第二个总计列，因为宿主根本没有
   这个字段：一条 `step-finish` part 只公布 `tokens.cache.read` 和 `tokens.cache.write`，中间没有东西。
   补一列 miss 只会得到一整列看起来像测量值的 0；而 `Prompt Total` 已经占了第二个总计本该在的位置。
