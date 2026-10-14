@@ -1244,3 +1244,63 @@ Cost     `threading` is deliberately not forbidden and the file says so where a 
          import. The module does not cover the hook, which runs inside the host process and has its
          own contract in `test_ocut_hook.py`.
 Commit   9839bd3
+### D-068 · 2026-10-14 · fix
+Symptom  The `state` column introduced two commits earlier was wrong about most of what it had
+         to say. Every Skills row read `removed` on a machine carrying 27 installed skills in
+         `~/.agents/skills`; 39 of 40 Tools rows read `removed` for tools being used at that
+         moment. Two unrelated mechanisms behind one label, and the second is the worse half: a
+         builtin tool id lives in the host's compiled registry, a builtin agent id in an object
+         literal inside it, and no file on disk enumerates either. The host's skill discovery
+         pushes `[".claude", ".agents"]` and globs `<root>/skills/**/SKILL.md` under `$HOME`
+         *before* it reads its own config home at all; this reader read only the config home,
+         which here is empty — so the panel was not a narrower version of the truth, it was an
+         inverted one.
+Change   Both external roots are read now, with the host's own semantics: dotfiles included and
+         symlinked directories followed, which `pathlib`'s `**` does not do, so the walk is by
+         hand behind a resolved-path set — the same set that turns a symlink pointing at its own
+         ancestor into a return rather than a hang. Both runtime flags are honoured, since a root
+         the host is told to ignore must not be inventoried either. The second mechanism cannot
+         be fixed by reading harder, so the label gained a fourth state instead of a wrong one:
+         `db.ENTITY_CENSUS` records which kinds were actually enumerated, and a tool or agent
+         with no inventory row reads `not reported`. It only ever weakens a *negative* answer —
+         a census can turn `removed` into "we do not know", never into a positive claim nobody
+         made — and `skill`/`plugin`/`mcp` stay enumerated, so `removed` keeps its literal
+         meaning on those tabs. Two smaller corrections came out of the same investigation: MCP
+         tools are reconciled against the configured servers (a server's tool stopped reading
+         `removed` while the server beside it read `installed`), and the one skill the host
+         serves out of its own binary — registered before any scan, never written to disk — is
+         inventoried, so it is not the single remaining `removed` on a machine where nothing
+         was uninstalled. `entity_state()` takes the kind as a **required** argument: a default
+         would let a front end keep rendering the old three states with no test noticing.
+Evidence `python3 -m pytest scripts/tests -q` 316 passed (3 subtests), run with the final content
+         of this entry in the tree. Provoked for real, nine times: deleting the external-root
+         loop turns six cases red; making the walk skip symlinks turns
+         `test_a_symlinked_skill_directory_is_followed` red; deleting the MCP reconciliation
+         turns `test_a_tool_of_a_configured_server_is_inventoried` red; ignoring the runtime
+         flags turns both disabling cases red; dropping `dot: true` turns
+         `test_a_dot_directory_in_an_external_root_is_a_skill` red; marking every kind censused
+         turns three red; removing the builtin-skill row turns two red; and each of M15's and
+         M16's two keywords turns its README case red when the word is replaced.
+         L1, real logs into a throwaway store (`/tmp`, the real `usage.db` untouched), reported
+         per table because a regression in a table nobody expected to move stays invisible
+         otherwise. `inventory` 19 → 62: `skill agents-skills-dir 27`, `skill builtin 1`,
+         `tool mcp 15`, beside the 18 rows already there. Every other table is unchanged by this
+         change — it writes only `inventory` — and the growth visible in `tool_calls` (+430),
+         `model_calls` (+359), `sessions` (+3), `agent_usage` (+3) and `plugin_usage` (+4) is the
+         real store's cursors catching up on a backlog, which two further syncs on the same
+         store show bounded at +1/+1 with `inventory` unchanged. States after: tools 42 `not
+         reported` / 17 `in use` / 9 `installed`; skills 22 `installed` / 6 `in use` / 14
+         `removed`; agents 6 `not reported`; MCP 15 `in use`. All 14 remaining `removed` skills
+         were checked against all three roots on disk and none is there.
+Cost     Home is a parameter from `run()` down rather than an env lookup, which is what makes
+         the suite able to pin it — a reader reaching for `Path.home()` behind the fixture would
+         have read this machine's `~/.agents/skills` into a test's inventory, and did for one
+         run before the fixture was fixed. The MCP reconciliation runs against the history
+         *already* in the database, because `scan_inventory` runs before the transcripts are
+         indexed, so a tool seen for the first time appears on the next sync — the same one-cycle
+         delay as any other newly-seen name, and the reason the fixtures run twice. Symlink
+         following is unbounded on purpose, to match the host: a cycle is handled by the
+         resolved-path set, and a shared subtree is re-walked rather than pruned, so a large
+         `~/.agents` tree costs a little time and nothing but time. The fourth state is a wider
+         column, and it makes the Tools tab honest at the cost of being less quotable.
+Commit   fca7151
