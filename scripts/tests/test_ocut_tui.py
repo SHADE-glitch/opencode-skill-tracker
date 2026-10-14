@@ -280,7 +280,7 @@ def test_the_tools_tab_prints_exactly_its_own_window_of_the_tools_query(
                     [f"{r['calls']:,}", f"{r['completed']:,}", f"{r['errored']:,}"], \
                     (rng, r)
                 assert cell(table, i, 1) == db.entity_state(
-                    r["installed"], r["ever_used"]), (rng, r)
+                    r["installed"], r["ever_used"], "tool"), (rng, r)
             seen[rng] = [cell(table, i, 2) for i in range(table.row_count)]
         assert seen[default] != seen["all"], (default, seen)
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
@@ -423,7 +423,8 @@ ENTITY_TABS = [("tab-tools", "t-tools", tui.TOOLS_COLUMNS),
                ("tab-plugins", "t-plugins", tui.PLUGINS_COLUMNS),
                ("tab-mcp", "t-mcp", tui.MCP_COLUMNS)]
 
-STATES = {db.ENTITY_STATE_USED, db.ENTITY_STATE_INSTALLED, db.ENTITY_STATE_REMOVED}
+STATES = {db.ENTITY_STATE_USED, db.ENTITY_STATE_INSTALLED, db.ENTITY_STATE_REMOVED,
+          db.ENTITY_STATE_UNREPORTED}
 
 
 def test_every_entity_tab_prints_a_state_next_to_the_name(tracker):
@@ -462,40 +463,58 @@ def test_each_entity_tab_renders_a_state_label_from_the_shared_helper(tracker):
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
 
-def test_a_removed_entity_reads_removed_and_is_dimmed(tracker):
-    """The reason the column exists: a name that is no longer on disk but still has
-    history reads `removed`, and it reads it quietly.
+def test_a_kind_we_cannot_census_says_so_instead_of_calling_it_removed(tracker):
+    """The bug the fourth state exists for: 39 of 40 rows on the Tools tab read
+    `removed`, because OpenCode's builtin tool ids live in its compiled registry
+    and a passive reader cannot enumerate them. A label is a claim, and "you
+    deleted this" is a claim this database cannot support about a builtin. The
+    two censored kinds have to read `not reported` and stay dim -- the same
+    visual weight as `removed`, because neither is something the reader can act
+    on, and a louder row would read as a verdict.
 
-    `Textual` has no per-row style hook on `DataTable` — `add_row` takes cells, and
-    the only row-level classes are header/fixed/zebra — so the dimming covers this
-    one cell and the rest of the row stays at full contrast. That is a deliberate
-    limit, not a missing one, and asserting on the *cell* rather than the row is
-    what makes the limit visible.
+    `Textual` has no per-row style hook on `DataTable` -- `add_row` takes cells,
+    and the only row-level classes are header/fixed/zebra -- so the dimming
+    covers this one cell and the rest of the row stays at full contrast. That is
+    a deliberate limit, not a missing one, and asserting on the *cell* rather
+    than the row is what makes the limit visible.
     """
     conn = sqlite3.connect(tracker)
     conn.row_factory = sqlite3.Row
-    gone = [r for r in db.q_tools(conn) if not r["installed"]]
+    tools = [r for r in db.q_tools(conn) if not r["installed"]]
+    censored = [k for k, ok in db.ENTITY_CENSUS.items() if not ok]
     alive = [r for r in db.q_skills(conn) if r["installed"]]
+    gone = [r for r in db.q_skills(conn) if not r["installed"]]
     conn.close()
-    assert gone and alive, "the fixture needs one removed and one installed entity"
+    assert tools and alive, "the fixture needs an uncatalogued tool and an installed skill"
+    assert "tool" in censored, censored
+    assert all(r["installed"] for r in alive), alive
 
     async def body(pilot, app):
         await activate(app, pilot, "tab-tools")
         table = app.query_one("#t-tools", DataTable)
-        row = first_column(table).index(gone[0]["tool_name"])
+        row = first_column(table).index(tools[0]["tool_name"])
         cell_value = table.get_cell_at((row, 1))
-        assert str(cell_value) == db.ENTITY_STATE_REMOVED, gone[0]["tool_name"]
+        assert str(cell_value) == db.ENTITY_STATE_UNREPORTED, tools[0]["tool_name"]
         assert isinstance(cell_value, tui.Text), type(cell_value)
         assert cell_value.style == "dim", cell_value.style
-        # Not `str` on purpose: a plain string would also satisfy `str(...) == "removed"`,
-        # so without the type assertion the dimming could go away unnoticed.
+        # Not `str` on purpose: a plain string would also satisfy
+        # `str(...) == "not reported"`, so without the type assertion the dimming
+        # could go away unnoticed.
         assert not isinstance(cell_value, str)
 
+        # The tab next door can be censused, so "gone" is a claim it can make --
+        # and the inventory row that supports it is what the fixture removed.
         await activate(app, pilot, "tab-skills")
         skills = app.query_one("#t-skills", DataTable)
-        row = first_column(skills).index(alive[0]["skill"])
-        assert skills.get_cell_at((row, 1)) == db.ENTITY_STATE_INSTALLED, \
-            alive[0]["skill"]
+        names = first_column(skills)
+        if alive:
+            row = names.index(alive[0]["skill"])
+            assert skills.get_cell_at((row, 1)) == db.ENTITY_STATE_INSTALLED, \
+                alive[0]["skill"]
+        if gone:
+            row = names.index(gone[0]["skill"])
+            assert str(skills.get_cell_at((row, 1))) == db.ENTITY_STATE_REMOVED, \
+                gone[0]["skill"]
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
 

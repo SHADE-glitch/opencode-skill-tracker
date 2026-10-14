@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -177,6 +178,38 @@ CONFIG_KEYS = frozenset({"mcp", "plugin", "provider", "command"})
 PLUGIN_VERSION_SEP = "@"
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.S)
 FRONTMATTER_FIELDS = frozenset({"name", "version"})
+
+# The two skill roots the host loads from OUTSIDE its own config home. Verified
+# against the installed binary's own skill-discovery routine, which pushes
+# [".claude", ".agents"] and globs `<root>/skills/**/SKILL.md` under `$HOME` with
+# dotfiles and symlinked directories both followed. Reading only the config home
+# was not a narrower version of the truth, it was a false one: a skill the host
+# would have offered the model every session was absent from the inventory, so
+# every Skills row fell through to `removed`.
+#
+# What the same routine also scans, and what is deliberately NOT here: the
+# per-project walk (`.claude`/`.agents` from a session's directory up to its
+# worktree root), `~/.opencode`, `$OPENCODE_CONFIG_DIR`, and `skills.paths` /
+# `skills.urls`. The first needs a session directory to start from and the last
+# downloads, which this reader does not do. They are recorded as a limitation
+# rather than guessed at.
+EXTERNAL_SKILL_ROOTS = (".claude", ".agents")
+CLAUDE_SKILL_ROOT = ".claude"
+EXTERNAL_SKILL_GLOB = "skills/**/SKILL.md"
+# The host's own runtime flags, by the env names it reads them from. A root the
+# host is told to ignore must not be inventoried either, or the reader would
+# report a skill as installed that the model cannot be offered.
+DISABLE_EXTERNAL_SKILLS_ENV = "OPENCODE_DISABLE_EXTERNAL_SKILLS"
+DISABLE_CLAUDE_SKILLS_ENV = ("OPENCODE_DISABLE_CLAUDE_CODE",
+                             "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS")
+
+# One skill the host registers before it touches the disk at all, served from the
+# binary's own virtual filesystem and never written out (its `location` is the
+# sentinel `<built-in>`, and `/builtin/customize-opencode.md` exists nowhere on
+# disk). Without this row it is the one skill whose absence from the inventory
+# would read as `removed` while it is in fact always offered -- the exact label
+# M15 promises the censused kinds never carry.
+BUILTIN_SKILL_NAME = "customize-opencode"
 
 # Cursor rules — the reason this is not just "SELECT * WHERE rowid > cursor".
 #
@@ -699,7 +732,101 @@ def _frontmatter(text: str) -> dict:
     return out
 
 
-def scan_inventory(conn, host_config=None) -> dict:
+def _skill_manifests(base: Path, *, dot: bool) -> list[Path]:
+    """Every ``SKILL.md`` at or under ``base``, following symlinked directories.
+
+    The host is told ``symlink: true`` for every root it scans, so a skills
+    directory that is a symlink is not a special case to be handled -- it is the
+    normal way the tree gets laid out, and ``pathlib``'s ``**`` does not descend
+    into one at all. That is not a narrower reading of the host, it is a wrong
+    one: the whole store was invisible while every row that depended on it read
+    as removed.
+
+    Following links is what makes cycles possible, so each directory is recorded
+    by its resolved path before it is walked and a second arrival stops. The
+    entry directory is recorded before the walk too, so a link pointing at an
+    ancestor terminates rather than recursing.
+    """
+    if not base.is_dir():
+        return []
+    found: list[Path] = []
+    seen: set[Path] = {base.resolve()}
+    stack = [base]
+    while stack:
+        current = stack.pop()
+        manifest = current / SKILL_MANIFEST
+        try:
+            if manifest.is_file():
+                found.append(manifest)
+            entries = sorted(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not dot and entry.name.startswith("."):
+                continue
+            try:
+                if not entry.is_dir():          # is_dir() follows the link
+                    continue
+                real = entry.resolve()
+            except OSError:
+                continue
+            if real in seen:
+                continue
+            seen.add(real)
+            stack.append(entry)
+    return sorted(found)
+
+
+def external_skill_roots(home) -> list[tuple[str, Path]]:
+    """``(root name, <root>/skills)`` for every external root the host reads.
+
+    The name comes back with the path rather than being recovered from it later:
+    the directory the walk starts in is called ``skills`` whichever root it hangs
+    off, so ``base.name`` would label all of them the same.
+
+    The host's own flags decide this, and so must the inventory: a skill in a
+    root the host was told to ignore is not something the model can be offered,
+    and reporting it as installed would trade one kind of wrong for another.
+    ``OPENCODE_DISABLE_EXTERNAL_SKILLS`` drops both roots and
+    ``OPENCODE_DISABLE_CLAUDE_CODE`` drops only the Claude Code one, which is
+    the asymmetry the host's ``if (!X) push(".claude"); push(".agents")`` encodes.
+    """
+    if os.environ.get(DISABLE_EXTERNAL_SKILLS_ENV):
+        return []
+    claude_off = any(os.environ.get(name) for name in DISABLE_CLAUDE_SKILLS_ENV)
+    base = Path(home)
+    return [(root, base / root / DIR_SKILLS)
+            for root in EXTERNAL_SKILL_ROOTS
+            if not (claude_off and root == CLAUDE_SKILL_ROOT)
+            and (base / root / DIR_SKILLS).is_dir()]
+
+
+def _mcp_tool_rows(conn, servers) -> list[tuple]:
+    """Tool rows for the MCP tools the host would still serve.
+
+    An MCP tool has no file to be found: its availability is a configured server,
+    and the name is `<server>_<tool>` with the server sanitised. So the catalogue
+    is reconciled rather than scanned -- a name in history that a *currently
+    configured* server claims is a tool that is installed, and one no server
+    claims stays a ``builtin``-shaped name with no inventory row, which is the
+    honest reading rather than a guess at ownership.
+
+    Read from history, so a tool first seen by this very run is inventoried on
+    the next one. That lag is the price of reconciling inside one snapshot
+    rather than rewriting the table twice per run.
+    """
+    rows: list[tuple] = []
+    if not servers:
+        return rows
+    for (name,) in conn.execute("SELECT DISTINCT tool_name FROM tool_calls"
+                                " WHERE tool_name IS NOT NULL"):
+        owned = split_mcp(name, servers)
+        if owned:
+            rows.append(("tool", name, owned[0], None, None, "mcp"))
+    return rows
+
+
+def scan_inventory(conn, host_config=None, home=None) -> dict:
     """What is installed, as a set of ``inventory`` rows.
 
     Deleted first and rewritten whole: an entry that was uninstalled must not keep
@@ -708,13 +835,32 @@ def scan_inventory(conn, host_config=None) -> dict:
     was read from a directory or from a config key.
     """
     root = Path(host_config or config_dir())
-    rows: list[tuple] = []
+    rows: list[tuple] = [
+        # never on disk; see BUILTIN_SKILL_NAME
+        ("skill", BUILTIN_SKILL_NAME, "", None, None, "builtin"),
+    ]
 
     for path in sorted(root.glob(f"{DIR_SKILLS}/**/{SKILL_MANIFEST}")):
         text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
         fm = _frontmatter(text)
         name = fm.get("name") or path.parent.name
         rows.append(("skill", name, "", fm.get("version"), str(path), "skills-dir"))
+
+    # The config home is not the only place the host looks, and reading only it
+    # is what made every Skills row on this machine read `removed`. `.claude` and
+    # `.agents` are scanned with dotfiles included, because that is how the host
+    # scans them: a `.skill`-shaped directory is a real skill to it.
+    # `source` names the root, not just "a directory": `~/.config/opencode/skills`
+    # and `~/.agents/skills` both read `skills-dir` otherwise, and a user asking
+    # `ocut inventory --kind skill` where a skill came from is exactly the question
+    # a shared store across two homes creates.
+    for ext_root, ext_dir in external_skill_roots(home or Path.home()):
+        for path in _skill_manifests(ext_dir, dot=True):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            fm = _frontmatter(text)
+            name = fm.get("name") or path.parent.name
+            rows.append(("skill", name, "", fm.get("version"), str(path),
+                         f"{ext_root.strip('.')}-skills-dir"))
 
     for path in sorted(root.glob(f"{DIR_AGENTS}/{AGENT_SPEC_GLOB}")):
         if path.name.startswith(".") or path.suffix != ".md":
@@ -747,6 +893,8 @@ def scan_inventory(conn, host_config=None) -> dict:
                 version = spec.get("version") if isinstance(spec, dict) else None
                 rows.append(("command", str(name), "", version,
                              str(root / CONFIG_FILE), "config"))
+
+    rows += _mcp_tool_rows(conn, mcp_servers(host_config))
 
     conn.execute("DELETE FROM inventory")
     for row in rows:
@@ -948,6 +1096,40 @@ def format_doc() -> str:
         f"`{DIR_AGENTS}/{AGENT_SPEC_GLOB}`, `{DIR_COMMAND}/{COMMAND_SPEC_GLOB}`, "
         f"and the `{CONFIG_FILE}` keys "
         f"{', '.join(f'`{k}`' for k in sorted(CONFIG_KEYS))}\n",
+        f"- **Skill roots outside the config home**: "
+        + " · ".join(f"`~/{r}/{EXTERNAL_SKILL_GLOB}`"
+                     for r in EXTERNAL_SKILL_ROOTS)
+        + " — the host loads these ahead of its own config, so reading only the "
+        "config home was not a narrower version of the truth. Dotfiles and "
+        "symlinked directories are both followed (`dot: true`, `symlink: true` "
+        "on the host's side). The same block also covers the per-project walk "
+        "(`.claude` / `.agents` from a session directory up to its worktree root), "
+        "`~/.opencode`, `$OPENCODE_CONFIG_DIR` and `skills.paths` / `skills.urls`; "
+        "those need a session directory to start from or download something, and "
+        "are recorded as a limitation rather than guessed at\n",
+        f"- **Skill never on disk**: `{BUILTIN_SKILL_NAME}` — the host registers "
+        "it before it scans anything, served from the binary's own virtual "
+        "filesystem (`location` is the sentinel `<built-in>`). Inventoried with "
+        f"`source` `builtin` so it does not read as `removed`\n",
+        f"- **Skill-root flags the host honours**: `{DISABLE_EXTERNAL_SKILLS_ENV}` "
+        f"turns off every external root; "
+        f"{' / '.join(f'`{v}`' for v in DISABLE_CLAUDE_SKILLS_ENV)} turns off "
+        f"`~/{CLAUDE_SKILL_ROOT}` only. A root the host is told to ignore is not "
+        f"inventoried either — otherwise the reader would report a skill "
+        f"installed that the model cannot be offered\n",
+        "- **MCP tool reconciliation**: a `<server>_<tool>` name in `tool_calls` "
+        "whose prefix matches a configured server becomes an installed `tool` row "
+        "owned by that server. It is reconciled against the history *already* in "
+        "the database, which `scan_inventory` runs before the transcripts are "
+        "indexed — so a tool seen for the first time appears on the **next** sync, "
+        "the same one-cycle delay as any other newly-seen name\n",
+        f"- **Kinds this reader cannot census**: "
+        + ", ".join(f"`{k}`" for k, ok in sorted(db.ENTITY_CENSUS.items()) if not ok)
+        + ". OpenCode's builtin tool and agent ids live in its compiled registry; "
+        "there is no file on disk that enumerates them, and the API that would "
+        "answer needs the server running. A name in those kinds with no inventory "
+        "row therefore reads `not reported` rather than `removed` — see "
+        "`db.ENTITY_CENSUS`\n",
         f"- **Cursor rules**: `{CURSOR_TABLES[0]}` by rowid with holdback at the "
         f"first non-final tool part (cap `{MAX_HELD_ROWS}` rows), batch "
         f"`{PART_BATCH_ROWS}` rows, message lookups in chunks of "
@@ -969,7 +1151,7 @@ def format_doc() -> str:
 # --- entry points ----------------------------------------------------------
 
 def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
-        host_db=None, host_config=None, plugin_events=None) -> dict:
+        host_db=None, host_config=None, plugin_events=None, home=None) -> dict:
     """Index the host database into the tracker. Never raises for a missing host.
 
     Returns a status dict. A missing or unreadable ``opencode.db`` is reported in
@@ -980,6 +1162,12 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
     ``host_config`` overrides the config home that is inventoried. Tests must pass
     a fixture directory: without it they would read the real ``~/.config/opencode``
     and a machine without that tree would run a different test.
+
+    ``home`` does the same job for the external skill roots, which sit *outside*
+    the config home -- ``~/.claude`` and ``~/.agents`` -- and would otherwise pull
+    a developer's real skills into a fixture's inventory. It is a parameter rather
+    than an env lookup for that reason: a test that forgot it would pass on a
+    machine with no ``~/.agents`` and fail on one that has.
     """
     conn = db.open_db(db_path)
     try:
@@ -997,6 +1185,7 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
                     "unparsed_this_run": 0}
         try:
             stats = _run(conn, src, status, quiet=quiet, host_config=host_config,
+                         home=home,
                          plugin_events=plugin_events)
         finally:
             src.close()
@@ -1009,9 +1198,9 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
 
 
 def _run(conn, src, status: str, quiet: bool = False, host_config=None,
-         plugin_events=None) -> dict:
+         plugin_events=None, home=None) -> dict:
     counts = Counts()
-    inventory = scan_inventory(conn, host_config)
+    inventory = scan_inventory(conn, host_config, home)
     # After scan_inventory: that DELETEs `inventory`, and this re-applies the hook's
     # tool/command surfaces into it.
     plugin = ingest_plugin_events(conn, counts, plugin_events)
@@ -1096,6 +1285,9 @@ def main(argv=None) -> int:
     ap.add_argument("--db", default=str(db.DB_PATH))
     ap.add_argument("--host-db", default=None,
                     help="override the OpenCode database to read (tests, dry runs)")
+    ap.add_argument("--host-home", default=None,
+                    help="the home directory the external skill roots are read "
+                         "under (default: the real one)")
     ap.add_argument("--host-config", default=None,
                     help="override the OpenCode config home to inventory")
     ap.add_argument("--plugin-events", default=None,
@@ -1104,6 +1296,7 @@ def main(argv=None) -> int:
     t0 = time.time()
     stats = run(full=args.full, quiet=args.quiet, db_path=args.db,
                 host_db=args.host_db, host_config=args.host_config,
+                home=args.host_home,
                 plugin_events=args.plugin_events)
     if not stats.get("ok"):
         print(f"nothing indexed: {stats.get('error')}", file=sys.stderr)

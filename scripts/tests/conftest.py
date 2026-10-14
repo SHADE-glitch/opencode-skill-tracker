@@ -10,6 +10,13 @@ the same default: ``db.PLUGIN_EVENTS``. The real ``plugin-events.jsonl`` named
 three plugins no fixture declared, so the Plugins tab grew rows nobody built and
 two sync tests saw a ``dcp-compress`` command that was never in their config.
 
+``HOME`` joins that list for the same reason and with more force: the host loads
+skills from ``~/.claude`` and ``~/.agents``, which sit outside the config home,
+so an unpinned home folds a developer's real skill store into a fixture's
+inventory. That is not a path a fixture can be expected to pass — it is the
+default of a stdlib call, reached from the sync worker on the TUI's own timer as
+well — so it is pinned where every default is.
+
 Pointing each default at a path that does not exist turns a forgotten argument
 into the same, loud failure on every machine. That is the whole point of the
 fixture below, and the reason it lives here instead of being copied per module.
@@ -40,3 +47,9 @@ def no_real_machine(monkeypatch, tmp_path):
     monkeypatch.setattr(db, "HOST_DB", tmp_path / "no-such-host.db")
     monkeypatch.setattr(db, "PLUGIN_EVENTS",
                         tmp_path / "no-such-plugin-events.jsonl")
+    # ``Path.home()`` resolves HOME on POSIX and USERPROFILE on Windows; the CI
+    # matrix is Linux-only but pinning both keeps the fixture honest elsewhere.
+    # Set, not created: the reader treats a missing directory as an empty root,
+    # which is exactly the state a machine without those trees is in.
+    monkeypatch.setenv("HOME", str(tmp_path / "no-such-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "no-such-home"))

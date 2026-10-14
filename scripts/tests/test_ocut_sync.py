@@ -8,9 +8,11 @@ override.
 """
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -716,7 +718,9 @@ def test_the_inventory_reads_the_directories_and_the_config(tmp_path, tracker):
     by_kind: dict[str, list[str]] = {}
     for r in rows(tracker, "inventory"):
         by_kind.setdefault(r["kind"], []).append(r["name"])
-    assert sorted(by_kind["skill"]) == ["tdd", "triage"]
+    # the builtin is inventoried too, though no fixture put it on disk
+    assert sorted(by_kind["skill"]) == sorted(
+        ["tdd", "triage", sync.BUILTIN_SKILL_NAME])
     assert sorted(by_kind["agent"]) == ["auditor", "reviewer"]
     assert by_kind["command"] == ["digest"]
     assert sorted(by_kind["mcp"]) == ["basic-memory", "context7"]
@@ -729,7 +733,205 @@ def test_the_inventory_reads_the_directories_and_the_config(tmp_path, tracker):
     skill_versions = {r["name"]: r["version"] for r in rows(tracker, "inventory")
                       if r["kind"] == "skill"}
     assert skill_versions["triage"] == "2.1.0"
-    assert stats["inventory"]["skill"] == 2
+    assert stats["inventory"]["skill"] == 3
+
+
+# --- the two skill roots the host loads from outside its config home --------
+
+
+def external_home(tmp_path, *, claude=None, agents=None) -> Path:
+    """A `$HOME` holding the roots OpenCode scans before it reads any config.
+
+    Both come back as directories, because the reader only looks at a root that
+    is already there -- the same `isDir` guard the host applies.
+    """
+    home = tmp_path / "home"
+    for name, skills in ((sync.CLAUDE_SKILL_ROOT, claude),
+                         (".agents", agents)):
+        if not skills:
+            continue
+        for skill in skills:
+            d = home / name / "skills" / skill
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {skill}\n---\nbody\n")
+    return home
+
+
+def _scan(tmp_path, tracker, home, env=None, passes=2, **cfg):
+    """Sync the fixture host against the given `$HOME`, then read the inventory.
+
+    Two passes by default, and not for thoroughness: `scan_inventory` reconciles
+    MCP tools against the `tool_calls` already in the database, and a first run
+    indexes the transcripts *after* it has scanned. So the tool a fixture makes
+    a call to becomes an installed tool on the *next* sync -- one cycle, exactly
+    as it is for a tool a person calls for the first time. Every other assertion
+    in this section is about roots, which are read from disk and are visible on
+    the first pass; the two passes only exist so the MCP cases can run at all.
+    """
+    path = tmp_path / "opencode.db"
+    conn = make_host(path)
+    # One MCP tool part, so the reconciliation has something to reconcile against:
+    # the inventory can only report a tool the config and the history agree on.
+    add_tool(conn, "prt_mcp", "msg_a", "ses_parent",
+             tool="context7_query-docs", state={"input": {"query": "docs"}})
+    conn.commit()
+    conn.close()
+    conf = tmp_path / "cfg"
+    make_config(conf, **cfg)
+    for _ in range(passes):
+        if env:
+            with mock.patch.dict(os.environ, env, clear=False):
+                sync.run(db_path=tracker, host_db=path, host_config=conf, home=home)
+        else:
+            sync.run(db_path=tracker, host_db=path, host_config=conf, home=home)
+    return {r["name"] for r in rows(tracker, "inventory", "kind='skill'")}
+
+
+def test_a_skill_in_the_homes_agents_root_is_inventoried(tmp_path, tracker):
+    """The bug this row was written for: OpenCode loads `~/.agents/skills`
+    unconditionally, ahead of its own config home, and the reader only read the
+    config home. Every one of those skills was therefore absent from the
+    inventory, so the union had nothing to match them against and printed
+    `removed` for skills the model was being offered every single session.
+    """
+    home = external_home(tmp_path, agents=["grilling", "tdd"])
+    names = _scan(tmp_path, tracker, home)
+    assert {"grilling", "tdd"} <= names, sorted(names)
+
+
+def test_a_skill_in_the_homes_claude_root_is_inventoried(tmp_path, tracker):
+    home = external_home(tmp_path, claude=["from-claude"])
+    assert "from-claude" in _scan(tmp_path, tracker, home)
+
+
+def test_the_external_roots_are_not_the_config_home_renamed(tmp_path, tracker):
+    """A root that does not exist contributes nothing, rather than being read as
+    an empty-but-present store that could shadow the real one."""
+    home = external_home(tmp_path, agents=["present"])
+    (home / ".agents" / "skills" / "present" / "SKILL.md").write_text(
+        "---\nname: present\n---\n")
+    names = _scan(tmp_path, tracker, tmp_path / "a-home-with-nothing-in-it")
+    assert "present" not in names, sorted(names)
+    assert {"tdd", "triage"} <= names, sorted(names)   # the config home still read
+
+
+def test_a_symlinked_skill_directory_is_followed(tmp_path, tracker):
+    """`~/.agents/skills` on this machine is nothing but symlinks into a second
+    store, and the host follows them: its scanner sets `symlink: true` on every
+    one of its four roots. `Path.glob("**")` does not, which is why the
+    inventory found exactly nothing there.
+    """
+    elsewhere = tmp_path / "elsewhere" / "tdd"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "SKILL.md").write_text("---\nname: linked-tdd\n---\n")
+    home = tmp_path / "home"
+    (home / ".agents" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills" / "tdd").symlink_to(elsewhere)
+    assert "linked-tdd" in _scan(tmp_path, tracker, home)
+
+
+def test_a_symlink_that_points_at_its_own_ancestor_does_not_hang(tmp_path, tracker):
+    """Following symlinks is a loop hazard, and the loop is one `ln -s` away.
+    Python's `os.walk(followlinks=True)` does not break it; the reader's own
+    `resolved()`-keyed visited set does.
+    """
+    home = tmp_path / "home"
+    deep = home / ".agents" / "skills" / "loop"
+    deep.mkdir(parents=True)
+    (deep / "SKILL.md").write_text("---\nname: loop\n---\n")
+    (deep / "back").symlink_to(home / ".agents" / "skills")
+    names = _scan(tmp_path, tracker, home)
+    assert "loop" in names, sorted(names)
+
+
+def test_a_dot_directory_in_an_external_root_is_a_skill(tmp_path, tracker):
+    """The host passes `dot: true` on exactly these two roots and on the project
+    ones -- so `.skill/` is a real skill there, and the hidden-prefix rule that
+    keeps it out of a plugin's directory is a plugin rule, not a skill rule.
+    """
+    home = tmp_path / "home"
+    d = home / ".agents" / "skills" / ".skill"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: dotted\n---\n")
+    assert "dotted" in _scan(tmp_path, tracker, home)
+
+
+def test_the_source_says_which_of_the_three_roots_a_skill_came_from(tmp_path, tracker):
+    """`source` exists so a panel can say where a row was read from, and three
+    roots that all read `skills-dir` throw that away. A shared store split across
+    two homes is exactly the case where "which one" is the question.
+    """
+    home = external_home(tmp_path, claude=["from-claude"], agents=["from-agents"])
+    _scan(tmp_path, tracker, home)
+    got = {r["name"]: r["source"] for r in rows(tracker, "inventory", "kind='skill'")}
+    assert got["from-claude"] == "claude-skills-dir", got
+    assert got["from-agents"] == "agents-skills-dir", got
+    assert got["tdd"] == "skills-dir", got            # the config home, unchanged
+
+
+def test_the_builtin_skill_is_inventoried_though_it_is_never_on_disk(tmp_path, tracker):
+    """`customize-opencode` is the one skill the host serves out of its own
+    binary. It was the last Skills row still reading `removed` on a machine where
+    nothing had been uninstalled — and unlike the tool and agent registries, this
+    one is a single name, so there is no reason a reader cannot name it.
+    """
+    home = external_home(tmp_path, agents=["from-agents"])
+    _scan(tmp_path, tracker, home)
+    got = {r["name"]: r["source"]
+           for r in rows(tracker, "inventory", "kind='skill'")}
+    assert got.get(sync.BUILTIN_SKILL_NAME) == "builtin", got
+    assert (tmp_path / ".agents" / "skills" / sync.BUILTIN_SKILL_NAME).exists() is False
+
+
+def test_disabling_external_skills_removes_both_roots(tmp_path, tracker):
+    """`OPENCODE_DISABLE_EXTERNAL_SKILLS` turns off the block that reads both
+    roots, so a skill the host will not offer must not be reported installed."""
+    home = external_home(tmp_path, claude=["from-claude"], agents=["from-agents"])
+    names = _scan(tmp_path, tracker, home,
+                  env={sync.DISABLE_EXTERNAL_SKILLS_ENV: "1"})
+    assert not {"from-claude", "from-agents"} & names, sorted(names)
+    assert {"tdd", "triage"} <= names, "the config home is not an external root"
+
+
+def test_disabling_claude_code_leaves_the_agents_root_alone(tmp_path, tracker):
+    """A narrower flag: it drops `.claude` and keeps `.agents`, which is what the
+    host's `if(!X) push(.claude); push(.agents)` does. Both spellings count."""
+    home = external_home(tmp_path, claude=["from-claude"], agents=["from-agents"])
+    for i, var in enumerate(sync.DISABLE_CLAUDE_SKILLS_ENV):
+        # A store per spelling: the reader rebuilds the host fixture each pass,
+        # and two runs against one fixture file is a second reader, not a second
+        # assertion.
+        case = tmp_path / f"claude-off-{i}"
+        case.mkdir()
+        names = _scan(case, case / "usage.db", home, env={var: "1"})
+        assert "from-claude" not in names, var
+        assert "from-agents" in names, (var, sorted(names))
+
+
+def test_a_tool_of_a_configured_server_is_inventoried(tmp_path, tracker):
+    """MCP tool ids are `<server>_<tool>`, and the config names the *server*.
+    Without this the whole MCP surface fell through to the same `removed` the
+    skills did -- 2 of this fixture's tools in every window, both of them real.
+    """
+    home = tmp_path / "home"
+    _scan(tmp_path, tracker, home, mcp={"context7": {}})
+    tools = {r["name"] for r in rows(tracker, "inventory", "kind='tool'")}
+    # `make_host` writes one `context7_query-docs` part, and the config names the
+    # server it belongs to. Split back apart, that is one installed tool.
+    assert "context7_query-docs" in tools, sorted(tools)
+    owned = {r["owner_plugin"] for r in rows(tracker, "inventory", "kind='tool'")}
+    assert owned == {"context7"}, sorted(owned)
+
+
+def test_a_tool_of_an_unconfigured_server_is_not_inventoried(tmp_path, tracker):
+    """Reconciling the other way would be worse than not reconciling: a tool whose
+    server is gone from the config must not be reported installed by a name
+    match that happens to look right.
+    """
+    home = tmp_path / "home"
+    _scan(tmp_path, tracker, home, mcp={"playwright": {}})
+    tools = {r["name"] for r in rows(tracker, "inventory", "kind='tool'")}
+    assert "context7_query-docs" not in tools, sorted(tools)
 
 
 def test_a_skill_name_comes_from_the_frontmatter_not_the_folder(tmp_path, tracker):

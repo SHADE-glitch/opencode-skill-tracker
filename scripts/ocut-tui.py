@@ -49,7 +49,7 @@ def _plain(value) -> str:
     return "-" if value is None else str(value)
 
 
-def state_cell(row):
+def state_cell(row, kind):
     """The `state` cell for one entity row: a removed name is dimmed.
 
     Textual's `DataTable` has no per-row style hook -- `add_row` takes cells,
@@ -60,10 +60,11 @@ def state_cell(row):
 
     The word itself comes from `db.entity_state`, shared with the headless
     reports, so the two surfaces cannot drift into saying different things
-    about the same row.
+    about the same row. `kind` is passed rather than looked up: the label for a
+    builtin tool is not the label for a plugin, and only the kind knows which.
     """
-    label = db.entity_state(row["installed"], row["ever_used"])
-    if label == db.ENTITY_STATE_REMOVED:
+    label = db.entity_state(row["installed"], row["ever_used"], kind)
+    if label in (db.ENTITY_STATE_REMOVED, db.ENTITY_STATE_UNREPORTED):
         return Text(label, style="dim")
     return label
 
@@ -1526,7 +1527,7 @@ if HAVE_TEXTUAL:
             # call still in flight and is not counted as one.
             self._fill_wide(
                 "t-tools",
-                [[r["tool_name"], state_cell(r), f"{r['calls']:,}",
+                [[r["tool_name"], state_cell(r, "tool"), f"{r['calls']:,}",
                   f"{r['completed']:,}", f"{r['errored']:,}", ms(r["avg_ms"]),
                   ts(r["last_used"])]
                  for r in db.q_tools(conn, start_ts=start, end_ts=end)],
@@ -1535,7 +1536,7 @@ if HAVE_TEXTUAL:
         def _fill_skills(self, conn, start=None, end=None) -> None:
             self._fill_wide(
                 "t-skills",
-                [[r["skill"], state_cell(r), f"{r['calls']:,}",
+                [[r["skill"], state_cell(r, "skill"), f"{r['calls']:,}",
                   f"{r['completed']:,}", ts(r["last_used"])]
                  for r in db.q_skills(conn, start_ts=start, end_ts=end)],
                 "No skills used yet", key_kind="skill")
@@ -1543,7 +1544,7 @@ if HAVE_TEXTUAL:
         def _fill_agents(self, conn, start=None, end=None) -> None:
             self._fill_wide(
                 "t-agents",
-                [[r["agent_type"], state_cell(r), f"{r['calls']:,}",
+                [[r["agent_type"], state_cell(r, "agent"), f"{r['calls']:,}",
                   ts(r["last_used"])]
                  for r in db.q_agents(conn, start_ts=start, end_ts=end)],
                 "No agents used yet", key_kind="agent")
@@ -1560,7 +1561,7 @@ if HAVE_TEXTUAL:
                 # `source` is which root the reader walked ("config"), which says
                 # nothing a person can act on; `path` is the entry the host's own
                 # config spells — an npm name or a local file — so that is the column.
-                [[r["plugin"], state_cell(r), r["version"] or "-",
+                [[r["plugin"], state_cell(r, "plugin"), r["version"] or "-",
                   f"{r['uses']:,}", ts(r["last_used"]),
                   f"{r['skills']:,}", f"{r['agents']:,}", f"{r['commands']:,}",
                   r["path"] or "-"]
@@ -1572,7 +1573,7 @@ if HAVE_TEXTUAL:
             # tools under one server would otherwise collide and abort the mount.
             self._fill_wide(
                 "t-mcp",
-                [[r["server"], r["tool"], state_cell(r), f"{r['calls']:,}",
+                [[r["server"], r["tool"], state_cell(r, "mcp"), f"{r['calls']:,}",
                   f"{r['completed']:,}", ts(r["last_used"])]
                  for r in db.q_mcp(conn, start_ts=start, end_ts=end)],
                 "No MCP calls yet", key_index=(0, 1), key_kind="mcp")

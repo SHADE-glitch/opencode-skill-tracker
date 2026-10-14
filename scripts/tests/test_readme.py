@@ -24,8 +24,9 @@ import ocut_db as db  # noqa: E402  (stdlib-only: tomllib, sqlite3, pathlib)
 # back; prose is never read), the one thing the opt-in hook must supply and how
 # best-effort it is, the two token granularities, the sidecar's cap, the token
 # columns the host has no field for, and the blind spot the state label inherits from
-# the hook. M1-M14.
-LIMITATIONS = tuple(f"M{i}" for i in range(1, 15))
+# the hook, the two state labels that are answers and the one that is an admission, and
+# the external skill roots the reader does not walk. M1-M16.
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 17))
 
 # The load-bearing half of each limitation. A marker alone could survive a rewrite
 # that dropped the meaning, so each Mx must sit beside a keyword that is actually
@@ -45,6 +46,8 @@ EN_KEYWORDS = (
     "no systemd",           # M12
     "does not carry",       # M13
     "no evidence",          # M14
+    "not reported",         # M15
+    "~/.agents/skills",      # M16
 )
 ZH_KEYWORDS = (
     "事实来源",              # M1
@@ -61,6 +64,8 @@ ZH_KEYWORDS = (
     "没有 systemd",          # M12
     "不携带",                # M13
     "没有证据",              # M14
+    "not reported",         # M15
+    "~/.agents/skills",      # M16
 )
 
 # --- HTTP status-code parity across a bilingual pair -------------------------

@@ -494,10 +494,30 @@ ENTITY_STATE_COLUMN = "state"
 ENTITY_STATE_USED = "in use"
 ENTITY_STATE_INSTALLED = "installed"
 ENTITY_STATE_REMOVED = "removed"
+ENTITY_STATE_UNREPORTED = "not reported"
+
+# Which kinds this tool can actually take a census of. `skill`, `plugin` and
+# `mcp` are enumerable: there is a file to read or a config key to name, so a
+# name with no inventory row really is gone. `tool` and `agent` are not — the
+# host compiles their builtins into its own binary and exposes the list only
+# behind a running server, which a passive reader cannot start. Without this,
+# every builtin `bash` row fell through to `removed`, which is the opposite of
+# the truth and the reason the label below exists.
+ENTITY_CENSUS = {
+    "tool": False,
+    "skill": True,
+    "agent": False,
+    "plugin": True,
+    "mcp": True,
+}
 
 
-def entity_state(installed, ever_used) -> str:
-    """The three-state label for one row of an entity panel.
+def entity_state(installed, ever_used, kind: str) -> str:
+    """The label for one row of an entity panel, from the two CTE flags.
+
+    ``kind`` is required rather than defaulted. A default would let a front end
+    quietly render the old three-state label for every row and no test would
+    notice, which is the failure this function exists to stop.
 
     ``removed`` outranks ``in use`` deliberately: it is the half that is
     actionable, and "in use" for a name that is no longer on disk reads as an
@@ -511,10 +531,17 @@ def entity_state(installed, ever_used) -> str:
     thousand times. That is a property of the label, not a hedge -- the same word
     on the Tools panel means the opposite, and M14 in the READMEs says so.
 
+    For a kind with no census, the honest answer is `not reported` rather than
+    `removed`: we never looked, which is not the same as looked and found
+    nothing. It only ever applies where `installed` is 0, so a name that *is*
+    in the inventory still reads installed or in use as before.
+
     The flags are the CTE's, not the windowed count, so narrowing the window does
     not change the label: a tool last used last week is still in use.
     """
     if not installed:
+        if not ENTITY_CENSUS.get(kind, False):
+            return ENTITY_STATE_UNREPORTED
         return ENTITY_STATE_REMOVED
     return ENTITY_STATE_USED if ever_used else ENTITY_STATE_INSTALLED
 

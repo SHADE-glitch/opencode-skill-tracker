@@ -89,22 +89,56 @@ def used(c, kind, name, ts=1_700_000_000_000, n=1):
 
 
 def states(c, kind):
-    """{name: label} for every row the panel would show."""
+    """{name: label} for every row the panel would show.
+
+    The kind is passed to the label rather than looked up from the row: it is
+    the thing that decides the label, so a helper that inferred it would be
+    assuming the answer.
+    """
     query, key = _QUERY[kind]
-    return {r[key]: db.entity_state(r["installed"], r["ever_used"])
+    return {r[key]: db.entity_state(r["installed"], r["ever_used"], kind)
             for r in query(c)}
 
 
-# --- the three states --------------------------------------------------------
+# --- the states --------------------------------------------------------------
+
+# Which kinds the reader can actually take a census of: there has to be a file
+# to read or a config key to name. `tool` and `agent` have neither -- the host
+# compiles its builtins into its own binary -- so a missing row for those means
+# "we did not look", never "it is gone".
+_CENSUS = {k for k, ok in db.ENTITY_CENSUS.items() if ok}
+
+
+def test_the_kinds_without_a_census_are_the_ones_this_reader_cannot_enumerate():
+    """Pinned so the map is not edited to make a test pass. A kind joins the
+    census only when this repository gains a way to read its installed set.
+    """
+    assert _CENSUS == {"skill", "plugin", "mcp"}
+    assert db.ENTITY_CENSUS["tool"] is False and db.ENTITY_CENSUS["agent"] is False
+
 
 @pytest.mark.parametrize("kind", sorted(_QUERY))
-def test_a_name_with_history_and_no_inventory_row_is_removed(conn, kind):
-    """The state the panels could not express before: `inventory` is a snapshot of
-    what is installed *now*, so a missing row is the only evidence of removal, and
-    without this label a removed entity and an installed-but-idle one look alike.
+def test_a_name_with_history_and_no_inventory_row_reads_by_what_we_could_know(conn, kind):
+    """`inventory` is a snapshot of what is installed *now*, so a missing row is
+    the only evidence of removal -- where there is a census to take. For a kind
+    with no census the same missing row means something weaker, and reporting it
+    as `removed` is how every builtin `bash` ended up labelled gone on a machine
+    where it has been called twelve thousand times.
     """
     used(conn, kind, "gone")
-    assert states(conn, kind)["gone"] == db.ENTITY_STATE_REMOVED
+    expected = (db.ENTITY_STATE_REMOVED if kind in _CENSUS
+                else db.ENTITY_STATE_UNREPORTED)
+    assert states(conn, kind)["gone"] == expected
+
+
+@pytest.mark.parametrize("kind", sorted(_QUERY))
+def test_an_installed_entity_is_installed_whatever_the_census(conn, kind):
+    """The census only ever weakens the *negative* answer. A name the inventory
+    does carry is a name somebody put there on purpose, and no gap in what we
+    can enumerate should turn it into `not reported`.
+    """
+    install(conn, kind, "fresh")
+    assert states(conn, kind)["fresh"] == db.ENTITY_STATE_INSTALLED
 
 
 @pytest.mark.parametrize("kind", sorted(_QUERY))
@@ -131,7 +165,9 @@ def test_removing_an_entity_does_not_remove_its_history(conn, kind):
     before = _QUERY[kind][0](conn)[0]["calls" if kind != "plugin" else "uses"]
     conn.execute("DELETE FROM inventory")
     conn.commit()
-    assert states(conn, kind)["was-here"] == db.ENTITY_STATE_REMOVED
+    expected = (db.ENTITY_STATE_REMOVED if kind in _CENSUS
+                else db.ENTITY_STATE_UNREPORTED)
+    assert states(conn, kind)["was-here"] == expected
     after = _QUERY[kind][0](conn)[0]["calls" if kind != "plugin" else "uses"]
     assert after == before == 3
 
@@ -145,17 +181,40 @@ def test_the_state_does_not_follow_the_window(conn):
     used(conn, "tool", "yesterday", ts=1_700_000_000_000)
     row = db.q_tools(conn, start_ts=1_900_000_000_000)[0]
     assert row["calls"] == 0, "the window should have emptied the count"
-    assert db.entity_state(row["installed"], row["ever_used"]) == db.ENTITY_STATE_USED
+    assert db.entity_state(row["installed"], row["ever_used"], "tool") == db.ENTITY_STATE_USED
 
 
 def test_removed_outranks_in_use(conn):
     """A name that is not on disk is not "in use" even though its history says
     otherwise: that half of the label is the one a person can act on.
     """
-    used(conn, "tool", "uninstalled-tool", n=5)
-    assert db.entity_state(0, 1) == db.ENTITY_STATE_REMOVED
-    assert db.entity_state(1, 0) == db.ENTITY_STATE_INSTALLED
-    assert db.entity_state(1, 1) == db.ENTITY_STATE_USED
+    used(conn, "skill", "uninstalled-skill", n=5)
+    assert db.entity_state(0, 1, "skill") == db.ENTITY_STATE_REMOVED
+    assert db.entity_state(1, 0, "skill") == db.ENTITY_STATE_INSTALLED
+    assert db.entity_state(1, 1, "skill") == db.ENTITY_STATE_USED
+
+
+def test_a_kind_without_a_census_says_so_instead_of_guessing(conn):
+    """The whole point of the fourth label. `bash` has no file to be found and no
+    config key that names it, so a tool row with no inventory row is missing
+    evidence, not evidence of absence -- and the two are not interchangeable when
+    the reader's job is to be believed.
+    """
+    assert db.entity_state(0, 1, "tool") == db.ENTITY_STATE_UNREPORTED
+    assert db.entity_state(0, 0, "agent") == db.ENTITY_STATE_UNREPORTED
+    assert db.entity_state(1, 1, "tool") == db.ENTITY_STATE_USED
+    # A kind nobody declared has no census either. Guessing one would be the
+    # failure this map exists to prevent, so an unknown kind is treated as blind.
+    assert db.entity_state(0, 0, "nonesuch") == db.ENTITY_STATE_UNREPORTED
+
+
+def test_the_label_requires_a_kind():
+    """No default. A front end that forgot the argument would render the old
+    three-state label for every row, the row would still carry a plausible word,
+    and no assertion in the suite would notice.
+    """
+    with pytest.raises(TypeError):
+        db.entity_state(0, 1)
 
 
 # --- the flags reach the rows -------------------------------------------------
@@ -185,7 +244,7 @@ def test_mcp_rows_inherit_their_servers_install_state(conn):
     install(conn, "mcp", "idle-server")
     used(conn, "mcp", "live-server")
     used(conn, "mcp", "retired-server")
-    rows = {r["server"]: db.entity_state(r["installed"], r["ever_used"])
+    rows = {r["server"]: db.entity_state(r["installed"], r["ever_used"], "mcp")
             for r in db.q_mcp(conn)}
     assert rows["live-server"] == db.ENTITY_STATE_USED
     assert rows["idle-server"] == db.ENTITY_STATE_INSTALLED
@@ -202,7 +261,7 @@ def test_a_plugin_known_only_as_an_owner_is_not_installed(conn):
     """
     install(conn, "tool", "plugin-tool", owner="orphan")
     install(conn, "plugin", "declared")
-    rows = {r["plugin"]: db.entity_state(r["installed"], r["ever_used"])
+    rows = {r["plugin"]: db.entity_state(r["installed"], r["ever_used"], "plugin")
             for r in db.q_plugins(conn)}
     assert rows["orphan"] == db.ENTITY_STATE_REMOVED
     assert rows["declared"] == db.ENTITY_STATE_INSTALLED
