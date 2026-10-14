@@ -4,18 +4,10 @@ Guidance for AI coding agents working in this repository.
 
 This repository is public.
 
-> **Dimension.** This repository is dimension **A — open source, strict** in the machine-wide
-> `CONVENTIONS.md` (outside this repository); the shared rules live in `STANDARD.md` and the
-> dimension-A detail in `~/.agents/standards/dimensions/a.md`.
->
-> **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
-> `CHANGELOG` entry format and the runtime ignore list are defined once in the machine-wide
-> `STANDARD.md` (outside this repository); the dimension-A rules — the language policy, CI
-> version pinning and entry commands, and the test entry command — live in
+> **Dimension.** A — open source (strict), per `CONVENTIONS.md` §0; the shared rules live once in
+> `~/.agents/standards/STANDARD.md` (§1 root files, §2 process drafts, §3 CHANGELOG entries,
+> §4 runtime ignore list, §6 remotes/pushing, §8 profile listing) and the dimension-A detail in
 > `~/.agents/standards/dimensions/a.md`. Neither is restated here.
->
-> **Push over SSH, never HTTPS.** Verify `git remote get-url --push origin` starts with `git@`
-> before pushing; if it starts with `https://`, fix it first — never push over HTTPS.
 
 ## What this is
 
@@ -230,18 +222,14 @@ selector that quietly deselects is worse than no selector, because it is run and
 
 ## Recording conventions
 
-- **`feat` commits are out of scope, by class.** This is an original project with no
-  upstream, so a feature is the product, not a droppable deviation. The exclusion lives in
-  `scripts/tests/test_record_coverage.py` as one regex over the commit subject.
-- `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore`, cut by **who may demand a
-  revert**: bug → `fix`; measurable degradation only → `perf`; only my taste → `taste`; no
-  behaviour change, detects drift → `guard`; withdraws earlier work → `revert`; cleanup owed
-  nothing either way → `chore`.
+Common CHANGELOG rules: `STANDARD.md` §3.
+
+- The `feat` exclusion lives in `scripts/tests/test_record_coverage.py` as one regex over the
+  commit subject.
 - **Verification tiers**: **L0** = `python3 -m pytest scripts/tests` (no host, no live
   store); **L1** = a controlled fixture; **L2** = a real OpenCode session with the hook
   installed.
-- `Symptom` names the mechanism, never the session: no prompt text, no command lines, no
-  paths from a real config. This repo's whole privacy stance is "counts, never content".
+- This repo's whole privacy stance is "counts, never content".
 - **A case named by `Evidence` must be one that goes red without the change, and you must
   have read it go red.** "The new test passes" is not verification: a case can pass for a
   reason the change never touched, and a change can ship with no case at all and still be
@@ -252,14 +240,7 @@ selector that quietly deselects is worse than no selector, because it is run and
 
 ## Listed on the GitHub profile
 
-This repo is listed on the owner's profile front page (`SHADE-glitch/SHADE-glitch`). That page
-lives in a **separate repository and never updates itself** — when a fact it states about this
-repo changes, update the profile README in the same round.
+See `STANDARD.md` §8 for the shared profile-listing triggers. This repo's own additions:
 
-- **Rename / transfer / delete** — the profile link dies; fix the row.
 - **Purpose drift** — the profile's one-line description must still be true. The claims it
   copies — *"no network, no message bodies"*, the local-SQLite scope — are **promises**.
-- **LICENSE change** — the profile's license badge must equal this repo's `LICENSE`.
-- **Version / runtime declaration change** — the matching badge must equal this repo's
-  declaration.
-- **Public ↔ private** — a repo that goes private must be **delisted**.
