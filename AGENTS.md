@@ -5,12 +5,14 @@ Guidance for AI coding agents working in this repository.
 This repository is public.
 
 > **Dimension.** This repository is dimension **A — open source, strict** in the machine-wide
-> `CONVENTIONS.md` (outside this repository); the detail lives in `STANDARD.md`.
+> `CONVENTIONS.md` (outside this repository); the shared rules live in `STANDARD.md` and the
+> dimension-A detail in `~/.agents/standards/dimensions/a.md`.
 >
 > **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
-> `CHANGELOG` entry format, CI version pinning and entry commands, the test entry command, and
-> the runtime ignore list are defined once in the machine-wide `STANDARD.md` (outside this
-> repository) and are not restated here.
+> `CHANGELOG` entry format and the runtime ignore list are defined once in the machine-wide
+> `STANDARD.md` (outside this repository); the dimension-A rules — the language policy, CI
+> version pinning and entry commands, and the test entry command — live in
+> `~/.agents/standards/dimensions/a.md`. Neither is restated here.
 >
 > **Push over SSH, never HTTPS.** Verify `git remote get-url --push origin` starts with `git@`
 > before pushing; if it starts with `https://`, fix it first — never push over HTTPS.

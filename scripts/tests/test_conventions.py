@@ -75,10 +75,11 @@ RUNTIME_IGNORE = (
     "reports/",
 )
 
-# The heading strings of STANDARD.md and of the machine-wide CONVENTIONS.md,
-# each in the numbered form both documents use ("## 5. CI", not "## CI") — an
-# unnumbered word like "CI" is an ordinary section title here, and matching it
-# would go red on a repository that is merely being thorough.
+# The heading strings of the machine-wide standard — STANDARD.md, CONVENTIONS.md
+# and dimensions/a.md, the three files it now spans — each in the numbered form
+# the documents use ("## 5. CI", not "## CI") — an unnumbered word like "CI" is
+# an ordinary section title here, and matching it would go red on a repository
+# that is merely being thorough.
 STANDARD_HEADINGS = (
     "Repositories governed by this standard",
     "Root files (the finalized layer)",
@@ -90,9 +91,10 @@ STANDARD_HEADINGS = (
     "Runtime ignore list",
     "Conflict rule",
     "Remotes and pushing",
+    "Audit ruleset (anchor)",
     "The three dimensions",
     "The shared common core",
-    "What each dimension requires",
+    "Where each dimension's detail lives",
     "Unify the common core; never flatten",
     "Where a repository points",
 )
