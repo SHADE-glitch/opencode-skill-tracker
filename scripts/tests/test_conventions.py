@@ -194,7 +194,7 @@ class AgentsPointerTest(unittest.TestCase):
         self.assertEqual([], quoted,
                          "AGENTS.md quotes the standard's own section heading(s) "
                          f"{quoted}: replace them with a clause name (the standard's "
-                         "'Runtime ignore list', not 'Standard §7') so there is "
+                         "'Runtime ignore list', not 'Standard §4') so there is "
                          "exactly one copy to keep correct")
 
 
