@@ -1304,3 +1304,20 @@ Cost     Home is a parameter from `run()` down rather than an env lookup, which 
          `~/.agents` tree costs a little time and nothing but time. The fourth state is a wider
          column, and it makes the Tools tab honest at the cost of being less quotable.
 Commit   fca7151
+
+### D-069 · 2026-10-15 · perf
+Symptom  Every tab switch paid Textual's tab-bar underline animation. The tracker's first TUI had
+         turned it off (`1e6342c`, where ~305 ms of a ~490 ms switch was the underline), but that
+         line did not survive the rewrite onto the new schema: `scripts/ocut-tui.py` was a new file
+         (`a49ca8c`) and `TrackerApp` never set the level, so the slide came back and stayed.
+Change   `TrackerApp.__init__` sets `animation_level = "none"` right after `super().__init__()`.
+         Textual's `Tabs._highlight_active` animates the underline for 0.3 s at level `"basic"`,
+         which the app-wide `"basic"` setting does not suppress -- only `"none"` does. Set on the
+         app, so screens pushed on top of it inherit the level too.
+Evidence L0 2026-10-15: `test_the_tui_disables_textual_animations`, provoked red by commenting the
+         assignment out (the level then resolves to Textual's default `"full"`), green with it.
+         `python3 -m pytest scripts/tests -q` 317 passed (3 subtests), run with the final content of
+         this entry.
+Cost     The underline no longer slides -- deliberate, and the only way to remove it (`"basic"`
+         does not). Anyone who re-adds animations later silently re-pays the switch cost.
+Commit   02ec229
