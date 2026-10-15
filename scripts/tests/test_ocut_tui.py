@@ -210,6 +210,21 @@ def test_the_tracker_shows_cbuts_eight_tabs_in_order(tracker):
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
 
+def test_the_tui_disables_textual_animations(tracker):
+    """The tab-bar underline animation is off, and only ``"none"`` turns it off.
+
+    Textual's ``Tabs._highlight_active`` animates the underline at level
+    ``"basic"``, which the app-wide ``"basic"`` setting does **not** suppress — a
+    tab switch pays the slide unless ``animation_level`` is exactly ``"none"``.
+    This pins the level so a later edit cannot quietly re-enable it; it is the
+    one place the value is asserted, so removing the assignment turns it red.
+    """
+    app = tui.TrackerApp(str(tracker))
+    assert app.animation_level == "none", (
+        "the TUI must set animation_level='none'; any other level leaves Textual's "
+        f"tab-underline animation running (got {app.animation_level!r})")
+
+
 def test_every_tab_has_its_own_window_and_no_default_is_all_time(tracker):
     """The parity claim: one window per tab, not one window for the app.
 

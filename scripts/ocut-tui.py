@@ -1290,6 +1290,13 @@ if HAVE_TEXTUAL:
 
         def __init__(self, db_path, clock=None, config=None):
             super().__init__()
+            # Textual animates the tab-bar underline (Tabs._highlight_active calls
+            # underline.animate(..., level="basic")). Because it runs at level
+            # "basic", the global "basic" animation setting does NOT remove it —
+            # only "none" does — and it is the dominant cost of switching tabs.
+            # Snap it. Set right after super().__init__() so it applies to every
+            # screen pushed on top of this one too.
+            self.animation_level = "none"
             self.db_path = str(db_path)
             # Settings come from ~/.config/ocut/config.toml (or OCUT_CONFIG), with the
             # environment able to override one key. Tests pass a dict to avoid reading a
