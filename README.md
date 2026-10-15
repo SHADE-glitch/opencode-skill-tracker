@@ -8,6 +8,14 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
+**What it is** — A passive, read-only tracker that shows how you actually use OpenCode: every tool call, skill, subagent, MCP tool, model step and session.
+
+**What it solves** — OpenCode persists sessions for resuming, not for answering "which skills do I actually use?"; `ocut` indexes that data into its own database and turns it into panels and reports.
+
+**How to run** — `./install.sh`, then `ocut sync`.
+
+**Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
+
 `ocut` shows how you actually use [OpenCode](https://opencode.ai): every tool call,
 every skill and subagent, every MCP tool, every model step and its tokens, and every
 session — what ran, when, whether it finished, how long it took, and in which project.

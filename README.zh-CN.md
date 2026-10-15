@@ -8,6 +8,14 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
+**是什么** —— 一个被动只读的追踪器，展示你实际是怎么用 OpenCode 的：每一次工具调用、每个 skill、子 agent、MCP 工具、模型步骤与会话。
+
+**解决什么** —— OpenCode 为「恢复会话」而落盘，回答不了「我到底在用哪些 skill」；`ocut` 把这些数据索引进自己的库，变成面板与报表。
+
+**怎么跑** —— `./install.sh`，然后 `ocut sync`。
+
+**去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。
+
 `ocut` 告诉你 OpenCode 实际是怎么被用的：每一次工具调用、每个 skill 与子 agent、每个
 MCP 工具、每一步模型的 token、以及每个会话——谁被调用、什么时候、有没有跑完、耗时多久、
 属于哪个项目。
