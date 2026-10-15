@@ -149,12 +149,10 @@ code; the schema version tracks the data. Never conflate them.
   `ocut restore` each take a snapshot first; retention keeps the newest `BACKUP_KEEP` (5)
   managed snapshots and never touches a hand-made `usage.db.bak-*` copy. There is no systemd
   timer.
-- **Never commit runtime state**: `*.db`, `*.db-wal`, `*.db-shm`, `backups/`, `__pycache__/`,
-  `.pytest_cache/`, `.venv/`. See `.gitignore`.
-- **Never commit the working reports.** `STATE.md`, `PROFILE.md`, `AUDIT.md`, `PLAN.md`,
-  `VERIFY.md` live under `docs/reports/` and are ignored by a **non-anchored** `reports/`
-  rule, because this repository is public and those files carry real paths and measured
-  counts of a personal machine. `git check-ignore -v docs/reports/STATE.md` must name the
+- **Never commit runtime state or the working reports** — the ignore list and the process-draft
+  location are `STANDARD.md` §4 and §2; this repo adds `backups/` to the ignored set. Because
+  this repository is public and the drafts carry real paths and measured counts of a personal
+  machine, both are provable: `git check-ignore -v docs/reports/STATE.md` must name the
   `.gitignore` line, and `git ls-files docs/reports` must print nothing.
 - **Never commit secrets.** The hook records no arguments and no message text; its fixtures
   use synthetic values only.
@@ -198,12 +196,6 @@ selector that quietly deselects is worse than no selector, because it is run and
 
 - **Code and user-facing output are English** (identifiers, comments, docstrings, CLI/TUI
   text).
-- **Docs are bilingual**: `README.md` (English landing page) and `README.zh-CN.md` (Chinese
-  reference), plus `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
-  `scripts/tests/test_readme.py` asserts that **both** READMEs document every limitation id
-  in `LIMITATIONS` (that tuple is the list — do not state a range by hand), that both
-  maintenance checklists name the same checks, commands and invariants, and that both key
-  tables cover every key the screen binds (`test_readmes_document_every_key_the_screen_binds`).
 - **A module reaches core state through the module object, never by value.** A name copied in
   at import time ignores the suite's `monkeypatch.setattr`, which is how a test would
   silently read this machine instead of its fixture.
@@ -214,11 +206,20 @@ selector that quietly deselects is worse than no selector, because it is run and
 - **Never parse a row's identity out of its `key`.** Names contain the separators
   (`@scope/pkg@1.0/tool`, `conductor:newTrack`, server names with `_`); each table registers
   the row's target separately and `enter` looks it up.
-- Commit messages are **English** and follow Conventional Commits (`feat:`, `docs:`,
-  `chore:`, `fix:`), code before docs.
 - The test suite must be green before pushing. Tests locate files via
   `Path(__file__).resolve()`, so they pass both from the repo and through the symlinked
   install locations — do not replace those with hardcoded paths.
+
+## Docs & commits
+
+- **Docs are bilingual**: `README.md` (English landing page) and `README.zh-CN.md` (Chinese
+  reference), plus `MAINTENANCE.md` / `MAINTENANCE.zh-CN.md` (the operating checklist).
+  `scripts/tests/test_readme.py` asserts that **both** READMEs document every limitation id
+  in `LIMITATIONS` (that tuple is the list — do not state a range by hand), that both
+  maintenance checklists name the same checks, commands and invariants, and that both key
+  tables cover every key the screen binds (`test_readmes_document_every_key_the_screen_binds`).
+- Commit messages are **English** and follow Conventional Commits (`feat:`, `docs:`,
+  `chore:`, `fix:`), code before docs.
 
 ## Recording conventions
 
