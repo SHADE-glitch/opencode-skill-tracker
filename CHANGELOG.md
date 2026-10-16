@@ -1338,3 +1338,18 @@ Evidence 2026-10-16: CodeBuddy CLI (`-p --tools ''`, every tool disabled) in a d
 Cost     Both hooks name `~/.agents`, absent in another clone, so they are skipped there — the
          pointer stays the portable part. Nothing is copied, so nothing can drift.
 Commit   92bde42
+
+### D-071 · 2026-10-16 · fix · M3
+Symptom  The static scan excluded `opencode-notifier` alongside `ocut-hook`, so a plugin shipped
+         under that name had its surface read as empty and none of its tools was ever attributed
+         — the stated reason (it registers nothing we track) only held for that one package, not
+         for the name.
+Change   Reduce `PLUGIN_EXCLUDE_DEFAULT` to `["ocut-hook"]` and scan every other plugin, the
+         notifier included. Also drop an unused `import importlib.util` from `scripts/ocut-tui.py`.
+Evidence L0 2026-10-16: `test_a_notifier_shaped_plugin_is_scanned_not_skipped` fails with the
+         notifier put back into the exclusion and passes with it removed;
+         `python3 -m pytest scripts/tests -q` 318 passed (venv and system interpreters).
+Cost     A plugin whose source only *mentions* a `tool:{ … }` shape can still be misread, which is
+         why the hook's own file keeps its by-name exclusion; anything now scanning that name
+         needs the same care, and its surface rows are no longer guaranteed empty.
+Commit   67c2293
