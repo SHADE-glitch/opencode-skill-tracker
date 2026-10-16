@@ -47,6 +47,7 @@ REPO = next(p for p in Path(__file__).resolve().parents if (p / ".git").exists()
 
 # STANDARD.md "Root files (the finalized layer)", minus the LICENSE that only
 # dimension A requires, and with the tool manifest rather than the plugin one.
+# `opencode.json` is the cross-dimension agent-delivery config (STANDARD.md §1).
 ROOT_FILES = (
     "AGENTS.md",
     "README.md",
@@ -56,6 +57,7 @@ ROOT_FILES = (
     "MAINTENANCE.zh-CN.md",
     "LICENSE",
     ".gitignore",
+    "opencode.json",
     "pyproject.toml",
 )
 ROOT_DIRS = ("docs", ".github/workflows")
