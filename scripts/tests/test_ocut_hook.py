@@ -155,6 +155,37 @@ def test_the_hook_does_not_attribute_its_own_source(tmp_path):
 
 
 @requires_bun
+def test_a_notifier_shaped_plugin_is_scanned_not_skipped(tmp_path):
+    """The exclusion is the hook's own file only; a notifier spec is read too.
+
+    `opencode-notifier` used to be excluded by name alongside `ocut-hook`. It
+    registers nothing the scan tracks, but the exclusion also meant a plugin
+    shipped under that name was never read at all. Now only `ocut-hook` is
+    excluded, so a notifier-shaped spec is scanned like any other and its surface
+    is recorded.
+    """
+    cfg = tmp_path / "cfg"
+    (cfg / "plugins").mkdir(parents=True)
+    (cfg / "plugins" / "opencode-notifier.js").write_text(
+        "export const N = async () => ({\n"
+        "  tool: { ping: { description: 'x', execute: async () => ({}) } },\n"
+        "});\n")
+    (cfg / "opencode.json").write_text(json.dumps(
+        {"plugin": ["./plugins/opencode-notifier.js"]}))
+    sidecar, env = env_for(tmp_path, cfg)
+    r = run_bun(
+        "const m = await import(process.env.PLUGIN_PATH);"
+        "await m.default.server({ directory: process.env.OCUT_OPENCODE_CONFIG });"
+        "console.log('OK');",
+        env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    surfaces = [x for x in records(sidecar) if x["t"] == "surface"]
+    notifier = [s for s in surfaces if "opencode-notifier" in s["plugin"]]
+    assert notifier, f"the notifier spec was skipped: {surfaces}"
+    assert notifier[0]["tools"] == ["ping"], notifier
+
+
+@requires_bun
 def test_disable_turns_the_hook_into_a_no_op(tmp_path):
     """`OCUT_HOOK_DISABLE=1` is the off switch, and it writes nothing."""
     cfg = fixture_cfg(tmp_path)

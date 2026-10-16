@@ -59,13 +59,14 @@ const HOOKS_MAX = 20000;                   // start-time entries kept for durati
 // imports. A plugin whose surface it cannot parse simply records nothing, which
 // is honest — a guessed owner would be worse than a missing row.
 
-// Plugins the scan must never read: the notifier (it registers nothing we track)
-// and this hook's own file. After `install.sh`, the hook sits in the very plugin
-// directory `localPluginSpecs()` enumerates, and its own source carries the
-// literal `tool:{ … { compress: … } }` in a comment (explaining the scan) — which
-// the shape-based scanner read as a real `compress` tool and attributed to
-// `ocut-hook.js`. A plugin cannot own a tool it merely mentions.
-const PLUGIN_EXCLUDE_DEFAULT = ["opencode-notifier", "ocut-hook"];
+// Plugins the scan must never read: this hook's own file. After `install.sh`, the
+// hook sits in the very plugin directory `localPluginSpecs()` enumerates, and its
+// own source carries the literal `tool:{ … { compress: … } }` in a comment
+// (explaining the scan) — which the shape-based scanner read as a real `compress`
+// tool and attributed to `ocut-hook.js`. A plugin cannot own a tool it merely
+// mentions. Every other plugin is scanned, the notifier included: a plugin that
+// registers nothing simply yields an empty surface, which is honest.
+const PLUGIN_EXCLUDE_DEFAULT = ["ocut-hook"];
 
 // Inside a `tool: { … }` object the tool ids are the keys at the shallowest
 // level that has any. Anything deeper belongs to one tool's own definition

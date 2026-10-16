@@ -12,7 +12,6 @@ instead of a traceback.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sqlite3
 import sys
 import threading
