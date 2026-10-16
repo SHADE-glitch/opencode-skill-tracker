@@ -1353,3 +1353,16 @@ Cost     A plugin whose source only *mentions* a `tool:{ … }` shape can still 
          why the hook's own file keeps its by-name exclusion; anything now scanning that name
          needs the same care, and its surface rows are no longer guaranteed empty.
 Commit   67c2293
+
+### D-072 · 2026-10-16 · chore
+Symptom  `ocut_db.cache_read_rate` had no caller once the TUI's Hit rate moved to
+         `cache_hit_rate`, yet it was still shipped and unit-tested — while `cache_hit_rate`,
+         the function every panel actually prints from, had no direct coverage of its own.
+Change   Remove `cache_read_rate`; point its two cases at `cache_hit_rate`
+         (`hit / (hit + miss + write)`, including the `write` denominator term and the
+         undefined cases).
+Evidence L0 2026-10-16: `python3 -m pytest scripts/tests -q` 318 passed; no remaining reference to
+         `cache_read_rate` in the repository.
+Cost     The OpenCode-native rate (`cache_read / (cache_read + prompt)`) is no longer written down
+         in one place; re-derive it from the two columns if a native-rate view is ever wanted.
+Commit   8523243
