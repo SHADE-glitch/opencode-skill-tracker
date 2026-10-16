@@ -1366,3 +1366,33 @@ Evidence L0 2026-10-16: `python3 -m pytest scripts/tests -q` 318 passed; no rema
 Cost     The OpenCode-native rate (`cache_read / (cache_read + prompt)`) is no longer written down
          in one place; re-derive it from the two columns if a native-rate view is ever wanted.
 Commit   8523243
+
+### D-073 · 2026-10-16 · perf
+Symptom  `idx_tool_sess` and `idx_model_call_session` came from the first schema and no query ever
+         filtered by either column, so every insert into `tool_calls` and `model_calls` maintained a
+         lookup nothing reads. Separately, `SCHEMA_SQL = TABLES_SQL + VIEWS_SQL` had no caller at
+         all: `ensure_schema` runs the two halves separately, in that order and with the stored
+         version read between them.
+Change   Drop both indexes. Because `CREATE INDEX IF NOT EXISTS` can add an index and never take
+         one back, `ensure_schema` now retires every `idx_*` the current `TABLES_SQL` does not
+         declare — after the newer-than-this-build check, so a future build's indexes are its own.
+         Delete the dead constant and add three cases plus the invariant sentence in both
+         MAINTENANCE files, so the declaration site stays the only place an index may appear.
+Evidence L0 2026-10-16: measured on the real row counts (tool_calls 30,638 / model_calls 24,904 /
+         sessions 368) — full-table insert 218.9 ms with the two indexes against 93.0 ms without,
+         file 18.55 MiB against 16.44 MiB. Retire is provoked: removing the
+         `_retire_undeclared_indexes(conn)` call turns
+         `test_an_index_the_schema_no_longer_declares_is_retired_on_open` red, and putting
+         `idx_tool_sess` back into `TABLES_SQL` turns
+         `test_no_declared_index_is_keyed_on_a_session_no_query_names` red. Real file (snapshot
+         `usage-20261016-201115-manual.db`, 20,824,064 B taken first): `migrate` returned
+         `current`, `idx_*` went 17 -> 15, `quick_check`/`integrity_check` ok, and the row counts read
+         the same on both sides of it (tool_calls 30,638 / model_calls 24,904 / sessions 368).
+         `ocut sync` then finished in 0.3 s — 129 new calls, taking the file to 30,767 / 25,007 — and
+         `ocut health` named the same schema 3, one cursor pair and 3 `unparsed` records as before.
+         `python3 -m pytest scripts/tests -q` 321 passed.
+Cost     A dropped index hands its pages to the freelist, not to the filesystem: the real file grew
+         665 freelist pages (~2.7 MiB) and keeps its 20.8 MiB until somebody runs a `VACUUM`, which
+         this project still has none of. Any index a later commit wants must be declared in
+         `TABLES_SQL`, or the next open retires it.
+Commit   08eca88
