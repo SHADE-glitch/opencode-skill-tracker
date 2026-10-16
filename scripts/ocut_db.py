@@ -379,7 +379,6 @@ CREATE TABLE IF NOT EXISTS plugin_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_plugin_usage_plugin ON plugin_usage(plugin);
 CREATE INDEX IF NOT EXISTS idx_plugin_usage_ts     ON plugin_usage(ts);
-CREATE INDEX IF NOT EXISTS idx_plugin_usage_item   ON plugin_usage(item);
 
 -- The tool and command ids each installed plugin registers, as scanned by
 -- `plugin/ocut-hook.js` at load. Kept apart from `inventory` on purpose: the hook

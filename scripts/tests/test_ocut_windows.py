@@ -316,3 +316,30 @@ def test_no_declared_index_is_keyed_on_a_session_no_query_names():
         " AND sql LIKE '%session_id%'")]
     assert keyed == [], f"an index on a session key nothing queries is back: {keyed}"
     conn.close()
+
+
+def test_no_declared_index_is_keyed_on_a_plugin_item_no_query_compares():
+    """The same cut one table over: `item` is written and read, never compared.
+
+    `idx_plugin_usage_item` keyed a column the shipped code only ever *selects*.
+    `q_plugin_history`, `q_plugin_summary` and the plugin views return `item`, and
+    nothing compares it — no `=`, `LIKE`, `IN` or `ORDER BY` on it, in
+    `ocut_db.py`, `ocut-sync.py`, `ocut-stats.py` or the hook. The count is not
+    read off a regex over source (f-string SQL defeats that, which is how this one
+    survived the first sweep): the suite's own statements were captured with
+    `set_trace_callback` and re-planned with `EXPLAIN QUERY PLAN` on a real-size
+    database, and the index is named in 0 of the 1,452 plans that parsed.
+
+    The honest size of it: at today's 284 rows this buys nothing a stopwatch can
+    see — a 265-row `plugin_usage` load took 0.50 ms with the index and 0.44 ms
+    without. What it removes is a structure no reader reaches that the hook pays
+    for on every write, forever. Extrapolated to 200,000 rows the same insert pass
+    was 794.5 ms against 590.4 ms, and the file 26.7 MB against 23.2 MB.
+    """
+    conn = sqlite3.connect(":memory:")
+    db.ensure_schema(conn)
+    keyed = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name GLOB 'idx_*'"
+        " AND sql LIKE '%plugin_usage(item)%'")]
+    assert keyed == [], f"an index on a plugin item nothing queries is back: {keyed}"
+    conn.close()
