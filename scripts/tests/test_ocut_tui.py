@@ -285,18 +285,17 @@ def test_the_tools_tab_prints_exactly_its_own_window_of_the_tools_query(
             assert any(r["calls"] != r["completed"] for r in rows), \
                 "fixture has no failed call: the ok column cannot be told apart"
             assert first_column(table) == [r["tool_name"] for r in rows], (rng, rows)
+            at = list(tui.TOOLS_COLUMNS).index(db.ENTITY_STATE_COLUMN)
             for i, r in enumerate(rows):
-                # Column 1 is `state` now, so the counts start at 2. Read the
-                # state back through the shared helper rather than pasting the
-                # three labels here: this case is about the wiring, and a label
-                # spelled twice in two files is a label that can disagree with
-                # itself.
-                assert [cell(table, i, j) for j in (2, 3, 4)] == \
+                # Counts are columns 1..3; `state` is last, as in CodeBuddy's TUI.
+                # Read the state back through the shared helper rather than pasting
+                # the labels here: this case is about the wiring.
+                assert [cell(table, i, j) for j in (1, 2, 3)] == \
                     [f"{r['calls']:,}", f"{r['completed']:,}", f"{r['errored']:,}"], \
                     (rng, r)
-                assert cell(table, i, 1) == db.entity_state(
+                assert cell(table, i, at) == db.entity_state(
                     r["installed"], r["ever_used"], "tool"), (rng, r)
-            seen[rng] = [cell(table, i, 2) for i in range(table.row_count)]
+            seen[rng] = [cell(table, i, 1) for i in range(table.row_count)]
         assert seen[default] != seen["all"], (default, seen)
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
@@ -343,7 +342,9 @@ def test_token_panels_print_the_hosts_own_step_numbers(tracker, clock):
     """The Tokens panel sums `model_calls` — the per-step granularity, not the rollup.
 
     Summed at the bounds the app derived, so the panel cannot pass by accident while
-    reading a different table or a different window.
+    reading a different table or a different window. The labels are CodeBuddy's:
+    ``Input`` is the full prompt (hit + miss + write) and ``Usage Total`` re-adds the
+    cache hit, so both are derived from the three OpenCode cache numbers here.
     """
     conn = sqlite3.connect(tracker)
 
@@ -353,34 +354,36 @@ def test_token_panels_print_the_hosts_own_step_numbers(tracker, clock):
         await pilot.pause(0.6)
         start, end = app._bounds_for("tab-dashboard")
         rows = conn.execute(
-            "SELECT prompt_tokens, cache_read, total_tokens FROM model_calls"
+            "SELECT prompt_tokens, completion_tokens, cache_read, cache_write,"
+            " total_tokens FROM model_calls"
             " WHERE (? IS NULL OR ts >= ?) AND (? IS NULL OR ts <= ?)",
             (start, start, end, end)).fetchall()
         assert rows, f"nothing in {start}..{end}"
-        prompt = sum(r[0] for r in rows)
-        read = sum(r[1] for r in rows)
-        total = sum(r[2] for r in rows)
+        prompt = sum(r[0] for r in rows)          # uncached input = cache miss
+        completion = sum(r[1] for r in rows)
+        read = sum(r[2] for r in rows)            # cache read = cache hit
+        write = sum(r[3] for r in rows)
+        total = sum(r[4] for r in rows)
+        inp = prompt + read + write               # full prompt = CodeBuddy's Input
         got = {w.id: str(w.content) for w in app.query("#dash-tok-input, #dash-tok-api,"
                                                       " #dash-cache-hit,"
                                                       " #dash-tok-usage")}
-        assert f"{prompt:,}" in got["dash-tok-input"], got
+        assert f"{inp:,}" in got["dash-tok-input"], got
         assert f"{total:,}" in got["dash-tok-api"], got
         assert f"{read:,}" in got["dash-cache-hit"], got
-        # prompt total = input + cache read, and it is NOT the host total
-        assert f"{prompt + read:,}" in got["dash-tok-usage"], got
+        # Usage Total = Input + Output + cache hit, and it is NOT the host total
+        assert f"{inp + completion + read:,}" in got["dash-tok-usage"], got
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
 
 
-def test_no_panel_repeats_the_input_number_under_a_second_label(tracker):
-    """The one duplicate the ported layout really carried, pinned as a label claim.
+def test_the_cache_panel_uses_codebuddys_three_labels(tracker):
+    """The cache breakdown carries CodeBuddy's three labels, not two.
 
-    CodeBuddy's cache panel had three numbers (hit / miss / write); OpenCode has two
-    (read / write) and its `input` IS the miss. Printing it again as "Uncached in"
-    made one column look like two measurements of different things — and a general
-    "no two panels may show the same number" rule is not an invariant, because two
-    different metrics legitimately coincide (every call completing is also every
-    call not failing). So this names the labels instead of policing the values.
+    CodeBuddy's panel is hit / miss / write; OpenCode's uncached ``prompt_tokens`` IS
+    its miss, so the three labels map onto read / input / write. Pinned as labels
+    rather than values: two different metrics can legitimately coincide, but the
+    vocabulary is a contract.
     """
     async def body(pilot, app):
         for pane, cache_panel in (("tab-dashboard", "panel-dash-cache"),
@@ -391,9 +394,9 @@ def test_no_panel_repeats_the_input_number_under_a_second_label(tracker):
             await pilot.pause(0.5)
             labels = value_labels(app, f"#{pane} .usage-panel")
             assert len(labels) >= 9, f"{pane} has no panel lines to check: {labels}"
-            assert not any("Uncached" in x for x in labels), (pane, labels)
+            assert "Usage Total" in labels and "Cache miss" in labels, (pane, labels)
             cache = value_labels(app, f"#{cache_panel}")
-            assert sorted(cache) == ["Cache read", "Cache write", "Hit rate"], \
+            assert {"Cache hit", "Cache miss", "Cache write"} <= set(cache), \
                 (pane, cache)
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
@@ -405,28 +408,21 @@ def test_the_plugins_tab_shows_a_uses_column(tracker):
 
     Pinned as the exact header list, so changing the column set is a decision with a
     red test in front of it rather than a quiet edit. The fixture runs `sync` with no
-    hook sidecar, so both plugins show 0 uses and no last-used time — the honest
-    reading of "the hook recorded nothing", never "not used". `state` sits second
-    because the column plan drops the tail first: a nine-wide Plugins table loses its
-    last four columns long before it loses "is this still here".
+    hook sidecar, so both plugins show 0 uses — the honest reading of "the hook
+    recorded nothing", never "not used". `state` is last, as in CodeBuddy's TUI.
     """
     async def body(pilot, app):
         await activate(app, pilot, "tab-plugins")
         table = app.query_one("#t-plugins", DataTable)
-        assert headers(table) == ["plugin", "state", "version", "uses",
-                                  "last used", "skills", "agents", "cmds",
-                                  "declared as"]
+        assert headers(table) == ["plugin", "uses", "skills", "agents", "cmds",
+                                  "state"]
         assert table.row_count == 2, first_column(table)
         rows = {cell(table, i, 0): (cell(table, i, 1), cell(table, i, 2),
                                     cell(table, i, 3), cell(table, i, 4),
-                                    cell(table, i, 5), cell(table, i, 6),
-                                    cell(table, i, 7), cell(table, i, 8))
+                                    cell(table, i, 5))
                 for i in range(table.row_count)}
-        assert rows["demo-plugin"] == ("installed", "1.2.3", "0", "-",
-                                       "0", "0", "0",
-                                       "@acme/demo-plugin@1.2.3"), rows
-        assert rows["local-one"] == ("installed", "-", "0", "-",
-                                     "0", "0", "0", "./plugins/local-one.js"), rows
+        assert rows["demo-plugin"] == ("0", "0", "0", "0", "installed"), rows
+        assert rows["local-one"] == ("0", "0", "0", "0", "installed"), rows
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
 
@@ -442,19 +438,18 @@ STATES = {db.ENTITY_STATE_USED, db.ENTITY_STATE_INSTALLED, db.ENTITY_STATE_REMOV
           db.ENTITY_STATE_UNREPORTED}
 
 
-def test_every_entity_tab_prints_a_state_next_to_the_name(tracker):
-    """`state` is column 1 on every entity tab — or column 2 on MCP, which is keyed
-    by (server, tool) and cannot put a label between the two halves of its own key.
+def test_every_entity_tab_prints_a_state_last(tracker):
+    """`state` is the last column on every entity tab, as in CodeBuddy's TUI.
 
-    Not column last: the column plan keeps the longest *prefix* that fits, so the
-    last column is the first one a narrow terminal loses, and "is this still here"
-    is the one thing on the row that the count beside it cannot answer.
+    The column plan keeps the longest *prefix* that fits, so the tail is what a
+    narrow terminal drops first: the counts stay readable without it. MCP is keyed
+    by (server, tool) and keeps its key halves adjacent, but still ends on `state`.
     """
     for columns in (tui.TOOLS_COLUMNS, tui.SKILLS_COLUMNS, tui.AGENTS_COLUMNS,
                     tui.PLUGINS_COLUMNS):
-        assert columns[1] == db.ENTITY_STATE_COLUMN, columns
+        assert columns[-1] == db.ENTITY_STATE_COLUMN, columns
     assert tui.MCP_COLUMNS[:2] == ("server", "tool"), tui.MCP_COLUMNS
-    assert tui.MCP_COLUMNS[2] == db.ENTITY_STATE_COLUMN, tui.MCP_COLUMNS
+    assert tui.MCP_COLUMNS[-1] == db.ENTITY_STATE_COLUMN, tui.MCP_COLUMNS
 
 
 def test_each_entity_tab_renders_a_state_label_from_the_shared_helper(tracker):
@@ -507,8 +502,9 @@ def test_a_kind_we_cannot_census_says_so_instead_of_calling_it_removed(tracker):
     async def body(pilot, app):
         await activate(app, pilot, "tab-tools")
         table = app.query_one("#t-tools", DataTable)
+        at = list(tui.TOOLS_COLUMNS).index(db.ENTITY_STATE_COLUMN)
         row = first_column(table).index(tools[0]["tool_name"])
-        cell_value = table.get_cell_at((row, 1))
+        cell_value = table.get_cell_at((row, at))
         assert str(cell_value) == db.ENTITY_STATE_UNREPORTED, tools[0]["tool_name"]
         assert isinstance(cell_value, tui.Text), type(cell_value)
         assert cell_value.style == "dim", cell_value.style
@@ -522,13 +518,14 @@ def test_a_kind_we_cannot_census_says_so_instead_of_calling_it_removed(tracker):
         await activate(app, pilot, "tab-skills")
         skills = app.query_one("#t-skills", DataTable)
         names = first_column(skills)
+        at = list(tui.SKILLS_COLUMNS).index(db.ENTITY_STATE_COLUMN)
         if alive:
             row = names.index(alive[0]["skill"])
-            assert skills.get_cell_at((row, 1)) == db.ENTITY_STATE_INSTALLED, \
+            assert skills.get_cell_at((row, at)) == db.ENTITY_STATE_INSTALLED, \
                 alive[0]["skill"]
         if gone:
             row = names.index(gone[0]["skill"])
-            assert str(skills.get_cell_at((row, 1))) == db.ENTITY_STATE_REMOVED, \
+            assert str(skills.get_cell_at((row, at))) == db.ENTITY_STATE_REMOVED, \
                 gone[0]["skill"]
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 

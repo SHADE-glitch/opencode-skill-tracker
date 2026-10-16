@@ -295,24 +295,16 @@ def cmd_models(conn, args):
 
 
 def cmd_plugins(conn, args):
-    # `uses`/`last used` come from plugin_usage, written only by
-    # plugin/ocut-hook.js; a plugin the hook has not seen shows 0 / "-". Same
-    # fields IN THE SAME ORDER as the TUI's Plugins tab, so the two surfaces
-    # cannot disagree about what is known -- the claim was written when this table
-    # had five columns and the TUI five different ones.
-    #
-    # `state` sits after the name here for the same reason it does in the TUI,
-    # where the reason was the prefix column plan. There is no width trimming in a
-    # terminal report, so that reason does not apply: what it gets instead is the
-    # one that applies to both -- the label belongs to the name on its left, and a
-    # report read six columns later should not have to scroll back to find out.
+    # `uses` comes from plugin_usage, written only by plugin/ocut-hook.js; a
+    # plugin the hook has not seen shows 0. Same fields IN THE SAME ORDER as the
+    # TUI's Plugins tab (CodeBuddy's five columns plus a trailing `state`), so the
+    # two surfaces cannot disagree about what is known.
     rows = _rows(db.q_plugins(conn),
-                 ["plugin", "version", "uses", "last_used", "skills", "agents",
-                  "commands", "path", "installed", "ever_used"])
-    print(table_or(["plugin", "state", "version", "uses", "last used", "skills",
-                    "agents", "cmds", "declared as"],
-                   [[r[0], _state(r, "plugin"), r[1] or "-", f"{r[2]:,}", ts(r[3]),
-                     f"{r[4]:,}", f"{r[5]:,}", f"{r[6]:,}", r[7] or "-"]
+                 ["plugin", "uses", "skills", "agents", "commands",
+                  "installed", "ever_used"])
+    print(table_or(["plugin", "uses", "skills", "agents", "cmds", "state"],
+                   [[r[0], f"{r[1]:,}", f"{r[2]:,}", f"{r[3]:,}", f"{r[4]:,}",
+                     _state(r, "plugin")]
                     for r in rows],
                    empty="  (none)"))
 

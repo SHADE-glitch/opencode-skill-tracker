@@ -174,14 +174,14 @@ tab 栏与页脚就是全部按键面：
 
 | 面板 | 标签 |
 |---|---|
-| Usage | `Tool calls`、`Skills`、`Agents`、`MCP`、`Plugins inst.` |
-| Tokens | `Requests`、`Input`、`Output`、`API Total`、`Prompt Total` |
-| Cache | `Cache read`、`Cache write`、`Hit rate` |
-| Runtime | `Completed`、`Failed`、`Avg tool time`、`Sessions`、`Projects` |
+| Usage | `Tool calls`、`Skills`、`Agents`、`MCP`、`Plugins` |
+| Tokens | `Requests`、`Input`、`Output`、`API Total`、`Usage Total`、`Hit rate` |
+| Cache | `Cache hit`、`Cache miss`、`Cache write` |
+| Runtime | `Completed`、`Incomplete`、`Avg tool time`、`Sessions`、`Projects` |
 
 下面坐着 `Top models` 与 `Top tools` 两个排行榜，以及一张 `Calls per day` 趋势图。
-`Plugins inst.` 数的是**已安装**的东西，绝不是「用过的」——被动读取器没有任何证据说明某个插件
-或命令真的跑过。
+`Plugins` 数的是该窗口内可选 hook 记到的不同插件数——除非 hook 写了东西，被动读取器没有
+任何证据说明某个插件或命令真的跑过（M3）。
 
 **Tools / Skills / Agents / Plugins / MCP** 五个 tab 一行一个实体，列出调用次数、成功数、
 平均耗时与最近使用；在某行按 `enter` 打开该实体的最近调用历史。**Tokens** tab 是宿主自己
@@ -382,7 +382,7 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
 
 ## 🚧 已知限制
 
-下面这份清单覆盖 **M1–M16**。
+下面这份清单覆盖 **M1–M17**。
 
 - **M1** OpenCode 自己的数据库是**事实来源**。`ocut` 只看得见宿主写下的东西；宿主从没为某次调用
   写下 `part`，它就是不可见，而不是被记错。
@@ -419,13 +419,19 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
   `~/.opencode`、`$OPENCODE_CONFIG_DIR` 和 `skills.paths` / `skills.urls` 配置键。这些**没有**进入
   inventory：前一组需要一个会话目录作为起点，后一组要下载东西，而这个读取器不下载。只装在项目层
   的技能因此不会显示为已安装。把共享技能放进上面两个根之一就会被认到。
-- **M13** Tokens 与 Usage 两张表**不携带** cache *miss* 列，也**不携带**第二个总计列，因为宿主根本没有
-  这个字段：一条 `step-finish` part 只公布 `tokens.cache.read` 和 `tokens.cache.write`，中间没有东西。
-  补一列 miss 只会得到一整列看起来像测量值的 0；而 `Prompt Total` 已经占了第二个总计本该在的位置。
+- **M13** Tokens 与 Usage 两张表会显示 `Cache miss` 列和 `Usage Total`，尽管宿主并没有发布这些字段：
+  一条 `step-finish` part 只带一个*未命中缓存*的 `prompt_tokens`，外加 `tokens.cache.read` /
+  `tokens.cache.write`。这些标签照搬姊妹项目 CodeBuddy 的 TUI，所以这是一次**重新标注**，不是新的
+  测量值：`Cache miss` 就是那段未命中缓存的输入，`Cache hit` 是缓存读取量，`Input` 是三者之和
+  （完整 prompt），`Usage Total` 是仅供展示的 `Input + Output + cache hit`。`API Total` 仍是宿主自己的
+  step 总计；这些派生数字要与它并排看，绝不代替它。
 - **M14** `state` 列在没有相反**没有证据**时读作 `installed`，在 Plugins 页上这就是它的含义。那一页的
   用量只有那个可选的 hook 会写（M3），所以「装了、hook 什么也没记到」的插件，与「装了、从没被碰过」的
   插件拿到的是同一个标签。这个标签刻意只讲 inventory 行，不讲用量：这一列里没有任何一个字在说
   「它跑过」。
+- **M17** TUI 的**页级**列、面板与标签已对齐姊妹项目 CodeBuddy，但两张**下钻详情屏**和状态行仍用 ocut
+  自己的字段：OpenCode 没有插件 `target`/`marketplace`，也没有独立于 `cache_read` 的 cache hit/miss，
+  所以插件历史与模型响应表**无法逐字**列对列一致——除非凭空造字段。
 
 ---
 

@@ -316,8 +316,7 @@ def test_v_plugins_counts_the_four_kinds_a_plugin_can_own(conn):
 
 # --- the headless surface ---------------------------------------------------
 
-PLUGIN_HEADERS = ["plugin", "state", "version", "uses", "last used", "skills",
-                  "agents", "cmds", "declared as"]
+PLUGIN_HEADERS = ["plugin", "uses", "skills", "agents", "cmds", "state"]
 
 
 def stats(conn, *args) -> str:
@@ -380,6 +379,6 @@ def test_the_headless_plugins_list_prints_a_state_per_row(conn):
     body = [ln for ln in stats(conn, "plugins").splitlines()
             if ln.split() and ln.split()[0] in ("alpha", "retired")]
     assert len(body) == 2, body
-    printed = {ln.split()[0]: ln.split()[1] for ln in body}
+    printed = {ln.split()[0]: ln.split()[-1] for ln in body}
     assert printed["alpha"] == db.ENTITY_STATE_INSTALLED, body
     assert printed["retired"] == db.ENTITY_STATE_REMOVED, body

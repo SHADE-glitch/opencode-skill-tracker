@@ -187,14 +187,14 @@ token totals, each label printed beside its number:
 
 | Panel | Labels |
 |---|---|
-| Usage | `Tool calls`, `Skills`, `Agents`, `MCP`, `Plugins inst.` |
-| Tokens | `Requests`, `Input`, `Output`, `API Total`, `Prompt Total` |
-| Cache | `Cache read`, `Cache write`, `Hit rate` |
-| Runtime | `Completed`, `Failed`, `Avg tool time`, `Sessions`, `Projects` |
+| Usage | `Tool calls`, `Skills`, `Agents`, `MCP`, `Plugins` |
+| Tokens | `Requests`, `Input`, `Output`, `API Total`, `Usage Total`, `Hit rate` |
+| Cache | `Cache hit`, `Cache miss`, `Cache write` |
+| Runtime | `Completed`, `Incomplete`, `Avg tool time`, `Sessions`, `Projects` |
 
 Below those sit the `Top models` and `Top tools` leaderboards, and a `Calls per day`
-trend. `Plugins inst.` counts what is **installed**, never what was used — a passive
-reader has no evidence a plugin or command ran.
+trend. `Plugins` counts the distinct plugins the optional hook recorded in the window —
+a passive reader has no evidence a plugin or command ran unless the hook wrote it (M3).
 
 The **Tools / Skills / Agents / Plugins / MCP** tabs are one row per entity, with calls,
 success, average duration and last use; `enter` on a row opens that entity's recent-call
@@ -422,7 +422,7 @@ is the deliberate act.
 
 ## 🚧 Known limitations
 
-The list below runs **M1–M16**. The Chinese README carries the same list with more
+The list below runs **M1–M17**. The Chinese README carries the same list with more
 detail in [§9](README.zh-CN.md#-9-已知限制).
 
 - **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
@@ -475,17 +475,26 @@ detail in [§9](README.zh-CN.md#-9-已知限制).
   this reader does not do. A skill installed only at project level therefore does
   not appear as installed. Put shared skills in one of the two roots above and they
   will.
-- **M13** The Tokens and Usage lists **does not carry** a cache-*miss* column or a second
-  grand total, because the host reports no such field: a `step-finish` part publishes
-  `tokens.cache.read` and `tokens.cache.write` and nothing between them. A miss column
-  would be a column of zeros that looks like a measurement, and `Prompt Total` already
-  occupies the position a second total would want.
+- **M13** The Tokens and Usage lists show a `Cache miss` column and a `Usage Total`
+  even though the host publishes no such fields: a `step-finish` part carries only an
+  *uncached* `prompt_tokens` plus `tokens.cache.read` / `tokens.cache.write`. The labels
+  mirror the sibling CodeBuddy tracker, so this is a **re-labelling**, not new
+  measurements — `Cache miss` is the uncached input, `Cache hit` is the cache read,
+  `Input` is all three added (the full prompt), and `Usage Total` is the display-only
+  `Input + Output + cache hit`. `API Total` stays the host's own step total; read the
+  derived numbers beside it, never instead of it.
 - **M14** The `state` column reads `installed` when there is **no evidence** to the
   contrary, and that is what it means on the Plugins tab. Usage there is written only by
   the optional hook (M3), so an installed plugin whose hook has recorded nothing carries
   exactly the same label as one that was installed and never touched. The label is
   deliberately about the inventory row, not about usage: nothing in this column is a claim
   that the thing ran.
+- **M17** The TUI's **tab-level** columns, panels and labels mirror the sibling
+  CodeBuddy tracker's, but the two pushed **detail** screens and the status line keep
+  ocut's own fields: OpenCode names no plugin `target`/`marketplace` and reports no
+  separate cache hit/miss beside `cache_read`, so the plugin-history and
+  model-response tables cannot be column-for-column identical without inventing a
+  field.
 
 ---
 

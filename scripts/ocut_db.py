@@ -1405,6 +1405,24 @@ def cache_read_rate(cache_read, prompt):
     return cache_read / base
 
 
+def cache_hit_rate(hit, miss, write=None):
+    """``hit / (hit + miss + write)`` as a fraction, or ``None`` when undefined.
+
+    The CodeBuddy-shaped rate, kept identical to that tracker's so the two TUIs show
+    the same number under "Hit rate". Its three parts are OpenCode's ``cache_read``
+    (hit), uncached ``prompt_tokens`` (miss) and ``cache_write`` (write) — a partition
+    of the full prompt, so the denominator is the cacheable input. ``write=None``
+    counts as 0; NULL on ``hit`` or ``miss``, or a zero denominator, yields ``None``
+    (never a fabricated rate).
+    """
+    if hit is None or miss is None:
+        return None
+    base = hit + miss + (write or 0)
+    if base == 0:
+        return None
+    return hit / base
+
+
 class CustomWindow(NamedTuple):
     """An absolute window chosen in the date picker (as opposed to a preset).
 
@@ -1622,8 +1640,9 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
     q_tools/q_skills/q_agents/q_mcp in the same window (every call carries a
     name), so the Dashboard always agrees with the per-entity tabs. ``sessions`` is
     the number of sessions that *started* in the window, which is not the same
-    question as "how many calls happened in it". There is no ``plugins`` key: see
-    :func:`q_plugins` for why a passive reader cannot count a plugin running.
+    question as "how many calls happened in it". ``plugins`` is
+    ``COUNT(DISTINCT plugin)`` over ``plugin_usage`` (the hook's sidecar) — the
+    windowed form of what the Plugins tab lists, matching CodeBuddy's Dashboard.
     """
     where, params = _time_filter(start_ts, end_ts, col="ts")
     started, started_params = _time_filter(start_ts, end_ts, col="started_at")
@@ -1637,6 +1656,7 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
         "skills": one(f"SELECT COUNT(*) FROM skill_usage{where}"),
         "agents": one(f"SELECT COUNT(*) FROM agent_usage{where}"),
         "mcp": one(f"SELECT COUNT(*) FROM mcp_usage{where}"),
+        "plugins": one(f"SELECT COUNT(DISTINCT plugin) FROM plugin_usage{where}"),
         "sessions": one(f"SELECT COUNT(*) FROM sessions{started}", started_params),
     }
 

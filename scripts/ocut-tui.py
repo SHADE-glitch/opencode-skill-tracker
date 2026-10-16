@@ -118,6 +118,33 @@ def local_time(ms):
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _input_tokens(prompt, cache_read, cache_write):
+    """The full prompt — CodeBuddy's ``Input`` = cache hit + miss + write.
+
+    OpenCode reports an *uncached* ``prompt_tokens`` (which IS its cache miss)
+    with ``cache_read``/``cache_write`` beside it, so the three together are the
+    prompt the model saw and match CodeBuddy's ``Input`` column. ``None`` only
+    when all three are absent, never a fabricated 0.
+    """
+    parts = (prompt, cache_read, cache_write)
+    if all(p is None for p in parts):
+        return None
+    return sum(p or 0 for p in parts)
+
+
+def _usage_total_tokens(prompt, completion, cache_read, cache_write):
+    """Display-only ``Input + Output + cache hit`` — CodeBuddy's "Usage Total".
+
+    A deliberate re-add of the cache hit, kept identical to CodeBuddy's panel so
+    the two TUIs show the same number; it is never the API total
+    (``total_tokens``), which is shown beside it.
+    """
+    inp = _input_tokens(prompt, cache_read, cache_write)
+    if inp is None or completion is None:
+        return None
+    return inp + completion + (cache_read or 0)
+
+
 # Usage-page option list (values mirror ocut_db so the two stay in sync).
 # Windows are whole local calendar days ending now ("Today", "2 days", …).
 # "Custom…" is the escape hatch to the date picker; it is never stored as a
@@ -127,49 +154,35 @@ RANGE_OPTIONS = [(db.USAGE_RANGE_LABELS[k], k)
     ("Custom…", "custom")]
 CUSTOM_RANGE = "custom"
 # The Usage page is a single Request Logs list, one row per OpenCode
-# `step-finish` part. Column order: time · model · provider · prompt size ·
-# uncached input · output · the host's own step total · the two cache numbers ·
-# cache hit rate. The host's total already contains all five usage parts, so
-# nothing here re-adds them: "Prompt Total" is `prompt_tokens + cache_read`, what
-# the model actually read, and is display-only, never a second total.
-USAGE_COLUMNS = ("Time", "Model", "Provider", "Prompt Total", "Input", "Output",
-                 "API Total", "Cache read", "Cache write", "Cache hit rate")
+# `step-finish` part. The column set and labels are CodeBuddy's TUI verbatim:
+# time · model · provider · usage total · input · output · API total ·
+# cache hit/miss/write · cache hit rate. The cache vocabulary is CodeBuddy's,
+# mapped onto OpenCode's fields — its uncached `prompt_tokens` is the cache miss,
+# `cache_read` the hit, `cache_write` the write (see `_input_tokens`).
+USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Input", "Output",
+                 "API Total", "Cache hit", "Cache miss",
+                 "Cache write", "Cache hit rate")
 
-# Tokens-tab column order: Provider right after the model, then the prompt size,
-# the request count and the token parts. Same rule as the Usage page — the cache
-# detail is the host's two numbers, and API Total is its own step total.
-TOKEN_COLUMNS = ("Model", "Provider", "Prompt Total", "Requests", "Input",
-                 "Output", "API Total", "Cache read", "Cache write")
+# Tokens-tab column order, the same set CodeBuddy's Tokens tab shows.
+TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
+                 "Output", "API Total", "Cache hit", "Cache miss", "Cache write")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
 # `add_columns` because the column plan needs the full list to compute a prefix from,
 # and a plan that cannot name the columns it dropped is a silent truncation wearing a
 # guard's clothes.
 #
-# `state` sits IMMEDIATELY AFTER THE NAME on every entity tab, not at the end. The
-# plan below keeps a prefix and drops the tail, so the last column is the first to
-# go: at the default 80 columns the Plugins tab shows five of nine, and a
-# trailing `state` would mean the one thing this change adds is invisible exactly
-# where the table is already too wide. Name first, then whether it is still there,
-# then the counts.
+# ``state`` is last, as in CodeBuddy's TUI: the prefix plan drops the tail first,
+# so a narrow terminal loses "last used" before it loses the answer to "is this
+# thing still installed".
 _STATE = db.ENTITY_STATE_COLUMN
-TOOLS_COLUMNS = ("tool", _STATE, "calls", "ok", "fail", "avg", "last used")
-SKILLS_COLUMNS = ("skill", _STATE, "calls", "ok", "last used")
-AGENTS_COLUMNS = ("agent", _STATE, "calls", "last used")
-# Name, state, version, where the host says it came from, and — now that
-# plugin/ocut-hook.js is a writer — how often the hook saw it run. `uses` is real,
-# not structural: a 0 means the hook recorded nothing (the plugin may be unused, or
-# its surface may be one the hook's static scan cannot parse), so the column is
-# honest about the difference between "nothing recorded" and "nothing used" — see
-# q_plugins(). The three counts are what the plugin ships, which the old five-column
-# set had dropped in favour of `version` and `declared as`; all of them are cheap
-# integers and all of them answer "is this worth having installed". The long
-# `declared as` path sits last, so a narrow terminal drops it before the counts.
-PLUGINS_COLUMNS = ("plugin", _STATE, "version", "uses", "last used",
-                   "skills", "agents", "cmds", "declared as")
-# MCP is keyed by (server, tool), so `state` follows the key rather than opening
-# the row: a state column with no server above it would describe nothing.
-MCP_COLUMNS = ("server", "tool", _STATE, "calls", "ok", "last used")
+TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used", _STATE)
+SKILLS_COLUMNS = ("skill", "calls", "ok", "last used", _STATE)
+AGENTS_COLUMNS = ("agent", "calls", "last used", _STATE)
+# `uses` is real — plugin/ocut-hook.js writes it — so 0 means "nothing recorded",
+# never "not used". The three counts are what the plugin ships.
+PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds", _STATE)
+MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used", _STATE)
 HISTORY_COLUMNS = ("when", "project", "session", "status", "duration")
 # q_plugin_history selects from `plugin_usage` (the hook's sidecar), so one row
 # here is one tool or command call the hook saw a plugin make. It carries the
@@ -1373,13 +1386,14 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tok-output"),
                                 Static(id="dash-tok-api"),
                                 Static(id="dash-tok-usage"),
+                                Static(id="dash-tok-hit-rate"),
                                 classes="usage-panel", id="panel-dash-tokens",
                             ),
                             Vertical(
                                 Static("Cache", classes="panel-title"),
                                 Static(id="dash-cache-hit"),
+                                Static(id="dash-cache-miss"),
                                 Static(id="dash-cache-write"),
-                                Static(id="dash-cache-rate"),
                                 classes="usage-panel", id="panel-dash-cache",
                             ),
                             classes="dash-row", id="dash-row-1",
@@ -1459,6 +1473,7 @@ if HAVE_TEXTUAL:
                             Vertical(
                                 Static("Cache breakdown", classes="panel-title"),
                                 Static(id="sum-cache-hit"),
+                                Static(id="sum-cache-miss"),
                                 Static(id="sum-cache-write"),
                                 Static(id="sum-hit-rate"),
                                 classes="usage-panel", id="panel-cache",
@@ -1534,25 +1549,25 @@ if HAVE_TEXTUAL:
             # call still in flight and is not counted as one.
             self._fill_wide(
                 "t-tools",
-                [[r["tool_name"], state_cell(r, "tool"), f"{r['calls']:,}",
-                  f"{r['completed']:,}", f"{r['errored']:,}", ms(r["avg_ms"]),
-                  ts(r["last_used"])]
+                [[r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
+                  f"{r['errored']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
+                  state_cell(r, "tool")]
                  for r in db.q_tools(conn, start_ts=start, end_ts=end)],
                 "No tool calls yet", key_kind="tool")
 
         def _fill_skills(self, conn, start=None, end=None) -> None:
             self._fill_wide(
                 "t-skills",
-                [[r["skill"], state_cell(r, "skill"), f"{r['calls']:,}",
-                  f"{r['completed']:,}", ts(r["last_used"])]
+                [[r["skill"], f"{r['calls']:,}", f"{r['completed']:,}",
+                  ts(r["last_used"]), state_cell(r, "skill")]
                  for r in db.q_skills(conn, start_ts=start, end_ts=end)],
                 "No skills used yet", key_kind="skill")
 
         def _fill_agents(self, conn, start=None, end=None) -> None:
             self._fill_wide(
                 "t-agents",
-                [[r["agent_type"], state_cell(r, "agent"), f"{r['calls']:,}",
-                  ts(r["last_used"])]
+                [[r["agent_type"], f"{r['calls']:,}", ts(r["last_used"]),
+                  state_cell(r, "agent")]
                  for r in db.q_agents(conn, start_ts=start, end_ts=end)],
                 "No agents used yet", key_kind="agent")
 
@@ -1560,18 +1575,11 @@ if HAVE_TEXTUAL:
             # No time window: the plugin list is all-time (the inventory carries
             # no timestamps), so start/end are accepted for the shared fill
             # signature but ignored. Name is the row key, so Enter/double-click
-            # opens the plugin's own drill-down. `uses`/`last_used` come from
-            # plugin_usage, written only by plugin/ocut-hook.js; a plugin the hook
-            # has not seen shows 0 / "-".
+            # opens the plugin's own drill-down; version is not shown.
             self._fill_wide(
                 "t-plugins",
-                # `source` is which root the reader walked ("config"), which says
-                # nothing a person can act on; `path` is the entry the host's own
-                # config spells — an npm name or a local file — so that is the column.
-                [[r["plugin"], state_cell(r, "plugin"), r["version"] or "-",
-                  f"{r['uses']:,}", ts(r["last_used"]),
-                  f"{r['skills']:,}", f"{r['agents']:,}", f"{r['commands']:,}",
-                  r["path"] or "-"]
+                [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
+                  f"{r['agents']:,}", f"{r['commands']:,}", state_cell(r, "plugin")]
                  for r in db.q_plugins(conn)],
                 "No plugins installed", key_kind="plugin")
 
@@ -1580,21 +1588,27 @@ if HAVE_TEXTUAL:
             # tools under one server would otherwise collide and abort the mount.
             self._fill_wide(
                 "t-mcp",
-                [[r["server"], r["tool"], state_cell(r, "mcp"), f"{r['calls']:,}",
-                  f"{r['completed']:,}", ts(r["last_used"])]
+                [[r["server"], r["tool"], f"{r['calls']:,}",
+                  f"{r['completed']:,}", ts(r["last_used"]), state_cell(r, "mcp")]
                  for r in db.q_mcp(conn, start_ts=start, end_ts=end)],
                 "No MCP calls yet", key_index=(0, 1), key_kind="mcp")
 
         def _fill_tokens(self, conn, start=None, end=None) -> None:
-            # Reuses q_model_tokens, which aggregates the host's own step-finish
-            # rows: API Total is the host's step total (never re-added here), and
-            # Prompt Total is the display-only prompt + cache read.
+            # Reuses q_model_tokens. API Total is the host's step total; Usage Total
+            # is the display-only cache-hit re-add, and the three cache columns are
+            # CodeBuddy's hit/miss/write mapped onto OpenCode's read/input/write.
             rows = [[r["model"], db.provider_label(r["provider"]),
-                     fmt_n(r["prompt_total_tokens"]),
+                     fmt_n(_usage_total_tokens(r["prompt_tokens"],
+                                               r["completion_tokens"],
+                                               r["cache_read"],
+                                               r["cache_write"])),
                      f"{r['responses']:,}",
-                     fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
+                     fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
+                                         r["cache_write"])),
+                     fmt_n(r["completion_tokens"]),
                      fmt_n(r["total_tokens"]),
                      fmt_n(r["cache_read"]),
+                     fmt_n(r["prompt_tokens"]),
                      fmt_n(r["cache_write"])]
                     for r in db.q_model_tokens(conn, start_ts=start, end_ts=end)]
             self._fill_wide("t-tokens", rows, "No model responses yet",
@@ -1932,21 +1946,23 @@ if HAVE_TEXTUAL:
 
             req = s["requests"] or 0
             put("#sum-requests", "Requests", f"{req:,}")
-            # Prompt Total = Input + cache read — what the model actually read. The
-            # host's own step total (API Total) already contains all five usage
-            # parts, so this is a display number and never a second total.
-            put("#sum-usage-total", "Prompt Total",
-                fmt_n(s["prompt_total_tokens"]))
-            put("#sum-input", "Input", fmt_n(s["prompt_tokens"]))
+            # Usage Total = Input + Output + cache hit (CodeBuddy's display-only
+            # re-add); API Total beside it stays the host's own step total.
+            put("#sum-usage-total", "Usage Total",
+                fmt_n(_usage_total_tokens(s["prompt_tokens"],
+                                          s["completion_tokens"],
+                                          s["cache_read"], s["cache_write"])))
+            put("#sum-input", "Input",
+                fmt_n(_input_tokens(s["prompt_tokens"], s["cache_read"],
+                                    s["cache_write"])))
             put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
             put("#sum-total", "API Total", fmt_n(s["total_tokens"]))
-            # OpenCode names no third cache number: what other hosts called the
-            # cache miss is its `input`, which the Tokens panel already prints. Repeating
-            # it here read as a second measurement of a different thing.
-            put("#sum-cache-hit", "Cache read", fmt_n(s["cache_read"]))
+            put("#sum-cache-hit", "Cache hit", fmt_n(s["cache_read"]))
+            put("#sum-cache-miss", "Cache miss", fmt_n(s["prompt_tokens"]))
             put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
-            # cache read / (cache read + uncached input) — the whole prompt.
-            frac = db.cache_read_rate(s["cache_read"], s["prompt_tokens"])
+            # hit / (hit + miss + write) — the cacheable input.
+            frac = db.cache_hit_rate(s["cache_read"], s["prompt_tokens"],
+                                     s["cache_write"])
             put("#sum-hit-rate", "Hit rate",
                 "-" if frac is None else f"{frac * 100:.1f}%")
             missing = []
@@ -1981,18 +1997,13 @@ if HAVE_TEXTUAL:
                 tools = db.q_tools(conn, limit=self.DASH_TOP,
                                    start_ts=start, end_ts=end)
                 daily = db.q_usage_daily(conn, start, end)
-                # q_usage_kpi has no plugin count, so this line counts what the
-                # host's config installs — all-time, from the same query as the
-                # Plugins tab. It is an install count, not the tab's `uses`: the
-                # card says "inst." to keep the two from being read as one number.
-                plugins_installed = len(db.q_plugins(conn))
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
                     f"dashboard query failed ({e}); run: ocut sync")
                 self._report_query_error(e)
                 return
-            self._render_dashboard_kpi(kpi, plugins_installed)
+            self._render_dashboard_kpi(kpi)
             self._render_dashboard_tokens(s)
             self._render_dashboard_cache(s)
             self._render_dashboard_runtime(act)
@@ -2010,38 +2021,43 @@ if HAVE_TEXTUAL:
         def _put_panel(self, wid: str, label: str, val: str) -> None:
             self.query_one(wid, Static).update(self._panel_line(label, val))
 
-        def _render_dashboard_kpi(self, k: dict, plugins_installed: int) -> None:
+        def _render_dashboard_kpi(self, k: dict) -> None:
             # COUNT(*) is authoritative -> a real 0, never a dash.
             self._put_panel("#dash-kpi-tools", "Tool calls", f"{k['tool_calls']:,}")
             self._put_panel("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
             self._put_panel("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
             self._put_panel("#dash-kpi-mcp", "MCP", f"{k['mcp']:,}")
-            # "inst." — the install count, distinct from the Plugins tab's `uses`.
-            self._put_panel("#dash-kpi-plugins", "Plugins inst.",
-                            f"{plugins_installed:,}")
+            self._put_panel("#dash-kpi-plugins", "Plugins", f"{k['plugins']:,}")
 
         def _render_dashboard_tokens(self, s: dict) -> None:
             self._put_panel("#dash-tok-requests", "Requests", f"{s['requests'] or 0:,}")
-            self._put_panel("#dash-tok-input", "Input", fmt_n(s["prompt_tokens"]))
+            self._put_panel("#dash-tok-input", "Input",
+                            fmt_n(_input_tokens(s["prompt_tokens"],
+                                                s["cache_read"],
+                                                s["cache_write"])))
             self._put_panel("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
             self._put_panel("#dash-tok-api", "API Total", fmt_n(s["total_tokens"]))
-            self._put_panel("#dash-tok-usage", "Prompt Total",
-                            fmt_n(s["prompt_total_tokens"]))
+            self._put_panel("#dash-tok-usage", "Usage Total",
+                            fmt_n(_usage_total_tokens(s["prompt_tokens"],
+                                                      s["completion_tokens"],
+                                                      s["cache_read"],
+                                                      s["cache_write"])))
+            self._put_panel("#dash-tok-hit-rate", "Hit rate",
+                            self._hit_rate(s["cache_read"], s["prompt_tokens"],
+                                           s["cache_write"]))
 
         def _render_dashboard_cache(self, s: dict) -> None:
-            # The rate lives with the two numbers it divides, not with the token
-            # totals: same window, same rows, and no line that repeats "Input".
-            self._put_panel("#dash-cache-hit", "Cache read", fmt_n(s["cache_read"]))
+            self._put_panel("#dash-cache-hit", "Cache hit", fmt_n(s["cache_read"]))
+            self._put_panel("#dash-cache-miss", "Cache miss", fmt_n(s["prompt_tokens"]))
             self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
-            self._put_panel("#dash-cache-rate", "Hit rate",
-                            self._hit_rate(s["cache_read"], s["prompt_tokens"]))
 
         def _render_dashboard_runtime(self, a: dict) -> None:
             # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
-            # "Failed" is the host's `error` status; its third status, `running`,
-            # has no slot in this panel.
+            # OpenCode names its two non-completed states `error` and `running`;
+            # both are "incomplete" in CodeBuddy's vocabulary, so they are summed.
             self._put_panel("#dash-rt-completed", "Completed", f"{a['completed'] or 0:,}")
-            self._put_panel("#dash-rt-incomplete", "Failed", f"{a['errored'] or 0:,}")
+            self._put_panel("#dash-rt-incomplete", "Incomplete",
+                            f"{(a['errored'] or 0) + (a['running'] or 0):,}")
             self._put_panel("#dash-rt-avg", "Avg tool time", ms(a["avg_ms"]))
             self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
             self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
@@ -2118,26 +2134,32 @@ if HAVE_TEXTUAL:
                     f"{days[0]:%m-%d} → {days[-1]:%m-%d} · no activity")
 
         @staticmethod
-        def _hit_rate(cache_read, prompt) -> str:
-            """``cache_read / (cache_read + uncached input)``, or ``-`` if undefined."""
-            frac = db.cache_read_rate(cache_read, prompt)
+        def _hit_rate(hit, miss, write) -> str:
+            """``hit / (hit + miss + write)``, or ``-`` if undefined."""
+            frac = db.cache_hit_rate(hit, miss, write)
             return "-" if frac is None else f"{frac * 100:.1f}%"
 
         def _fill_usage_logs(self, conn, start, end) -> None:
             rows = db.q_usage_request_logs(conn, start, end,
                                            limit=self.USAGE_LOG_LIMIT)
             self.query_one("#usage-note", Static).update(
-                "Newest first · one row per step-finish part · API Total is the "
-                "host's own step total" if rows else "")
+                "Newest first · cache hit=read, write=create · "
+                "no cost/duration/status" if rows else "")
             out = [[
                 local_time(r["ts"]), r["model"] or "-",
                 db.provider_label(r["provider"]),
-                fmt_n(r["prompt_total_tokens"]),
-                fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
+                fmt_n(_usage_total_tokens(r["prompt_tokens"],
+                                          r["completion_tokens"],
+                                          r["cache_read"], r["cache_write"])),
+                fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
+                                    r["cache_write"])),
+                fmt_n(r["completion_tokens"]),
                 fmt_n(r["total_tokens"]),
                 fmt_n(r["cache_read"]),
+                fmt_n(r["prompt_tokens"]),
                 fmt_n(r["cache_write"]),
-                self._hit_rate(r["cache_read"], r["prompt_tokens"]),
+                self._hit_rate(r["cache_read"], r["prompt_tokens"],
+                               r["cache_write"]),
             ] for r in rows]
             # The shared empty state, like the other seven tables: a note above an
             # untouched table reads as a page that failed to load.
