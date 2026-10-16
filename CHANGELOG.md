@@ -1396,3 +1396,42 @@ Cost     A dropped index hands its pages to the freelist, not to the filesystem:
          this project still has none of. Any index a later commit wants must be declared in
          `TABLES_SQL`, or the next open retires it.
 Commit   08eca88
+
+### D-074 · 2026-10-17 · perf
+Symptom  `idx_plugin_usage_item` keyed `plugin_usage.item`, a column the shipped code only ever
+         *selects*: `q_plugin_history`, `q_plugin_summary` and the plugin views return it, and no
+         query compares it — no `=`, `LIKE`, `IN` or `ORDER BY` on it anywhere. It came from the
+         same first schema as the two indexes D-073 retired and survived that sweep, because that
+         sweep was found by grepping the source for a `WHERE` on the column and every plugin query
+         here is built as an f-string, which a regex over source cannot see through. The same
+         blind spot cleared `idx_tool_cat`, which is *not* dead (`ocut-sync.py` filters
+         `WHERE category = 'builtin'`), so the two cuts are not decided by one argument.
+Change   Drop the index. That is also the whole change to a live file: `ensure_schema` reads
+         `_DECLARED_INDEXES` back out of `TABLES_SQL`, so deleting the line retires the index on the
+         next open. Add one case beside the session-index guard, provoked in both directions.
+Evidence L0 2026-10-17: reachability was measured off statements that actually ran, not source
+         text — `open_db` was wrapped with `set_trace_callback` for the whole suite, capturing 1,452
+         executable statements, each re-planned with `EXPLAIN QUERY PLAN` against a real-size
+         database. `idx_plugin_usage_item` is named in 0 of them. The method does see a used index:
+         the same scan names `idx_tool_name` in 168 plans, `idx_model_call_ts` in 194 and
+         `idx_tool_cat` in 1, and it is what kept `idx_model_call_model_ts` (13 plans) rather than
+         cutting it. Read path: every shipped `plugin_usage` read — history and summary for each of
+         the three recorded plugins, plus the `plugin_surface` view — returns byte-identical rows
+         before and after `DROP INDEX`, and a 50-pass read loop on the real row counts went
+         0.861 ms -> 0.781 ms, so there is no read regression to weigh against the write side.
+         Write path, at its honest size: with the real table holding 284 rows (327 by the end of
+         the session), a 265-row `plugin_usage` load took 0.50 ms with the index and 0.44 ms
+         without — noise, so this is **not** a speedup today. Extrapolated to 200,000 rows the same
+         insert pass was 794.51 ms against 590.35 ms (+34.6%) and the in-memory database
+         26,660,864 B against 23,199,744 B. The guard is provoked both ways: putting the
+         `CREATE INDEX` line back into `TABLES_SQL` turns
+         `test_no_declared_index_is_keyed_on_a_plugin_item_no_query_compares` red and restoring it
+         turns it green. Real file — snapshot `usage-20261017-074740-manual.db` (20,824,064 B)
+         taken first: `migrate` returned `current` twice, `idx_*` went 15 -> 14, no declared name was
+         missing, `quick_check`/`integrity_check` ok, and `ocut health` printed the same bytes
+         before and after. `python3 -m pytest scripts/tests -q` 322 passed.
+Cost     A second cut of the same shape means the sweep's *method* was the weak part, not its list:
+         any future claim that a column is unqueried has to come from statements that ran, not from
+         a grep. The dropped index also hands its pages to the freelist, as D-073 says — this
+         project still has no `VACUUM`.
+Commit   5b2e5a6
