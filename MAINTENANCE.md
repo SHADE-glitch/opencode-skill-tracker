@@ -128,11 +128,18 @@ ocut format               # the OpenCode format surface, read out of the parser'
 sqlite3 -readonly ~/.local/share/opencode-usage-tracker/usage.db "PRAGMA integrity_check;"
 python3 -m pytest scripts/tests -q                     # no venv needed
 .venv/bin/python -m pytest scripts/tests -q            # full suite incl. TUI
+.venv/bin/python -m pytest scripts/tests -q -n auto    # the same suite in parallel
 bash -n bin/ocut                                       # dispatcher still parses
 ```
 
 The second and third commands are the same suite on two interpreters; the TUI files skip
 where textual is not installed, which is why both are run.
+
+The fourth is the same suite again, split across processes by `pytest-xdist` — a flag, never an
+`addopts`. It is what you type when the two-and-a-half-minute wait is the thing you are paying,
+not what the gate is: the serial commands above stay the record, and §11's "the count is always
+there" stays true because `-n` does not touch the summary line. Timing and the run that shows the
+count is unchanged: [`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §6.
 
 ## 5. After upgrading OpenCode
 

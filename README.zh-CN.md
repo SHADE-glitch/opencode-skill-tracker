@@ -481,6 +481,9 @@ rm ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
 
 ```bash
 python3 -m pytest scripts/tests -q     # 仅标准库；TUI 测试需要 textual
+.venv/bin/python -m pytest scripts/tests -q -n auto     # 同一套件并行跑
+#                                       （需要 pytest-xdist；耗时见
+#                                       docs/maintenance/measurements.md §6）
 ```
 
 改动请保持聚焦；若改动了已记录的行为，请**同时**更新 `README.md` 与 `README.zh-CN.md`——

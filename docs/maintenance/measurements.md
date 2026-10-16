@@ -200,12 +200,21 @@ whole file is arranged around: a non-zero value is the format-move signal.
 ```bash
 python3 -m pytest scripts/tests -q                       # system interpreter
 .venv/bin/python -m pytest scripts/tests -q              # the venv the launcher uses
+.venv/bin/python -m pytest scripts/tests -q -n auto      # the same suite, pytest-xdist
 ```
 
 2026-10-13: the suite is green on both. **Do not copy the pass total into a document** — it
 is a run, with an interpreter and an installed-textual set behind it, and the two
 interpreters can differ in whether the TUI files are skipped. If a run reports fewer passes
 than the last, the diff to look at is `git log --oneline -- scripts/tests`, not the number.
+
+2026-10-17: `-n auto` on this host (18 cores, `pytest-xdist` 3.8.0, `.venv` python 3.13.14,
+pytest 9.1.1, textual 8.2.8) finishes the same suite in **26.2 s against 175.7 s** serial — and
+reports the same `322 passed, 3 subtests passed`, which is the reading that matters: the flag
+moves the wall clock, not the set of checks. It is opt-in (`requirements-dev.txt`), and the
+reason it is a flag and not an `addopts` is in MAINTENANCE.md §11. Useful when a red-check loop
+is being run several times in a row; not useful as the gate's definition, because the number a
+maintainer reads should come from the command the documentation names.
 
 ---
 

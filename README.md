@@ -527,6 +527,9 @@ opencode-usage-tracker/
 python3 -m pytest scripts/tests -q                       # standard library only; TUI tests
 #                                                         need textual
 .venv/bin/python -m pytest scripts/tests -q              # full suite, incl. TUI tests
+.venv/bin/python -m pytest scripts/tests -q -n auto      # the same suite in parallel
+#                                                         (pytest-xdist; timing in
+#                                                         docs/maintenance/measurements.md §6)
 ```
 
 **Before operating this on a machine you care about**, read
@@ -568,6 +571,9 @@ Issues and pull requests are welcome. Before opening a PR, make sure the suite i
 
 ```bash
 python3 -m pytest scripts/tests -q     # standard library only; TUI tests need textual
+.venv/bin/python -m pytest scripts/tests -q -n auto     # the same suite in parallel
+#                                       (needs pytest-xdist; timing in
+#                                       docs/maintenance/measurements.md §6)
 ```
 
 Keep changes scoped, and update **both** `README.md` and `README.zh-CN.md` when you change

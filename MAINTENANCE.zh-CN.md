@@ -116,10 +116,16 @@ ocut format               # OpenCode 格式面，从解析器注册表读出
 sqlite3 -readonly ~/.local/share/opencode-usage-tracker/usage.db "PRAGMA integrity_check;"
 python3 -m pytest scripts/tests -q                     # 不需要 venv
 .venv/bin/python -m pytest scripts/tests -q            # 完整套件，含 TUI
+.venv/bin/python -m pytest scripts/tests -q -n auto    # 同一套件并行跑
 bash -n bin/ocut                                       # 分发器仍能解析
 ```
 
 第二、三条是同一套件在两个解释器上跑；没装 textual 时 TUI 文件会被跳过，所以两条都要跑。
+
+第四条是同一套件，由 `pytest-xdist` 拆到多个进程——是一个开关，从来不是 `addopts`。
+它是你嫌那两分多钟太久时敲的，而不是门禁本身：上面两条串行命令仍是记录在案的那条，
+§11 的「计数总在那里」也依然成立，因为 `-n` 不动汇总行。耗时，以及证明计数没变的那次运行：
+[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) §6。
 
 ## 5. 升级 OpenCode 之后
 

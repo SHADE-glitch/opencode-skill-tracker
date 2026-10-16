@@ -47,6 +47,7 @@ of the above; global value flags may sit before or after the subcommand.
 ```bash
 python3 -m pytest scripts/tests -q                     # standard library only; TUI files skip
 .venv/bin/python -m pytest scripts/tests -q            # the same suite, venv interpreter
+.venv/bin/python -m pytest scripts/tests -q -n auto    # the same suite split across processes
 bash -n bin/ocut                                       # syntax-check the dispatcher
 ./install.sh                                           # create .venv + link install locations
 ocut sync                                              # index the host database

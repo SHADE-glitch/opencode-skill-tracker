@@ -1,2 +1,7 @@
 -r requirements.txt
 pytest>=8
+# Parallel test execution, and deliberately *opt-in*: `-n auto` is a flag a maintainer
+# types, never an `addopts` in a config file. MAINTENANCE.md §11 leans on the absence of
+# any output-changing pytest config ("the count is always there: read the last line of the
+# log file"), so the gate command and its output are left exactly as they were.
+pytest-xdist>=3.8
