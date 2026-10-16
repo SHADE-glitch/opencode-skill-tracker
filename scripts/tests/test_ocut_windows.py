@@ -250,3 +250,69 @@ def test_stored_version_is_zero_for_a_database_with_no_meta_row(tmp_path):
     assert db.stored_version(conn) == 0
     assert db.ensure_schema(conn) == "created"
     conn.close()
+
+
+def test_an_index_the_schema_no_longer_declares_is_retired_on_open(tmp_path):
+    """`CREATE INDEX IF NOT EXISTS` can add one and can never take one back.
+
+    A file written before an index was dropped from `TABLES_SQL` therefore keeps
+    paying for it on every insert, with no query reaching it, for the rest of that
+    file's life — the one piece of DDL a re-read cannot fix. An index this build
+    does declare has to survive the sweep, and so does a primary key's own
+    `sqlite_autoindex_*`, which is not droppable at all.
+    """
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    declared = sorted(r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name GLOB 'idx_*'"))
+    assert declared == sorted(db._DECLARED_INDEXES), "the sweep would retire the schema"
+    for stale in ("idx_tool_sess", "idx_model_call_session"):
+        conn.execute(f"CREATE INDEX {stale} ON tool_calls(ts)")
+    conn.commit()
+    assert db.ensure_schema(conn) == "current"
+    left = sorted(r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name GLOB 'idx_*'"))
+    assert left == declared
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index'"
+        " AND name LIKE 'sqlite_autoindex_%'").fetchone()[0] > 0
+    conn.close()
+
+
+def test_a_newer_database_keeps_the_indexes_this_build_has_never_seen(tmp_path):
+    """The sweep is a write, so it stops where every other one does: at "newer".
+
+    A future build is entitled to declare index names this one does not know, and
+    dropping them would be the same mistake as running `VIEWS_SQL` over its views.
+    """
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+    conn.execute("CREATE INDEX idx_from_a_future_build ON tool_calls(ts)")
+    conn.commit()
+    assert db.ensure_schema(conn) == "newer"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index'"
+        " AND name='idx_from_a_future_build'").fetchone()[0] == 1
+    conn.close()
+
+
+def test_no_declared_index_is_keyed_on_a_session_no_query_names():
+    """The guard for a cut, not for a shape: `session_id` stayed unindexed.
+
+    `idx_tool_sess` and `idx_model_call_session` existed from the first schema and
+    no query ever filtered by either — the only joins on a session key go through
+    `sessions`, whose own unique index serves them. Measured on the real row counts
+    (tool_calls 30,638 / model_calls 24,904 / sessions 368): a full-table insert
+    took 218.9 ms with the two indexes and 93.0 ms without, and the file 18.55 MiB
+    against 16.44 MiB. Re-adding one has to come with the query that reads it.
+    """
+    conn = sqlite3.connect(":memory:")
+    db.ensure_schema(conn)
+    keyed = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name GLOB 'idx_*'"
+        " AND sql LIKE '%session_id%'")]
+    assert keyed == [], f"an index on a session key nothing queries is back: {keyed}"
+    conn.close()

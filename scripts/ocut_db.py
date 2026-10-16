@@ -265,7 +265,9 @@ CREATE TABLE IF NOT EXISTS model_calls (
 CREATE INDEX IF NOT EXISTS idx_model_call_model   ON model_calls(model);
 CREATE INDEX IF NOT EXISTS idx_model_call_ts      ON model_calls(ts);
 CREATE INDEX IF NOT EXISTS idx_model_call_model_ts ON model_calls(model, ts);
-CREATE INDEX IF NOT EXISTS idx_model_call_session ON model_calls(session_id);
+-- No index on `session_id`, here or on `tool_calls`: no query in this repository
+-- filters by it (the only joins on a session key go through `sessions`), so the
+-- index was maintenance on every insert for a lookup nobody performs.
 
 -- One row per `tool` part, whatever the tool is: builtin, skill, task or an MCP
 -- server's tool. The specialised tables below are the same calls seen through a
@@ -288,7 +290,6 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 CREATE INDEX IF NOT EXISTS idx_tool_name ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tool_ts   ON tool_calls(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_cat  ON tool_calls(category);
-CREATE INDEX IF NOT EXISTS idx_tool_sess ON tool_calls(session_id);
 
 -- The `skill` tool's calls. The skill *name* is read from `state.input.name`,
 -- which is one of the two argument names this project is allowed to look at;
@@ -616,7 +617,14 @@ LEFT JOIN plugin_usage u ON u.plugin = n.name
 GROUP BY n.name;
 """
 
-SCHEMA_SQL = TABLES_SQL + VIEWS_SQL
+# The index names `TABLES_SQL` declares, read back out of the DDL instead of
+# repeated: `_retire_undeclared_indexes` compares this against the file on disk,
+# so an index dropped from the schema is also dropped from a database written
+# before the drop. There used to be a `SCHEMA_SQL = TABLES_SQL + VIEWS_SQL` here;
+# nothing ran it — `ensure_schema` executes the two halves separately, in that
+# order and with the version read between them.
+_DECLARED_INDEXES = tuple(
+    re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", TABLES_SQL))
 
 
 # --- helpers ---------------------------------------------------------------
@@ -772,6 +780,26 @@ def stored_version(conn: sqlite3.Connection) -> int:
         return 0
 
 
+def _retire_undeclared_indexes(conn: sqlite3.Connection) -> list[str]:
+    """Drop the `idx_*` indexes this build's schema no longer declares.
+
+    Read out of the file rather than hand-copied, for the reason `reset()` gives:
+    a shared list would drift from `TABLES_SQL` the first time somebody edits one
+    of the two. Implicit `sqlite_autoindex_*` indexes are left alone by the `idx_`
+    prefix, and a primary-key index cannot be dropped anyway.
+
+    Returns the names that went, so a caller (and a test) can see the work instead
+    of trusting it happened.
+    """
+    declared = set(_DECLARED_INDEXES)
+    stale = [row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name GLOB 'idx_*'")
+        if row[0] not in declared]
+    for name in stale:
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+    return stale
+
+
 def ensure_schema(conn: sqlite3.Connection) -> str:
     """Create the schema, or roll an existing database forward.
 
@@ -787,12 +815,19 @@ def ensure_schema(conn: sqlite3.Connection) -> str:
     the DDL and clears the cursors — forcing one clean re-read — instead of
     rewriting rows in place through a chain of ALTERs that has to be right every
     time somebody upgrades from an arbitrary older build.
+
+    Retiring a dropped *index* is the one exception, because `CREATE INDEX IF NOT
+    EXISTS` cannot take one back and an index that no longer exists in the DDL
+    would otherwise be paid for on every insert for the rest of the file's life.
+    That runs only on a database this build understands, like every other write
+    here.
     """
     conn.executescript(TABLES_SQL)
     stored = stored_version(conn)
     if stored > SCHEMA_VERSION:
         conn.commit()
         return "newer"
+    _retire_undeclared_indexes(conn)
     conn.executescript(VIEWS_SQL)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
