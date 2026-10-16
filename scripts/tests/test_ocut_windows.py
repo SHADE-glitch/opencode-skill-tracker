@@ -139,16 +139,18 @@ def test_the_display_format_is_a_suggestion_not_a_syntax():
 
 # --- cache rate ------------------------------------------------------------
 
-def test_the_cache_rate_divides_by_the_prompt_the_model_actually_saw():
-    assert db.cache_read_rate(800, 200) == 0.8
-    assert db.cache_read_rate(0, 100) == 0.0
+def test_the_cache_rate_divides_by_the_cacheable_input():
+    """``hit / (hit + miss + write)`` — the ``Hit rate`` the panels print."""
+    assert db.cache_hit_rate(800, 200) == 0.8
+    assert db.cache_hit_rate(800, 100, 100) == 0.8
+    assert db.cache_hit_rate(0, 100) == 0.0
 
 
 def test_the_cache_rate_is_none_when_it_would_be_invented():
-    """A step that sent neither number must not read as a 0% hit rate."""
-    assert db.cache_read_rate(None, 100) is None
-    assert db.cache_read_rate(100, None) is None
-    assert db.cache_read_rate(0, 0) is None
+    """A step that sent neither hit nor miss must not read as a 0% hit rate."""
+    assert db.cache_hit_rate(None, 100) is None
+    assert db.cache_hit_rate(100, None) is None
+    assert db.cache_hit_rate(0, 0) is None
 
 
 # --- schema status ---------------------------------------------------------

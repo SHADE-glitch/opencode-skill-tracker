@@ -1390,21 +1390,6 @@ _PROMPT_TOTAL_EXPR = (
 _AGG_PROMPT_TOTAL_EXPR = f"SUM({_PROMPT_TOTAL_EXPR})"
 
 
-def cache_read_rate(cache_read, prompt):
-    """``cache_read / (cache_read + prompt)`` as a fraction, or ``None``.
-
-    The denominator is the whole prompt the model saw — the uncached input the host
-    counts in ``prompt_tokens`` plus what it read from the cache. A row with neither
-    is undefined, not 0%: "0 of 0" is not a rate.
-    """
-    if cache_read is None or prompt is None:
-        return None
-    base = cache_read + prompt
-    if base == 0:
-        return None
-    return cache_read / base
-
-
 def cache_hit_rate(hit, miss, write=None):
     """``hit / (hit + miss + write)`` as a fraction, or ``None`` when undefined.
 
