@@ -1541,3 +1541,38 @@ Cost     Reachability still does not see a prefix duplicate, and the prefix rule
          direction of that gap is the safe one only while every reader keeps using the one door.
          Re-adding the index means writing the query the wider key cannot serve.
 Commit   485cb53 4215499
+
+### D-077 · 2026-10-17 · fix
+Symptom  The Plugins tab was the only pane with no time window: `tab_range` had no
+         `tab-plugins` key, `_fill_plugins` accepted `start`/`end` and ignored them,
+         `q_plugins` took no bounds, and the 📅 button, the range Select and the custom
+         picker each carried a special case for the tab. The *list* has to stay all-time —
+         the inventory carries no timestamps — but `uses` and `last used` come from
+         `plugin_usage`, the hook's own timestamped records. So the same hook call read
+         once under Skills at a 7-day window and once here at all-time, and the range chip
+         was hidden on the one tab whose count needed it most.
+Change   Window the count, not the list. `q_plugins` grows `start_ts`/`end_ts` and puts
+         the window in the **LEFT JOIN's ON** clause, so an installed plugin with no call
+         in range stays listed with `uses = 0` instead of vanishing; `installed` and
+         `ever_used` ignore the window because the state column describes the entity, not
+         the range. `tab-plugins` gets the same `7d` default as the other entity tabs, the
+         three special cases go away, and the row drill-down follows the tab's bounds like
+         every other entity screen. M11 in both READMEs now says which half is windowed.
+Evidence L0 2026-10-17: `.venv/bin/python -m pytest scripts/tests -q` **335 passed**, 3
+         subtests (334 before; one new case in `test_ocut_tui.py`, and
+         `test_the_plugins_tab_never_opens_a_picker` rewritten as
+         `test_the_plugins_tab_opens_the_picker_like_every_other_tab`, because its premise
+         is the bug). The new case plants two hook calls for one plugin — ten days old and
+         a minute old — and reads `uses = 1` at the default 7d, `uses = 2` after switching
+         to `all`, while `local-one` stays on the list at `0` in both. The live file cannot
+         show the difference yet: all **327** `plugin_usage` rows are inside the week
+         (oldest 4.1 days), so 7d and all-time both read `opencode-dcp 320`,
+         `claude-mem 6`, `claude-mem-inject 1` and three installed plugins at 0 — six rows
+         in each window.
+Cost     The Plugins counts no longer agree with the Dashboard's all-time `Plugins` count
+         by default, exactly as Tools/Skills/Agents/MCP already did not; reading all-time
+         now means choosing `All` on that tab. On a machine without the hook every plugin
+         row is 0 in every window — that was true before and is still the honest reading,
+         not a regression. The window is applied to `u.ts`, the hook's clock, so a call
+         recorded with a skewed clock lands in the window its own clock claims.
+Commit   4cdbd77
