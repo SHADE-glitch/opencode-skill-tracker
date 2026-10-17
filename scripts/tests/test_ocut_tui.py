@@ -680,3 +680,44 @@ def test_the_sync_runs_in_a_daemon_thread_so_quitting_never_waits(tmp_path):
         f"Textual's default executor, which blocks quit: {seen!r}")
     assert seen.get("daemon") is True, (
         "the sync thread must be a daemon, or quitting waits for it")
+
+
+# --- what the status bar is allowed to shout about -------------------------
+
+def test_the_status_line_separates_a_known_reason_from_a_new_one(tracker):
+    """One total could not be read: it held a deadline and a format change both.
+
+    `part_left_running` is this reader's own holdback deadline — a `tool` part the
+    host never settled — so it is expected, and it must not raise the alarm the
+    alarm exists for. A reason nothing here has been taught about must raise it, and
+    must be named: the difference between "the format moved" and "a Tuesday" is the
+    whole value of the line.
+    """
+    conn = sqlite3.connect(tracker)
+    conn.execute("DELETE FROM unparsed")
+    conn.execute("INSERT INTO unparsed(reason, count) VALUES('part_left_running', 3)")
+    conn.commit()
+    conn.close()
+
+    async def known(pilot, app):
+        line = str(app.query_one("#status").content)
+        assert "3 records unparsed (1 known)" in line, line
+        assert "!" not in line, f"a known reason raised the alarm: {line}"
+
+    drive(lambda: tui.TrackerApp(str(tracker)), known)
+
+    conn = sqlite3.connect(tracker)
+    conn.execute("INSERT INTO unparsed(reason, count)"
+                 " VALUES('unknown_part_type:wat', 2)")
+    conn.commit()
+    conn.close()
+
+    async def drift(pilot, app):
+        line = str(app.query_one("#status").content)
+        assert "!" in line, line
+        assert "2 records unparsed under a new reason: unknown_part_type:wat" in line, line
+        assert "3 records" not in line, (
+            "the alarm is reporting the familiar records it would otherwise be "
+            f"buried under: {line}")
+
+    drive(lambda: tui.TrackerApp(str(tracker)), drift)

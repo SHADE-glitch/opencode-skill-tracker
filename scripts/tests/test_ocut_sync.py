@@ -1233,3 +1233,33 @@ def test_the_status_vocabulary_is_the_hosts_and_not_a_translation():
     source = (Path(__file__).resolve().parents[1] / "ocut_db.py").read_text()
     assert "status='incomplete'" not in source
     assert "status='pending'" not in source
+
+
+# --- which reasons are expected, and which mean the host moved -------------
+
+def test_a_holdback_deadline_is_expected_and_every_loss_is_not():
+    """The split exists because one total held two different findings.
+
+    `part_left_running` is this reader's own deadline: a `tool` part the host never
+    settled is indexed as it stands, and the count is how many rows may be missing a
+    status or a duration. Every other reason in the vocabulary means the reader lost
+    something, which is exactly what the "!" is for — if this set ever grows to
+    include one of them, the warning stops meaning anything.
+    """
+    assert sync.unparsed_is_expected(sync.HELD_GAVE_UP)
+    for reason in (f"{sync.UNKNOWN_PART_TYPE}:brand-new-thing",
+                   sync.UNPARSEABLE_DATA, sync.UNPARSEABLE_MESSAGE,
+                   sync.UNPARSEABLE_EVENT, sync.NO_TOKENS, sync.NO_TOOL_NAME,
+                   sync.NO_SKILL_NAME, sync.NO_TASK_TYPE,
+                   sync.MESSAGE_ROW_ABSENT):
+        assert not sync.unparsed_is_expected(reason), reason
+
+
+def test_split_unparsed_separates_expected_records_from_new_ones():
+    counted = [{"reason": sync.HELD_GAVE_UP, "count": 3},
+               {"reason": f"{sync.UNKNOWN_PART_TYPE}:wat", "count": 2},
+               {"reason": sync.UNPARSEABLE_DATA, "count": 1}]
+    expected, unexpected, names = sync.split_unparsed(counted)
+    assert expected == 3
+    assert unexpected == 3
+    assert names == [f"{sync.UNKNOWN_PART_TYPE}:wat", sync.UNPARSEABLE_DATA]

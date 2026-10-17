@@ -396,12 +396,26 @@ def cmd_health(conn, args):
     # The format-change signal. Printing the "0" case too, so the line itself
     # proves the check ran rather than merely being absent when nothing broke.
     if o["unparsed_records"]:
+        # Split the tally. A reason this build expects (`part_left_running` is its
+        # own deadline for a row the host never settled) and a reason that means the
+        # host moved under us are different findings, and one total that holds both
+        # cannot say which one it is — which is the only thing it is printed for.
+        sync = db.load_sync()
+        rows = db.q_unparsed(conn)
+        expected, unexpected, unexpected_names = sync.split_unparsed(rows)
         print(f"  UNPARSED       {o['unparsed_records']} records "
-              f"across {o['unparsed_kinds']} reason(s) no handler claims:")
-        for row in db.q_unparsed(conn)[:8]:
-            print(f"                 {row['count']:>8}  {row['reason']}")
-        print("                 (a jump here right after a OpenCode upgrade "
-              "means its log format changed)")
+              f"across {o['unparsed_kinds']} reason(s) no handler claims "
+              f"({expected} known, {unexpected} not):")
+        for row in rows[:8]:
+            mark = "NEW" if not sync.unparsed_is_expected(row["reason"]) else "   "
+            print(f"                 {mark} {row['count']:>8}  {row['reason']}")
+        if unexpected:
+            print(f"                 ({unexpected} record(s) under a reason this build "
+                  "has never seen: " + ", ".join(unexpected_names) + " — that is "
+                  "the format moving. A known reason growing is not.)")
+        else:
+            print("                 (every reason here is one this build expects, "
+                  "so nothing has moved)")
     else:
         print("  unparsed       0 — every record type was claimed")
 

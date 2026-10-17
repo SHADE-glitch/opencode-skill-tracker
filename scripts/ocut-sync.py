@@ -264,6 +264,44 @@ MESSAGE_ROW_ABSENT = "step_finish_message_row_absent"
 UNKNOWN_PART_TYPE = "unknown_part_type"
 HELD_GAVE_UP = "part_left_running"
 
+# The reasons this build *expects* on a healthy host, as opposed to the ones that
+# mean the host moved under us. `HELD_GAVE_UP` is this reader's own deadline: a
+# `tool` part still `running` when the cursor holdback gives up is indexed as it
+# stands, and the count is how many rows may be missing a status or a duration.
+# That is a known limit of reading, not a record nothing here understands — so it
+# is named here, and every view can say which reasons are known instead of showing
+# one total that cannot be read.
+#
+# Everything else in the vocabulary above stays out on purpose: `unknown_part_type:`
+# is drift by definition, and `unparseable_*`, the `*_without_*` family and
+# `step_finish_message_row_absent` each mean the reader lost something — which is
+# exactly what the "!" is for.
+KNOWN_UNCLAIMED_REASONS = frozenset({HELD_GAVE_UP})
+
+
+def unparsed_is_expected(reason: str) -> bool:
+    """Whether `reason` is one this build expects to see on a healthy host."""
+    return reason in KNOWN_UNCLAIMED_REASONS
+
+
+def split_unparsed(rows) -> tuple[int, int, list[str]]:
+    """Split `q_unparsed` rows into (expected, unexpected, unexpected reasons).
+
+    One helper rather than the same filter written into `ocut health` and the status
+    line: two copies would be two answers to "is this drift?", and the disagreement
+    would be invisible, because both just show a number.
+    """
+    expected = unexpected = 0
+    names: list[str] = []
+    for row in rows:
+        n = row["count"]
+        if unparsed_is_expected(row["reason"]):
+            expected += n
+        else:
+            unexpected += n
+            names.append(row["reason"])
+    return expected, unexpected, names
+
 
 # --- reading ---------------------------------------------------------------
 

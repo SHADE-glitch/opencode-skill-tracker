@@ -1647,6 +1647,13 @@ if HAVE_TEXTUAL:
                 self._fill_mcp(conn, *self._bounds_for("tab-mcp"))
                 self._fill_tokens(conn, *self._bounds_for("tab-tokens"))
                 o = db.overview(conn)          # status bar stays all-time
+                # Split the unparsed tally on the connection that is already open, so
+                # the status line can tell a reason this build expects (`part_left_
+                # running` is its own holdback deadline) from one it has never seen
+                # (the host's format moving). It reads the reason rows, not the total:
+                # the total cannot tell those apart, which is why it is computed here.
+                _, o["unparsed_unexpected"], o["unparsed_unexpected_names"] = \
+                    db.load_sync().split_unparsed(db.q_unparsed(conn))
                 if self._usage_ready:
                     self._refresh_usage(conn)   # same connection, no second open
             except sqlite3.Error as exc:
@@ -1691,9 +1698,18 @@ if HAVE_TEXTUAL:
             if not self._auto_sync:
                 status += " · auto-sync OFF"
             if o["unparsed_records"]:
-                # Keep the status line honest: panels showing 0 while records
-                # went unclaimed means the format moved, not that usage stopped.
-                status += f" · ! {count_n(o['unparsed_records'], 'record')} unparsed"
+                # Keep the status line honest: panels showing 0 while records went
+                # unclaimed means the format moved, not that usage stopped. The "!"
+                # is for the reasons that mean exactly that, though — a reason this
+                # build expects is a known limit of reading, and a bar that cannot
+                # tell the two apart is a bar whose warning stops being read.
+                if o.get("unparsed_unexpected"):
+                    status += (f" · ! {count_n(o['unparsed_unexpected'], 'record')} "
+                               "unparsed under a new reason: "
+                               + ", ".join(o["unparsed_unexpected_names"]))
+                else:
+                    status += (f" · {count_n(o['unparsed_records'], 'record')} "
+                               f"unparsed ({o['unparsed_kinds']} known)")
             if self._schema_note:
                 status += f" · schema: {self._schema_note}"
             if self._status_note:
