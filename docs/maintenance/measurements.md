@@ -94,8 +94,21 @@ PY
 
 2026-10-13: `integrity_check ok`, `journal_mode wal`, and non-zero `tool_calls` / `sessions`
 / `model_calls` rows. What is safe to assert: `integrity_check` must read `ok`; a row count
-that drops without an explicit rebuild is the story, not the number; `size` only shrinks
-under a rebuild that rewrites the file.
+that drops without an explicit rebuild is the story, not the number; `size` shrinks only when
+something rewrites the whole file.
+
+2026-10-17: **a `VACUUM` is a second way to make that happen**, and the sentence above used to say
+"only under a rebuild", which is now wrong. `sqlite3 "$DB" "VACUUM"` (after `ocut backup`, snapshot
+`usage-20261017-075432-manual.db`, 20,824,064 B) took the file from **20,824,064 B to 17,735,680 B**
+— 5,084 pages to 4,330 of 4 KiB — with nothing rebuilt and nothing re-read: 592 of the pages it gave
+back were the freelist D-073 left behind (dropped indexes park their pages, they do not release
+them), and the rest was slack inside the pages. Rows came through untouched: 31,150 `tool_calls`,
+25,340 `model_calls`, 368 `sessions`, 327 `plugin_usage`, ≈ 58k in all. Every table and every view
+hashed identical to the pre-`VACUUM` snapshot, `quick_check` / `integrity_check` are `ok` with no
+foreign-key violation, and `ocut health` printed the same bytes before and after. Read it as a
+maintenance action and not as something the tool does: `ocut` has no such subcommand, and the file
+returns to this size only as the hook writes again — the freelist is what keeps it from growing past
+its high-water mark between compactions.
 
 ---
 
