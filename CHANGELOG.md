@@ -1453,3 +1453,45 @@ Cost     A second cut of the same shape means the sweep's *method* was the weak 
          strength of the claim: "retired" here means *retired on the next open by a build that no
          longer declares it*, which is not quite the same as gone.
 Commit   5b2e5a6
+
+### D-075 · 2026-10-17 · fix
+Symptom  The status line and `ocut health` printed one unparsed total under the words "no handler
+         claims", and the reason actually in it was `part_left_running` — this reader's own
+         holdback deadline, not a record nothing understands. A `tool` part whose state is still
+         `running` when the cursor gives up is indexed as it stands, so the count is how many rows
+         may be missing a status or a duration. The wording was wrong for it and the `!` was raised
+         for it every day, which is the failure AGENTS.md names for a count nobody can act on.
+Change   Name the expected reason rather than dropping it from the tally, so the volume stays
+         visible: `KNOWN_UNCLAIMED_REASONS` sits with the reason vocabulary in the format registry,
+         `split_unparsed` is the one filter `ocut health` and the status line both call, and the
+         line under the table says whether anything moved. Every loss reason is deliberately out of
+         the set — `unknown_part_type:<t>`, `unparseable_part_data`, `unparseable_message_data`,
+         `unparseable_plugin_event`, `step_finish_without_tokens`, `tool_part_without_name`,
+         `skill_call_without_name`, `task_call_without_subagent_type`,
+         `step_finish_message_row_absent` — because each of them means the reader lost something.
+Evidence L0 2026-10-17: `test_a_holdback_deadline_is_expected_and_every_loss_is_not` pins the
+         vocabulary from both sides — every reason named above must stay unexpected — and
+         `test_split_unparsed_separates_expected_records_from_new_ones` pins the arithmetic and the
+         name order on a mixed list. The status line has an end-to-end case:
+         `test_the_status_line_separates_a_known_reason_from_a_new_one` runs the real app against a
+         fixture carrying `part_left_running` (3) and asserts `3 records unparsed (1 known)` with no
+         `!`, then adds `unknown_part_type:wat` (2) and asserts the bar carries `!`, names the new
+         reason, and does **not** report `3 records` — an alarm that repeats the familiar total is
+         the alarm that stops being read.
+         This commit also adds `scripts/tests/test_ocut_stats.py`, because the health line it edits
+         had nowhere to be pinned: the dispatcher tests check which script a command routes to and
+         the TUI suite checks panels, but the report CLI's own output had no test at all. Its two
+         cases assert `(3 known, 0 not)` with no `NEW` mark and `(3 known, 2 not)` with the new
+         reason named, plus the empty case (`unparsed       0 — every record type was claimed`),
+         which is printed on purpose so its absence cannot be mistaken for a report that forgot to
+         look. Real file: `ocut health` prints `3 records across 1 reason(s) no handler claims
+         (3 known, 0 not):` with `part_left_running` unmarked and `(every reason here is one this
+         build expects, so nothing has moved)`. `python3 -m pytest scripts/tests -q` 327 passed
+         (322 before: five new cases).
+Cost     `KNOWN_UNCLAIMED_REASONS` is a hand-kept list, and it is the only thing between a real
+         `part_left_running` and a daily false alarm — a holdback change that renames the condition
+         would make every run shout until the set is edited. Adding a *loss* reason to it would be
+         worse than the noise it removes, because the count would then report a format change as
+         routine; that is why the unit case asserts the whole loss vocabulary is outside it rather
+         than only that the expected one is inside.
+Commit   5b931a0
