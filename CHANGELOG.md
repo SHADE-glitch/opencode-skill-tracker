@@ -1610,3 +1610,42 @@ Cost     The prune trusts `scan_inventory`'s plugin set, so the inventory name a
          records nothing, which is unchanged — and still indistinguishable from a plugin
          that registers no tools at all, the notifier case.
 Commit   f7a50ba
+
+### D-079 · 2026-10-17 · guard
+Symptom  The desktop notifier (`@mohak34/opencode-notifier`) sat on the Plugins tab with
+         `0 uses` forever, and could never read anything else: it registers no tool and no
+         command, only `event` and `permission.ask` handlers, so the hook — which records
+         tool and command calls — had nothing to attribute. D-071 had deliberately opened
+         it up again so a plugin merely *named* notifier would still be scanned; the scan
+         worked, and the result was a permanent row that reads like "installed and never
+         used".
+Change   Give the policy a name instead of an accident: `ocut_db.UNTRACKED_PLUGINS`
+         (currently just the notifier) is honoured at both ends. The hook skips the plugin
+         before the scan *and* before the surface record, so neither the sidecar nor the
+         attribution maps carry it; the reader drops its config entry from `inventory`,
+         refuses its `call` records, and the D-078 sweep removes any surface rows a sidecar
+         written before this change still names. Both READMEs and the M4 note say which
+         plugins are excluded and why. This reverses D-071's scope on purpose: that entry
+         was about the name being over-broad; this one is about a plugin that cannot mean
+         anything on the tab.
+Evidence L0 2026-10-17: `.venv/bin/python -m pytest scripts/tests -q` **338 passed**, 3
+         subtests (336 before: two new cases and one rewritten). The hook case runs a
+         notifier-named plugin that *does* register a tool and fires its after-hook: the
+         sidecar carries no record naming it — no surface, no call. A drift guard parses
+         `PLUGIN_UNTRACKED_DEFAULT` out of the hook's source and asserts it equals
+         `UNTRACKED_PLUGINS`, so the two languages cannot quietly disagree. The reader case
+         feeds a sidecar that still names the notifier and asserts the inventory, the
+         surface table, `plugin_usage` and `q_plugins` all come back empty for it. Live:
+         after one sync the tab reads `opencode-dcp 470, claude-mem 6, claude-mem-inject 1,
+         basic-memory 0, context7 0` — six rows before, five after, and 0 rows for the
+         notifier in `inventory`, `plugin_surface` and `plugin_usage`. The installed hook is
+         a symlink to this repo, so the exclusion is live on the next OpenCode start
+         without a reinstall.
+Cost     The list is a hand-kept name set on both sides, and matching is by *substring* of
+         the config spec, like the hook's own exclusion — a plugin shipped under a name
+         containing `opencode-notifier` is skipped too. A notifier that one day registers a
+         real tool would be silently unrecorded until the list is edited; the drift guard
+         makes the two lists move together, but nothing can notice that the *policy* is
+         wrong. And the exclusion is per machine, not per config: the reader drops the name
+         everywhere, including projects that might have wanted it.
+Commit   851d0c6
