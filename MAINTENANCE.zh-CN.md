@@ -72,7 +72,7 @@ ocut health
 | 读取器用不了的记录会被**计数**，绝不丢弃：未知 part 类型、解析不了的 JSON blob、解析不了的 sidecar 行，各自落进 `unparsed`。 | `scripts/tests/test_ocut_sync.py`、`test_a_json_blob_that_does_not_parse_is_counted_not_skipped`、`test_an_unknown_part_type_is_counted_per_type`、`test_an_unparseable_sidecar_line_is_counted_not_skipped` |
 | 改动 schema 或视图必须升 `SCHEMA_VERSION`，而升级会**清空同步游标**，好让新形状被重读而不是被信任。 | `scripts/tests/test_ocut_windows.py`、`test_a_version_bump_clears_the_cursors_so_nothing_is_read_again` |
 | 由**更新**版本写下的数据库会被原样留下（只确保表，不碰视图）并报为 newer，绝不重写。 | `scripts/tests/test_ocut_windows.py`、`test_a_database_from_a_future_build_is_left_alone_and_says_so` |
-| `TABLES_SQL` 声明的每个索引都必须是本构建**真的会跑**的语句能命中的。没人读的索引每次插入都在写，却什么也没换到。切掉一个不需要升 `SCHEMA_VERSION`：开库时的 retire 扫描会把它从既有文件里去掉。 | `scripts/tests/test_ocut_indexes.py`、`test_no_declared_index_is_unreachable_from_a_statement_the_code_runs` |
+| `TABLES_SQL` 声明的每个索引都必须是本构建**真的会跑**的语句能命中的，且它的键不能是更宽索引键的**严格前缀**——被计划点名并不够，更宽的键能把同一个计划服务得一样好。没人读的索引每次插入都在写，却什么也没换到。切掉一个不需要升 `SCHEMA_VERSION`：开库时的 retire 扫描会把它从既有文件里去掉。 | `scripts/tests/test_ocut_indexes.py`、`test_no_declared_index_is_unreachable_from_a_statement_the_code_runs`、`test_no_declared_index_is_a_prefix_of_a_wider_one` |
 | 设置是一个注册表：**环境 > 文件 > 默认**，坏值是以点名键的硬错误，零配置不创建任何东西。 | `scripts/tests/test_ocut_settings.py`、`test_environment_beats_the_file_and_the_file_beats_the_default`、`test_an_unknown_key_is_refused_and_names_the_real_ones`、`test_no_file_is_the_normal_case_and_creates_nothing` |
 | 推送前测试全绿。 | `AGENTS.md` |
 

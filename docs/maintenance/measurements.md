@@ -172,13 +172,67 @@ PY
 
 2026-10-17 reading: **177.7 ms with the index against 143.0 ms without** per 25,340-row insert
 pass and **6.73 MiB against 6.28 MiB** on the built schema, and **16.90 MiB against 16.15 MiB**
-on a copy of the live file — 0.75 MiB, 4.4% of it, for an index no statement in this repository
-reaches. Reachability
-itself is not a number here: it is `scripts/tests/test_ocut_indexes.py`, which plans every
-statement the build runs and fails on any declared index none of them names. Re-take this when
-the row counts change by an order of magnitude, and note that the *plan* half of the claim does
-not depend on the rows at all (`ANALYZE` is never run, so there is no `sqlite_stat1` for the
-planner to read).
+on a copy of the live file — 0.75 MiB, 4.4% of it.
+
+**What it cost on the read side, measured the same day.** The cut was first justified as "no
+plan names it", and that reading was wrong: `idx_model_call_model` is named by **3 of the 118**
+statements `scripts/tests/test_ocut_indexes.py` collects — the single-model summary
+(`SELECT COUNT(*) … WHERE model = ?`, a `SEARCH … (model=?)`) and the two per-model roll-ups
+(`SELECT model, provider, COUNT(*) … GROUP BY model, provider`), which scan the table and sort
+in a temp B-tree either way. Copy the live file twice, `DROP INDEX` on one, plan every statement
+in a fresh connection on each side, and print the ones whose plan moved:
+
+```bash
+cd <repo> && python3 - <<'PY'
+import shutil, sqlite3, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, "scripts"); sys.path.insert(0, "scripts/tests")
+import ocut_db as db, test_ocut_indexes as T
+SQLS = sorted({s for s in T._run_everything(Path(tempfile.mkdtemp()))
+               if " ".join(s.split()).split()[0].upper() in T.PLANNABLE})
+def side(cut):
+    f = Path(f"/var/tmp/ocut-plan-{'cut' if cut else 'kept'}.db")
+    shutil.copy(db.DB_PATH, f)
+    a = sqlite3.connect(f)
+    a.execute("DROP INDEX IF EXISTS idx_model_call_model")
+    if not cut:                                   # the sweep retires it on the next open
+        a.execute("CREATE INDEX idx_model_call_model ON model_calls(model)")
+    a.commit(); a.close()
+    plans = {}
+    for sql in SQLS:                              # the captured text is literal: no binds
+        c = sqlite3.connect(f); c.row_factory = sqlite3.Row
+        plans[sql] = " | ".join(r["detail"] for r in c.execute("EXPLAIN QUERY PLAN " + sql))
+        c.close()
+    return plans
+kept, cut = side(False), side(True)
+moved = [s for s in kept if kept[s] != cut[s]]
+print(len(kept), "statements,", len(moved), "with a different plan")
+for sql in moved:
+    print("\n---", " ".join(sql.split())[:120])
+    print("  with the index:", kept[sql])
+    print("  without       :", cut[sql])
+PY
+```
+
+Reading: **3 of 118 plans differ**, and all three swap `idx_model_call_model` for
+`idx_model_call_model_ts`. The equality lookup keeps its `SEARCH … USING INDEX (model=?)` shape —
+the wider key leads with the same column, so it is the same lookup — and the two roll-ups keep
+their `SCAN model_calls USING INDEX` plus a temp B-tree for the `GROUP BY`: one covering key for
+another, and no plan gains or loses a `SEARCH`. Timed over 300 runs each on the same copies:
+**27.8 ms against 28.1 ms** (requests) and **28.4 ms against 28.0 ms** (responses) — inside the
+run-to-run spread, and the sign flips between the pair, so what the read side pays is the scan,
+not which covering key it walks. The timing needs a real `ts` bound: the captured corpus carries
+the fixture's `ts < NULL`, which the wider key alone can answer from the index (5.1 against 1.4
+ms) and which no report run produces.
+
+Both halves of the claim have a check, and they are **different rules**: reachability — every
+declared index is named by the plan of a statement this build runs — is
+`test_no_declared_index_is_unreachable_from_a_statement_the_code_runs`, and the one that
+actually finds a prefix duplicate is `test_no_declared_index_is_a_prefix_of_a_wider_one`. The second is
+structural (`PRAGMA index_info`, no rows needed) and is what flags this index when it is put
+back. Re-take this when the row counts change by an order of magnitude, and note that the *plan*
+half of the claim does not depend on the rows at all (`ANALYZE` is never run, so there is no
+`sqlite_stat1` for the planner to read).
 
 ---
 

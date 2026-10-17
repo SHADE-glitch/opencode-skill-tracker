@@ -264,19 +264,25 @@ CREATE TABLE IF NOT EXISTS model_calls (
 );
 CREATE INDEX IF NOT EXISTS idx_model_call_ts      ON model_calls(ts);
 CREATE INDEX IF NOT EXISTS idx_model_call_model_ts ON model_calls(model, ts);
--- No single-column index on `model`. There was one (`idx_model_call_model`); it
--- was cut on 2026-10-17 for the reason the two cuts above were, and the reason this
--- file's remaining indexes are listed in `scripts/tests/test_ocut_indexes.py`:
--- every statement this build runs is planned with `EXPLAIN QUERY PLAN`, and an
--- index no plan names is written on every insert for a lookup nobody performs.
--- Every reader that filters by model also bounds the window (`q_model_calls`,
--- `q_model_summary`, the requests tab) or aggregates over it
--- (`q_usage_model_stats`), and both shapes plan against `idx_model_call_model_ts`,
--- which leads with the same column — so the narrow index was a duplicate whose only
--- possible win was a plan no statement here produces. Measured on this machine's
--- own 25,340-row table: a full insert pass 177.7 ms against 143.0 ms, and 0.75 MiB
--- of a 16.90 MiB file (the recipe is in `docs/maintenance/measurements.md` §2).
--- Re-adding it means writing the query that reads it.
+-- No single-column index on `model`. There was one (`idx_model_call_model`) and it
+-- was cut on 2026-10-17, but **not** because no plan named it: three do. One is the
+-- single-model summary (`... WHERE model = ?`, a `SEARCH ... (model=?)`); the other
+-- two are the per-model roll-ups (`SELECT model, provider, COUNT(*) ... GROUP BY
+-- model`), which scan the whole table and sort in a temp B-tree either way. With the
+-- narrow key present SQLite used it; with it gone those same three plans walk
+-- `idx_model_call_model_ts`, which leads with the same column. Measured on a copy of
+-- this machine's own file — all 118 statements `scripts/tests/test_ocut_indexes.py`
+-- collects, planned with and without the index, and 300 timed runs of each roll-up —
+-- the plans move and the cost does not (27.8 against 28.1 ms, 28.4 against 28.0 ms;
+-- the sign flips between them). So the narrow key was a duplicate of the leading
+-- column of `idx_model_call_model_ts` that bought
+-- nothing back, while every insert paid for it: a full insert pass over the real
+-- 25,340 rows 177.7 ms against 143.0 ms, and 0.75 MiB of a 16.90 MiB file (the
+-- recipe is in `docs/maintenance/measurements.md` §2).
+-- That is a second rule, not the reachability one: reachability is checked for every
+-- declared index on every run, and the prefix rule — a key that is a strict prefix
+-- of a wider declared key can never win a plan — is checked alongside it.
+-- Re-adding it means writing the query the wider key cannot serve.
 -- No index on `session_id`, here or on `tool_calls`: no query in this repository
 -- filters by it (the only joins on a session key go through `sessions`), so the
 -- index was maintenance on every insert for a lookup nobody performs.

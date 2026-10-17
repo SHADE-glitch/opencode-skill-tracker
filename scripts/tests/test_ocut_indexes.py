@@ -20,6 +20,15 @@ in `ocut-stats.py`, and every public `q_*` in `ocut_db.py` through its own signa
 `set_trace_callback` records what ran; `EXPLAIN QUERY PLAN` then says which index
 each statement can reach.
 
+Reachability is necessary but not sufficient, and the 2026-10-17 cut is the case
+that says so: `idx_model_call_model` **was** named by two of the 118 plans this file
+collects — both full scans, which a wider key serves identically — so the reachability
+rule would have passed it. The second rule is structural and needs no rows: an index
+whose key is a **strict prefix** of another declared index's key on the same table can
+never win a plan, because the wider index answers every lookup the narrower one can.
+`PRAGMA index_info` reads the keys from the schema `ensure_schema` builds, so neither
+rule parses DDL.
+
 Two properties of the measurement make it exact rather than approximate:
 
 * **Plans do not depend on the rows, so no fixture has to be sized.** Nothing in
@@ -214,6 +223,39 @@ def _unreachable(named: set[str], declared) -> list[str]:
     return sorted(set(declared) - named)
 
 
+def _shape(conn, names) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Each declared index's table and key columns, read from the schema it built.
+
+    Not parsed out of `TABLES_SQL`: a regex over DDL is a second reader of it, and
+    the one that drifts. `PRAGMA index_info` answers what SQLite actually created.
+    """
+    shape = {}
+    for name in names:
+        cols = tuple(r[2] or "" for r in conn.execute(f"PRAGMA index_info({name})"))
+        table = conn.execute("SELECT tbl_name FROM sqlite_master WHERE name = ?",
+                             (name,)).fetchone()
+        shape[name] = (table[0] if table else "", cols)
+    return shape
+
+
+def _prefix_duplicates(shape) -> list[str]:
+    """Indexes whose key is a strict prefix of another index's key on the same table.
+
+    Reachability cannot see these, which is why they need a rule of their own:
+    `idx_model_call_model` was named by three plans — one equality search and two
+    full scans, all of which a wider index serves just as well, measured at the same
+    cost — so a plan-count check passes it on the day it is written and keeps
+    passing it. A wider index answers every lookup the narrower one can (same
+    leading columns, plus more), so the narrower is a write cost with no plan it can
+    win.
+    """
+    return sorted(
+        name for name, (table, cols) in shape.items()
+        if any(other != name and other_table == table and len(cols) < len(other_cols)
+               and other_cols[:len(cols)] == cols
+               for other, (other_table, other_cols) in shape.items()))
+
+
 @pytest.fixture
 def statements(tmp_path):
     return _run_everything(tmp_path)
@@ -246,6 +288,55 @@ def test_no_declared_index_is_unreachable_from_a_statement_the_code_runs(stateme
         "written on every insert and buys nothing — either drop it from TABLES_SQL "
         "(the retire-on-open sweep in `ensure_schema` removes it from existing "
         "databases) or write the query that reads it.")
+
+
+def test_no_declared_index_is_a_prefix_of_a_wider_one():
+    """The rule the reachability check above cannot be, and the one that cut last.
+
+    The 2026-10-17 cut (`idx_model_call_model`) was named by three plans, so
+    `test_no_declared_index_is_unreachable_from_a_statement_the_code_runs` would
+    have passed it — and the docstring on that cut says the reachability rule found
+    it, which it did not. What found it is this: `(model)` is `(model, ts)` minus a
+    column, and SQLite without `ANALYZE` cannot prefer the narrower key for a plan
+    the wider one also serves. Measured on a copy of the live file, all 118
+    statements this check collects, planned with and without the index in a fresh
+    connection each: exactly three plans moved — one `SEARCH model_calls USING
+    INDEX (model=?)` and two `SCAN model_calls USING INDEX` swapping one covering
+    key for the other — and 300 timed runs of each roll-up were indistinguishable
+    (27.8 against 28.1 ms, 28.4 against 28.0 — the sign flips).
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        db.ensure_schema(conn)
+        shape = _shape(conn, db._DECLARED_INDEXES)
+    finally:
+        conn.close()
+
+    missing = sorted(name for name, (_, cols) in shape.items() if not cols)
+    assert not missing, (
+        f"{missing} is declared but not built by `ensure_schema`, so its key is "
+        "unknown and this check cannot see the index that duplicates it")
+    assert _prefix_duplicates(shape) == [], (
+        f"{_prefix_duplicates(shape)} has a key that is a strict prefix of another "
+        "declared index's key on the same table. A wider index serves every lookup "
+        "the narrower one can, and no plan can prefer the narrow one, so drop it "
+        "from `TABLES_SQL` — the retire-on-open sweep removes it from existing "
+        "databases.")
+
+
+def test_a_prefix_duplicate_is_reported_and_its_wider_key_is_not():
+    """The guard, provoked with a name instead of with the repository."""
+    planted = {
+        "idx_a": ("t", ("model",)),
+        "idx_b": ("t", ("model", "ts")),
+        "idx_c": ("t", ("tool",)),
+        "idx_d": ("other", ("model",)),
+        "idx_e": ("t", ("ts", "model")),
+    }
+    assert _prefix_duplicates(planted) == ["idx_a"], (
+        "a narrower key must be reported, and the wider key it duplicates, the "
+        "same key on a different table and a different column order must not be")
 
 
 def test_an_index_that_never_appears_in_a_plan_is_reported(statements):
