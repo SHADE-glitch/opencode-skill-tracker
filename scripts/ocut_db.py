@@ -1024,7 +1024,7 @@ def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
     return conn.execute(sql, params).fetchall()
 
 
-def q_plugins(conn):
+def q_plugins(conn, start_ts=None, end_ts=None):
     """Every plugin the host's config declares, what it ships, and how often it ran.
 
     Usage comes from ``plugin_usage``, which only ``plugin/ocut-hook.js`` writes:
@@ -1035,7 +1035,14 @@ def q_plugins(conn):
     verdict: the plugin may be installed and unused, or its surface may be one the
     hook's static scan cannot parse. ``tools``/``commands`` count what the scan
     found; ``skills``/``agents`` come from ``owner_plugin``, which the host sets.
+
+    ``uses``/``last_used`` follow the window and the window lives in the JOIN, so
+    an installed plugin with no call in range stays listed with 0 rather than
+    vanishing — the same shape the Skills and Agents tabs use. ``installed`` and
+    ``ever_used`` ignore the window: the state column describes the plugin, not
+    the range.
     """
+    on_time, params = _on_time(_time_conds(start_ts, end_ts, col="u.ts"))
     return conn.execute(
         f"{_PLUGIN_NAMES_CTE}"
         " SELECT n.name AS plugin,"
@@ -1059,7 +1066,9 @@ def q_plugins(conn):
         " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
         " FROM names n"
         " LEFT JOIN plugin_usage u ON u.plugin = n.name"
+        f"{on_time}"
         " GROUP BY n.name ORDER BY uses DESC, n.name",
+        params,
     ).fetchall()
 
 

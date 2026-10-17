@@ -393,21 +393,24 @@ def test_a_picked_window_lands_on_the_tab_that_asked_and_on_no_other(tracker, cl
                   size=(92, 46))
 
 
-def test_the_plugins_tab_never_opens_a_picker(tracker, clock):
-    """The one tab with no window must not be handed a window.
+def test_the_plugins_tab_opens_the_picker_like_every_other_tab(tracker, clock):
+    """Plugins owns a range now, so the 📅 button must reach it.
 
-    Its inventory carries no timestamps, so a picked span would be applied to
-    nothing while looking applied — and the modal reads the *active* pane, so this
-    is the case where opening it would be a bug rather than a curiosity.
+    Its *list* is still all-time — the inventory carries no timestamps — but
+    ``uses`` and ``last used`` are windowed, so a picked span is meaningful. The
+    old contract (this tab refuses the picker) is gone; what replaces it is that
+    the picker opens, and cancelling leaves every tab's range untouched.
     """
     async def body(pilot, app):
         await tui_tests.activate(app, pilot, "tab-plugins")
         before = dict(app.tab_range)
         await pilot.click("#date-range")
         await pilot.pause(0.6)
-        assert "DateRangeModal" not in type(app.screen).__name__, type(app.screen)
+        assert isinstance(app.screen, tui.DateRangeModal), type(app.screen)
+        await pilot.press("escape")
+        await pilot.pause(0.4)
         assert app.tab_range == before, app.tab_range
-        assert "tab-plugins" not in app.tab_range
+        assert app.tab_range["tab-plugins"] == "7d", app.tab_range
     tui_tests.drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body,
                     size=(92, 46))
 

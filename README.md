@@ -467,7 +467,9 @@ detail in [§9](README.zh-CN.md#-9-已知限制).
   idempotent, because every record is keyed by its own id.
 - **M11** The Plugins tab is the union of what is **installed** and what has usage, keyed
   by name. An installed-but-unused plugin shows a zero count; a plugin with usage and no
-  inventory row still appears.
+  inventory row still appears. The list is **not** windowed — an installed plugin stays
+  listed at every range — while `uses` and `last used` follow the tab's window, like
+  every other entity tab.
 - **M12** Backups are manual and pre-destructive only. There is **no systemd** timer any
   more; retention keeps the newest five managed snapshots and never touches hand-made
   copies.

@@ -228,15 +228,16 @@ def test_the_tui_disables_textual_animations(tracker):
 def test_every_tab_has_its_own_window_and_no_default_is_all_time(tracker):
     """The parity claim: one window per tab, not one window for the app.
 
-    ``tab-plugins`` is deliberately absent from that dict — the inventory carries no
-    timestamps, so a window on the Plugins list would filter nothing while looking
-    like it did. It is asserted absent rather than silently missing.
+    Every pane owns a range, Plugins included — its *list* is all-time (the
+    inventory carries no timestamps) but ``uses``/``last used`` are windowed like
+    every other count, so it has a range to carry. The exact dict is asserted so a
+    tab cannot quietly fall back to the app default.
     """
     async def body(pilot, a):
         assert a.tab_range == {
             "tab-dashboard": "1d", "tab-usage": "1d",
             "tab-tools": "7d", "tab-skills": "7d", "tab-agents": "7d",
-            "tab-mcp": "7d", "tab-tokens": "7d",
+            "tab-plugins": "7d", "tab-mcp": "7d", "tab-tokens": "7d",
         }, a.tab_range
         for pane, value in a.tab_range.items():
             if not isinstance(value, db.CustomWindow):
@@ -423,6 +424,43 @@ def test_the_plugins_tab_shows_a_uses_column(tracker):
                 for i in range(table.row_count)}
         assert rows["demo-plugin"] == ("0", "0", "0", "0", "installed"), rows
         assert rows["local-one"] == ("0", "0", "0", "0", "installed"), rows
+    drive(lambda: tui.TrackerApp(str(tracker)), body)
+
+
+def test_the_plugins_list_is_all_time_but_its_uses_follow_the_window(tracker):
+    """The list never shrinks; the counts do — the shape every other tab uses.
+
+    Two hook calls for one plugin, one ten days old and one a minute old: at the
+    default 7d window only the recent one counts, and at all-time both do. The
+    plugin with no call in range stays on the list with 0 rather than vanishing,
+    because the inventory is not windowed. This is the assertion that would have
+    caught the Plugins tab ignoring its bounds entirely.
+    """
+    conn = sqlite3.connect(tracker)
+    now = now_ms()
+    conn.executemany(
+        "INSERT INTO plugin_usage (call_id, plugin, kind, item, session_id, ts)"
+        " VALUES (?, 'demo-plugin', 'tool', 'demo-tool', ?, ?)",
+        [("prt_plug_old", "ses_old", now - 10 * DAY),
+         ("prt_plug_recent", "ses_today", now - 60_000)])
+    conn.commit()
+    conn.close()
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-plugins")
+        table = app.query_one("#t-plugins", DataTable)
+
+        def uses():
+            return {cell(table, i, 0): cell(table, i, 1)
+                    for i in range(table.row_count)}
+
+        assert app.tab_range["tab-plugins"] == "7d", app.tab_range
+        assert uses()["demo-plugin"] == "1", uses()
+        assert uses()["local-one"] == "0", uses()
+        app.tab_range["tab-plugins"] = "all"
+        app._refresh_active_tab()
+        await pilot.pause(0.6)
+        assert uses()["demo-plugin"] == "2", uses()
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
 
