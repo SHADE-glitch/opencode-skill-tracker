@@ -449,6 +449,11 @@ detail in [§9](README.zh-CN.md#-9-已知限制).
 - **M4** The hook's attribution is a best-effort **static scan** of each plugin's source.
   A plugin whose surface the scan cannot parse records nothing — honest, because a
   guessed owner would be worse than a missing row. New or renamed plugins need a restart.
+  A few plugins are recorded **not at all** by name (`ocut_db.UNTRACKED_PLUGINS`, currently
+  the desktop notifier): one that registers no tool and no command can never produce a
+  usage row, so listing it would only hold a permanent `0 uses` that reads like "never
+  used". The hook skips it and the reader drops anything a sidecar written earlier still
+  names.
 - **M5** A plugin call's `ts` is the **hook's own clock**, not the host's, and its status
   is NULL: a tool's after-hook carries no status and a command has no after-hook at all.
 - **M6** When OpenCode's persisted format moves, the reader counts the record as

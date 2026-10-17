@@ -63,6 +63,14 @@ PLUGIN_EVENTS = Path(
     )
 )
 
+# Plugins this reader deliberately does not record, by inventory short name. A
+# desktop-notification listener registers no tool and no command, so it can never
+# produce a usage row; all it can do is hold a permanent `0 uses` line that reads
+# like "installed and never used". The hook skips the same names (its own list,
+# in `plugin/ocut-hook.js`), and the reader drops anything that still names them —
+# a sidecar written before the policy changed must not resurrect the row.
+UNTRACKED_PLUGINS = frozenset({"opencode-notifier"})
+
 
 # --- settings --------------------------------------------------------------
 #

@@ -920,7 +920,7 @@ def scan_inventory(conn, host_config=None, home=None) -> dict:
         elif key == "plugin" and isinstance(value, list):
             for entry in value:
                 name, version = _plugin_name_version(entry)
-                if name:
+                if name and name not in db.UNTRACKED_PLUGINS:
                     rows.append(("plugin", name, "", version, str(entry), "config"))
         elif key == "provider" and isinstance(value, dict):
             for name in value:
@@ -1002,7 +1002,7 @@ def _write_plugin_call(conn, rec) -> bool:
     """One ``call`` record -> one ``plugin_usage`` row. False if unusable."""
     plugin = _plugin_key(rec.get("plugin"))
     item = rec.get("item")
-    if not plugin:
+    if not plugin or plugin in db.UNTRACKED_PLUGINS:
         return False
     if not isinstance(item, str) or not item:
         return False

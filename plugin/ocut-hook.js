@@ -64,9 +64,18 @@ const HOOKS_MAX = 20000;                   // start-time entries kept for durati
 // own source carries the literal `tool:{ … { compress: … } }` in a comment
 // (explaining the scan) — which the shape-based scanner read as a real `compress`
 // tool and attributed to `ocut-hook.js`. A plugin cannot own a tool it merely
-// mentions. Every other plugin is scanned, the notifier included: a plugin that
-// registers nothing simply yields an empty surface, which is honest.
+// mentions. Every other plugin is scanned: a plugin that registers nothing
+// simply yields an empty surface, which is honest evidence that it was read.
 const PLUGIN_EXCLUDE_DEFAULT = ["ocut-hook"];
+
+// Plugins the reader does not record at all, skipped before the scan and before
+// the surface record. The desktop notifier registers no tool and no command, only
+// event handlers, so it can never produce a call; scanning it only ever emitted
+// an empty surface, and the Plugins tab then held a permanent `0 uses` row that
+// reads like "installed and never used". The reader keeps the same list
+// (`ocut_db.UNTRACKED_PLUGINS`) and drops anything a sidecar written earlier
+// still names, so the two ends agree even across the change.
+const PLUGIN_UNTRACKED_DEFAULT = ["opencode-notifier"];
 
 // Inside a `tool: { … }` object the tool ids are the keys at the shallowest
 // level that has any. Anything deeper belongs to one tool's own definition
@@ -306,6 +315,10 @@ function isSkippedPlugin(spec) {
   return PLUGIN_EXCLUDE_DEFAULT.some((name) => spec.includes(name));
 }
 
+function isUntrackedPlugin(spec) {
+  return PLUGIN_UNTRACKED_DEFAULT.some((name) => spec.includes(name));
+}
+
 // --- the sidecar -----------------------------------------------------------
 
 function writeEvent(record) {
@@ -352,6 +365,7 @@ async function ocutHookPlugin(input) {
     for (const spec of specs) {
       if (seen.has(spec)) continue;
       seen.add(spec);
+      if (isUntrackedPlugin(spec)) continue;
       const resolved = resolvePluginEntry(spec);
       const name = (resolved && resolved.name) || spec;
       const surface = isSkippedPlugin(spec)

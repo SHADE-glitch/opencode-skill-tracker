@@ -9,12 +9,16 @@ saw; the sidecar it wrote is then read back as JSONL.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import ocut_db as db                                    # noqa: E402
 
 BUN = shutil.which("bun")
 requires_bun = pytest.mark.skipif(BUN is None, reason="bun is not installed")
@@ -155,14 +159,13 @@ def test_the_hook_does_not_attribute_its_own_source(tmp_path):
 
 
 @requires_bun
-def test_a_notifier_shaped_plugin_is_scanned_not_skipped(tmp_path):
-    """The exclusion is the hook's own file only; a notifier spec is read too.
+def test_the_notifier_is_not_scanned_at_all(tmp_path):
+    """An untracked plugin yields no surface and no call — not even an empty surface.
 
-    `opencode-notifier` used to be excluded by name alongside `ocut-hook`. It
-    registers nothing the scan tracks, but the exclusion also meant a plugin
-    shipped under that name was never read at all. Now only `ocut-hook` is
-    excluded, so a notifier-shaped spec is scanned like any other and its surface
-    is recorded.
+    D-071 dropped this exclusion so a plugin merely *named* notifier would still be
+    read. That cost a permanent `0 uses` row for a package that registers no tool
+    and no command, so the name is excluded again — and now *before* the surface
+    record: an empty surface is still a record the reader has to decide about.
     """
     cfg = tmp_path / "cfg"
     (cfg / "plugins").mkdir(parents=True)
@@ -175,14 +178,27 @@ def test_a_notifier_shaped_plugin_is_scanned_not_skipped(tmp_path):
     sidecar, env = env_for(tmp_path, cfg)
     r = run_bun(
         "const m = await import(process.env.PLUGIN_PATH);"
-        "await m.default.server({ directory: process.env.OCUT_OPENCODE_CONFIG });"
+        "const h = await m.default.server({ directory: process.env.OCUT_OPENCODE_CONFIG });"
+        "await h['tool.execute.after']({ tool: 'ping', sessionID: 's1', callID: 'c1' });"
         "console.log('OK');",
         env)
     assert r.returncode == 0, r.stdout + r.stderr
-    surfaces = [x for x in records(sidecar) if x["t"] == "surface"]
-    notifier = [s for s in surfaces if "opencode-notifier" in s["plugin"]]
-    assert notifier, f"the notifier spec was skipped: {surfaces}"
-    assert notifier[0]["tools"] == ["ping"], notifier
+    recs = records(sidecar)
+    assert not [x for x in recs
+                if "opencode-notifier" in str(x.get("plugin", ""))], recs
+
+
+def test_the_hook_and_the_reader_share_the_untracked_list():
+    """Two languages, one policy: the names must not drift.
+
+    The hook skips the plugin before it writes a surface; the reader drops the name
+    from the inventory and from any call. If only one side changed, the other would
+    keep the row alive — the exact bug this list exists to prevent.
+    """
+    src = PLUGIN.read_text(encoding="utf-8")
+    m = re.search(r"PLUGIN_UNTRACKED_DEFAULT = \[(.*?)\]", src)
+    assert m, "the hook no longer declares PLUGIN_UNTRACKED_DEFAULT"
+    assert set(re.findall(r'"([^"]+)"', m.group(1))) == set(db.UNTRACKED_PLUGINS)
 
 
 @requires_bun

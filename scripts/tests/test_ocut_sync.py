@@ -710,7 +710,7 @@ def test_the_inventory_reads_the_directories_and_the_config(tmp_path, tracker):
     conn.close()
     cfg = tmp_path / "cfg"
     make_config(cfg, mcp={"context7": {}, "basic-memory": {}},
-                plugins=["@mohak34/opencode-notifier@0.4.0",
+                plugins=["@acme/demo-plugin@1.2.3",
                          "./plugins/claude-mem.js"],
                 providers={"huoshan": {}})
     stats = sync.run(db_path=tracker, host_db=path, host_config=cfg)
@@ -725,10 +725,10 @@ def test_the_inventory_reads_the_directories_and_the_config(tmp_path, tracker):
     assert by_kind["command"] == ["digest"]
     assert sorted(by_kind["mcp"]) == ["basic-memory", "context7"]
     assert sorted(by_kind["provider"]) == ["huoshan"]
-    assert by_kind["plugin"] == ["opencode-notifier", "claude-mem"]
+    assert by_kind["plugin"] == ["demo-plugin", "claude-mem"]
     versions = {r["name"]: r["version"] for r in rows(tracker, "inventory")
                 if r["kind"] == "plugin"}
-    assert versions["opencode-notifier"] == "0.4.0"
+    assert versions["demo-plugin"] == "1.2.3"
     assert versions["claude-mem"] is None
     skill_versions = {r["name"]: r["version"] for r in rows(tracker, "inventory")
                       if r["kind"] == "skill"}
@@ -1050,6 +1050,35 @@ def test_the_hook_name_is_shortened_so_one_plugin_lists_once(tmp_path, tracker):
     finally:
         conn.close()
     assert names.count("demo-plugin") == 1, names
+
+
+def test_an_untracked_plugin_never_reaches_a_panel(tmp_path, tracker):
+    """The notifier is in the config *and* has a surface and a call; none is kept.
+
+    The hook skips it now, but a sidecar written before that change still names it.
+    The reader is the second half of the policy: the config entry is not
+    inventoried, the call is not written, and the surface the record would have
+    created is swept because no plugin row supports it.
+    """
+    host, cfg = plugin_host(tmp_path, ["@mohak34/opencode-notifier@0.4.0"])
+    events = sidecar(tmp_path,
+                     {"t": "surface", "plugin": "@mohak34/opencode-notifier@0.4.0",
+                      "tools": ["notify"], "commands": []},
+                     {"t": "call", "ts": 1_700_000_300_000, "sid": "ses_parent",
+                      "cid": "c1", "plugin": "@mohak34/opencode-notifier@0.4.0",
+                      "kind": "tool", "item": "notify", "status": None, "ms": 1})
+    stats = sync.run(db_path=tracker, host_db=host, host_config=cfg,
+                     plugin_events=events, quiet=True)
+    assert stats["plugin_events"]["calls"] == 0
+    assert rows(tracker, "inventory", "name='opencode-notifier'") == []
+    assert rows(tracker, "inventory", "owner_plugin='opencode-notifier'") == []
+    assert rows(tracker, "plugin_surface") == []
+    assert rows(tracker, "plugin_usage") == []
+    conn = db.open_db(tracker)
+    try:
+        assert [r["plugin"] for r in db.q_plugins(conn)] == []
+    finally:
+        conn.close()
 
 
 def test_a_surface_survives_the_next_syncs_inventory_rewrite(tmp_path, tracker):
