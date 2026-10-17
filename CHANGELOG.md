@@ -1432,6 +1432,24 @@ Evidence L0 2026-10-17: reachability was measured off statements that actually r
          before and after. `python3 -m pytest scripts/tests -q` 322 passed.
 Cost     A second cut of the same shape means the sweep's *method* was the weak part, not its list:
          any future claim that a column is unqueried has to come from statements that ran, not from
-         a grep. The dropped index also hands its pages to the freelist, as D-073 says — this
-         project still has no `VACUUM`.
+         a grep. The dropped index also hands its pages to the freelist, as D-073 says, and this
+         commit left the real file at 20,824,064 B with 592 free pages. A `VACUUM` was run later the
+         same day and took it to 17,735,680 B (17,723,392 B after the second drop) with every table
+         and every view identical to the snapshot — recorded in `measurements.md` §2, which no
+         longer says the file only shrinks under a rebuild. So "this project still has no
+         `VACUUM`" above is a statement about this commit's date: the tool still has no subcommand
+         for it, and running one is a manual step.
+
+         One thing no test here could have caught, which is why it is written down: **the cut came
+         back once.** At 07:48 the real file held 14 `idx_*`; a snapshot taken at 07:54 held 15,
+         with `idx_plugin_usage_item` present again — in a window where no command of this cut ran.
+         The only mechanism that does that is a process holding the *pre-cut* module: `ensure_schema`
+         runs `TABLES_SQL` on every open, and that process's in-memory copy still declares the
+         index, so `CREATE INDEX IF NOT EXISTS` puts it back. It was not reproducible afterwards —
+         re-running the sweep left it at 14, and a `backup`, a `health`, a `VACUUM` and the whole
+         suite each left the count at 14 — and the process was never identified; anything left
+         running from before the cut (a TUI, a sync loop) would do it. The sweep is idempotent and
+         runs on every open, so the next current build retires it again. What this costs is the
+         strength of the claim: "retired" here means *retired on the next open by a build that no
+         longer declares it*, which is not quite the same as gone.
 Commit   5b2e5a6
