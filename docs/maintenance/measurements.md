@@ -110,6 +110,73 @@ maintenance action and not as something the tool does: `ocut` has no such subcom
 returns to this size only as the hook writes again — the freelist is what keeps it from growing past
 its high-water mark between compactions.
 
+2026-10-17: **what one index costs, and the reading that cut it.** `TABLES_SQL` declared
+`idx_model_call_model` on `model_calls(model)` — a single column that `idx_model_call_model_ts`
+already leads with. The recipe builds a fresh schema twice at **this database's own row count**,
+adds the index back to one of them by hand and times a full insert pass into each (three passes,
+mean), then does the same to a copy of the live file to see what the index occupies today. The
+index is created by the recipe and not by `ensure_schema`, because the schema no longer declares
+it — a bare `DROP INDEX` on the cut side would fail, and a comparison against a schema that never
+had it is not a measurement of the cut.
+
+```bash
+cd <repo> && python3 - <<'PY'
+import os, shutil, sqlite3, sys, time
+sys.path.insert(0, "scripts")
+import ocut_db as db
+WITH_INDEX = "CREATE INDEX idx_model_call_model ON model_calls(model)"
+src = sqlite3.connect(f"file:{db.DB_PATH}?mode=ro", uri=True)
+ROWS = src.execute("SELECT COUNT(*) FROM model_calls").fetchone()[0]
+COLS = [r[1] for r in src.execute("PRAGMA table_info(model_calls)")]
+src.close()
+INSERT = (f"INSERT INTO model_calls({', '.join(COLS)})"
+          f" VALUES({', '.join('?' * len(COLS))})")
+NUMERIC = {"ts", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+           "cache_read", "cache_write", "total_tokens", "usage_available"}
+VALUES = [tuple(1 if c == "usage_available" else
+                (i if c in NUMERIC else f"{c}-{i}") for c in COLS)
+          for i in range(ROWS)]
+for cut in (False, True):
+    path = f"/var/tmp/cost-{'cut' if cut else 'kept'}.db"
+    conn = sqlite3.connect(path)
+    db.ensure_schema(conn)
+    if not cut:
+        conn.execute(WITH_INDEX)
+    conn.commit()
+    start = time.perf_counter()
+    for _ in range(3):
+        conn.execute("DELETE FROM model_calls")
+        conn.executemany(INSERT, VALUES)
+        conn.commit()
+    conn.execute("VACUUM")
+    print(f"{'without' if cut else 'with'} idx_model_call_model:",
+          round((time.perf_counter() - start) / 3 * 1000, 1), "ms per pass,",
+          round(os.path.getsize(path) / 2 ** 20, 2), "MiB")
+    conn.close()
+for cut in (False, True):
+    path = f"/var/tmp/real-{'cut' if cut else 'kept'}.db"
+    shutil.copy(db.DB_PATH, path)
+    conn = sqlite3.connect(path)
+    conn.execute("DROP INDEX IF EXISTS idx_model_call_model")
+    if not cut:
+        conn.execute(WITH_INDEX)
+    conn.execute("VACUUM")
+    conn.close()
+    print(f"{'without' if cut else 'with'} it, on a copy of the live file:",
+          round(os.path.getsize(path) / 2 ** 20, 2), "MiB")
+PY
+```
+
+2026-10-17 reading: **177.7 ms with the index against 143.0 ms without** per 25,340-row insert
+pass and **6.73 MiB against 6.28 MiB** on the built schema, and **16.90 MiB against 16.15 MiB**
+on a copy of the live file — 0.75 MiB, 4.4% of it, for an index no statement in this repository
+reaches. Reachability
+itself is not a number here: it is `scripts/tests/test_ocut_indexes.py`, which plans every
+statement the build runs and fails on any declared index none of them names. Re-take this when
+the row counts change by an order of magnitude, and note that the *plan* half of the claim does
+not depend on the rows at all (`ANALYZE` is never run, so there is no `sqlite_stat1` for the
+planner to read).
+
 ---
 
 ## 3. The TUI: what a page refresh costs, and the clipping cap

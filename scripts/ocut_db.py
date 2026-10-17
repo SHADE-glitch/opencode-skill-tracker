@@ -262,9 +262,21 @@ CREATE TABLE IF NOT EXISTS model_calls (
     usage_available   INTEGER NOT NULL DEFAULT 1,
     missing           TEXT                -- JSON list of usage fields the host omitted
 );
-CREATE INDEX IF NOT EXISTS idx_model_call_model   ON model_calls(model);
 CREATE INDEX IF NOT EXISTS idx_model_call_ts      ON model_calls(ts);
 CREATE INDEX IF NOT EXISTS idx_model_call_model_ts ON model_calls(model, ts);
+-- No single-column index on `model`. There was one (`idx_model_call_model`); it
+-- was cut on 2026-10-17 for the reason the two cuts above were, and the reason this
+-- file's remaining indexes are listed in `scripts/tests/test_ocut_indexes.py`:
+-- every statement this build runs is planned with `EXPLAIN QUERY PLAN`, and an
+-- index no plan names is written on every insert for a lookup nobody performs.
+-- Every reader that filters by model also bounds the window (`q_model_calls`,
+-- `q_model_summary`, the requests tab) or aggregates over it
+-- (`q_usage_model_stats`), and both shapes plan against `idx_model_call_model_ts`,
+-- which leads with the same column — so the narrow index was a duplicate whose only
+-- possible win was a plan no statement here produces. Measured on this machine's
+-- own 25,340-row table: a full insert pass 177.7 ms against 143.0 ms, and 0.75 MiB
+-- of a 16.90 MiB file (the recipe is in `docs/maintenance/measurements.md` §2).
+-- Re-adding it means writing the query that reads it.
 -- No index on `session_id`, here or on `tool_calls`: no query in this repository
 -- filters by it (the only joins on a session key go through `sessions`), so the
 -- index was maintenance on every insert for a lookup nobody performs.
