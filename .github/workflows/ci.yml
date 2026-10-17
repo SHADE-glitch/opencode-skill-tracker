@@ -25,4 +25,9 @@ jobs:
       - name: Install dependencies
         run: python3 -m pip install -r requirements.txt -r requirements-dev.txt
       - name: Run tests
-        run: python3 -m pytest scripts/tests -q
+        # `-n auto` is passed here rather than put in an `addopts`: it moves the
+        # progress rendering to percentages and leaves the summary line where the
+        # gate reads it (MAINTENANCE.md §11), so the log a red run produces is the
+        # same shape as the serial one. The serial commands in MAINTENANCE.md §4
+        # stay the record; this is the same suite, spread over the runner's cores.
+        run: python3 -m pytest scripts/tests -q -n auto
