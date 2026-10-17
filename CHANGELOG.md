@@ -1495,3 +1495,49 @@ Cost     `KNOWN_UNCLAIMED_REASONS` is a hand-kept list, and it is the only thing
          routine; that is why the unit case asserts the whole loss vocabulary is outside it rather
          than only that the expected one is inside.
 Commit   5b931a0
+
+### D-076 · 2026-10-17 · perf
+Symptom  `TABLES_SQL` declared `idx_model_call_model` on `model_calls(model)`, whose one
+         column is the leading column of `idx_model_call_model_ts` — an index written on every
+         insert for a lookup the wider one already answers. The cut could not be justified the
+         way the two earlier cuts were ("no plan names it"): **three plans do name it**, so the
+         reachability rule that was about to be shipped as a guard would have passed this index
+         and kept passing it. The claim written into `ocut_db.py` at the same time — "both
+         shapes plan against `idx_model_call_model_ts`" — was false for exactly that reason.
+Change   Drop the declaration (the retire-on-open sweep in `ensure_schema` removes it from an
+         existing file, so no `SCHEMA_VERSION` bump is needed) and add
+         `scripts/tests/test_ocut_indexes.py`: it *runs* the writer against a fixture host, every
+         report command and every public `q_*` through its own signature, records the statements
+         with `set_trace_callback`, plans each with `EXPLAIN QUERY PLAN`, and fails on a declared
+         index no plan names. Then add the second rule, because the first one is not enough: an
+         index whose key is a **strict prefix** of another declared index's key on the same table
+         can never win a plan, and `PRAGMA index_info` answers that from the schema
+         `ensure_schema` builds — no rows, no DDL parsing. The comment in `ocut_db.py` and
+         `docs/maintenance/measurements.md` §2 now say what was measured instead of what was
+         assumed, and the AGENTS/MAINTENANCE invariant rows carry both rules.
+Evidence L0 2026-10-17: `python3 -m pytest scripts/tests -q` 334 passed (332 cases before the two
+         prefix cases). Read side measured on copies of the live file — all **118** statements
+         the guard collects, planned in a fresh connection on each side: **3 plans differ**, all
+         three swapping `idx_model_call_model` for `idx_model_call_model_ts`. The single-model
+         summary keeps its `SEARCH ... (model=?)` (the wider key leads with the same column, so
+         it is the same lookup); the two per-model roll-ups keep their `SCAN model_calls USING
+         INDEX` plus a temp B-tree for the `GROUP BY`, one covering key for another. 300 timed
+         runs of each roll-up read **27.8 against 28.1 ms** (requests) and **28.4 against 28.0
+         ms** (responses), the sign flipping between them, so the cost is the scan and not which
+         covering key it walks (timed with a real `ts` bound: the corpus's `ts < NULL` is a
+         fixture artifact the wider key answers from the index alone). The guard's own
+         provocation: `CREATE INDEX idx_model_call_model ON
+         model_calls(model)` added to a fresh schema makes `_prefix_duplicates` return exactly
+         `['idx_model_call_model']`, and the synthetic case in the suite pins that a wider key, the
+         same key on another table and a different column order are **not** reported. Write side
+         and file size, from `measurements.md` §2: one full insert pass over the real 25,340 rows
+         177.7 ms with the index against 143.0 ms without, 6.73 against 6.28 MiB on the built
+         schema and 16.90 against 16.15 MiB on a copy of the live one.
+Cost     Reachability still does not see a prefix duplicate, and the prefix rule only sees key
+         *shape*: an index that is not a prefix but is nonetheless redundant because no query
+         filters on its columns is caught by neither, only by the reachability rule — which is why
+         both exist. The corpus is statements that pass through `db.open_db`; a SQL string
+         executed on a connection built inside a helper would be invisible to it, and the
+         direction of that gap is the safe one only while every reader keeps using the one door.
+         Re-adding the index means writing the query the wider key cannot serve.
+Commit   485cb53
