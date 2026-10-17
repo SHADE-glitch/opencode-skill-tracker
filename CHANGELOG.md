@@ -1540,4 +1540,4 @@ Cost     Reachability still does not see a prefix duplicate, and the prefix rule
          executed on a connection built inside a helper would be invisible to it, and the
          direction of that gap is the safe one only while every reader keeps using the one door.
          Re-adding the index means writing the query the wider key cannot serve.
-Commit   485cb53
+Commit   485cb53 4215499
