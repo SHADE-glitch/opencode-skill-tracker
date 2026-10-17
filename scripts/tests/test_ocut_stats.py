@@ -70,6 +70,75 @@ def test_health_splits_the_unparsed_tally_into_known_and_new(tmp_path):
     assert "the format moving" in text
 
 
+def vacuum(db_path) -> tuple[int, str]:
+    """`ocut vacuum` against one database: its exit code and its stdout."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = stats.main(["--db", str(db_path), "vacuum"])
+    return rc, out.getvalue()
+
+
+def test_vacuum_compacts_the_file_after_snapshotting_it(tmp_path):
+    """The one command that rewrites the whole file, checked against its own before.
+
+    A dropped index parks its pages on the freelist instead of releasing them, so
+    compaction is the only thing that actually gives the space back — and the reading
+    that needed it was taken by hand and written down as "`ocut` has no such
+    subcommand". What a reader cannot check for themselves is whether the rewrite kept
+    the rows, so the command asserts it in its own output and so does this case.
+    """
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    # Rows and then no rows: the deletion is what leaves pages on the freelist for a
+    # compaction to reclaim, which is the state a schema change also leaves behind.
+    conn.executemany(
+        "INSERT INTO tool_calls(call_id, session_id, project, tool_name, category,"
+        " status, ts, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
+        [(f"prt_{i}", "ses_a", "proj", "bash", "builtin", "completed", i, 5)
+         for i in range(4000)])
+    conn.execute("DELETE FROM tool_calls")
+    conn.execute("INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+                 " category, status, ts, duration_ms)"
+                 " VALUES('prt_keep','ses_a','proj','bash','builtin','completed',1,5)")
+    conn.commit()
+    # The deleted pages are in `-wal` until something folds them back, and the main
+    # file is what both this case and the command compare — the command checkpoints
+    # for the same reason.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    before = path.stat().st_size
+    assert before > 0
+    conn.close()
+
+    rc, text = vacuum(path)
+    assert rc == 0, text
+    assert "reclaimed  " in text, text
+    assert "quick_check ok" in text and "every row count is what it was" in text, text
+    assert path.stat().st_size < before, (before, path.stat().st_size)
+    snapshots = sorted(db.backup_dir(path).glob("*pre-vacuum*.db"))
+    assert len(snapshots) == 1, [p.name for p in snapshots]
+    assert str(snapshots[0]) in text, text
+
+    # The row that survived is still there, with the number the command promised.
+    conn = db.open_db(path, readonly=True)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM tool_calls").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+    rc, text = vacuum(path)
+    assert rc == 0, text
+    assert "nothing — the file was already compact" in text, text
+
+
+def test_vacuum_refuses_a_database_that_is_not_there(tmp_path, capsys):
+    """The same refusal `ocut backup` gives, for the same reason: nothing to compact."""
+    rc, _ = vacuum(tmp_path / "no-such.db")
+    assert rc == 1
+    assert "run: ocut sync" in capsys.readouterr().err
+
+
 def test_health_still_says_zero_and_why_when_nothing_is_unparsed(tmp_path):
     """The empty case is printed too, so the line proves the check ran.
 

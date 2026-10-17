@@ -115,11 +115,17 @@ ocut format               # OpenCode 格式面，从解析器注册表读出
 
 ```bash
 sqlite3 -readonly ~/.local/share/opencode-usage-tracker/usage.db "PRAGMA integrity_check;"
+ocut vacuum                                            # 先关掉 TUI
 python3 -m pytest scripts/tests -q                     # 不需要 venv
 .venv/bin/python -m pytest scripts/tests -q            # 完整套件，含 TUI
 .venv/bin/python -m pytest scripts/tests -q -n auto    # 同一套件并行跑
 bash -n bin/ocut                                       # 分发器仍能解析
 ```
+
+第一条针对文件本身。`ocut vacuum` 先做快照，重写文件，并打印前后两侧的页数与 freelist——它是唯一能
+把「被切掉的索引」停在 freelist 上的空间拿回来的东西，也是这里唯一会重写整个文件的步骤，所以它是一
+个刻意的动作，而不是排班。它还会把 `quick_check` 和它刚才打印的每一个行数重新读一遍，所以真丢了
+一行会当场失败，而不是过些天被某个面板发现。文件大小和行数还对得上时，就别跑它。
 
 第二、三条是同一套件在两个解释器上跑；没装 textual 时 TUI 文件会被跳过，所以两条都要跑。
 
@@ -236,6 +242,9 @@ git revert <sha>          # 优先 revert 而不是 reset；套件必须保持�
   取状态时不要接管道。
 - **`tail` 不是结论。** 本仓库没有会改变输出的 pytest 配置——没有 `addopts`，没有第二个 `-q` 能压掉的摘要行
   （`scripts/tests/conftest.py` 只放 fixture）——所以计数总是在：读日志文件的最后一行，而不是屏幕的片段。
+  `-n auto`（§4，以及 CI 传的那个）是一个**开关**，不是配置：它把进度渲染换成百分比，而汇总行
+  原地不动，所以这条规则不受它影响。真会破坏这条规则的是一行 `addopts`——这也是为什么并行跑必须
+  由想跑的人亲手敲，也是为什么 CI 显式传它，而不把它放进 `pyproject.toml`。
 - **一次 red-check 会留下金丝雀。** 证明一个守卫能失败，意味着要临时改实现或 fixture 一下，而这一下
   如果活过了编辑，就是一个假绿。被跟踪源码里的 `TEMP-` 标记会被
   `test_no_canary_or_scratch_marker_survives_in_tracked_source` 拒绝。恢复靠重读文件，而不是相信最后

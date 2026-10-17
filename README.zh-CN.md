@@ -209,6 +209,7 @@ ocut export
 ocut health
 ocut backup
 ocut restore [NAME]
+ocut vacuum
 ocut format  [--write]
 ```
 
@@ -292,7 +293,7 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
         │  读取
         ├── ocut                 → scripts/ocut-tui.py    （Textual TUI，八个 tab，需要 venv）
         ├── ocut stats|tools|…   → scripts/ocut-stats.py  （无头报表，仅标准库）
-        └── ocut backup|restore|format
+        └── ocut backup|restore|vacuum|format
 
   ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
         ▲  只由 plugin/ocut-hook.js 写入，由 ocut sync 摄取
@@ -350,6 +351,7 @@ sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
 ocut backup            # 现在做一份快照
 ocut restore           # 列出可用快照
 ocut restore NAME      # 恢复其中一份（先关掉 TUI）
+ocut vacuum            # 压缩文件，并报告回收回来多少
 ```
 
 - 快照写到 `~/.local/share/opencode-usage-tracker/backups/`，命名
@@ -363,6 +365,13 @@ ocut restore NAME      # 恢复其中一份（先关掉 TUI）
   也就无权删除。
 
 **没有 systemd timer**：备份是手动的、只在破坏性操作之前。`ocut backup` 是一个刻意的动作。
+
+`ocut vacuum` 是另一个刻意的动作。它先做快照（reason 是 `pre-vacuum`），跑 SQLite 的 `VACUUM`，
+打印文件的前后大小以及两侧的页数与 freelist，然后**重新**读一遍 `quick_check` 和它刚才打印的
+每一个行数——因为重写是这里唯一可能弄丢一行的步骤。它也是唯一能把「被切掉的索引」留下的空间
+拿回来的东西：切索引只是把页**停在** freelist 上而不还给系统，所以文件会一直保持原来的大小，
+直到有东西重写它。什么时候跑：在一次删掉某些东西的结构变更之后，或者文件大小与行数对不上的时
+候——**不要**按排班跑，因为它会重写整个文件，并且需要再放下一份副本的空间。**先关掉 TUI。**
 
 ---
 

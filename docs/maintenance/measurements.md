@@ -106,9 +106,12 @@ them), and the rest was slack inside the pages. Rows came through untouched: 31,
 25,340 `model_calls`, 368 `sessions`, 327 `plugin_usage`, ≈ 58k in all. Every table and every view
 hashed identical to the pre-`VACUUM` snapshot, `quick_check` / `integrity_check` are `ok` with no
 foreign-key violation, and `ocut health` printed the same bytes before and after. Read it as a
-maintenance action and not as something the tool does: `ocut` has no such subcommand, and the file
-returns to this size only as the hook writes again — the freelist is what keeps it from growing past
-its high-water mark between compactions.
+maintenance action and not as something the tool does on its own: since 2026-10-17 it *is* a
+subcommand — `ocut vacuum` snapshots the file first, runs this `VACUUM`, and prints the same two
+sizes plus the pages and freelist on each side, checking `quick_check` and every row count against
+its own "before" — but it still only runs when somebody asks, and the file returns to this size
+between compactions only as the hook writes again, since the freelist is what keeps it from growing
+past its high-water mark.
 
 2026-10-17: **what one index costs, and the reading that cut it.** `TABLES_SQL` declared
 `idx_model_call_model` on `model_calls(model)` — a single column that `idx_model_call_model_ts`

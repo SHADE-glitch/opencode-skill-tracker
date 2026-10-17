@@ -225,6 +225,7 @@ ocut export
 ocut health
 ocut backup
 ocut restore [NAME]
+ocut vacuum
 ocut format  [--write]
 ```
 
@@ -319,7 +320,7 @@ OpenCode's own state (read-only — never opened for writing)
         │  reads
         ├── ocut                 → scripts/ocut-tui.py    (Textual TUI, eight tabs, needs venv)
         ├── ocut stats|tools|…   → scripts/ocut-stats.py  (headless reports, stdlib only)
-        └── ocut backup|restore|format
+        └── ocut backup|restore|vacuum|format
 
   ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
         ▲  written only by plugin/ocut-hook.js, ingested by ocut sync
@@ -386,6 +387,7 @@ sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
 ocut backup            # snapshot the database now
 ocut restore           # list available snapshots
 ocut restore NAME      # restore one (close the TUI first)
+ocut vacuum            # compact the file, reporting what came back
 ```
 
 - Snapshots are written to `~/.local/share/opencode-usage-tracker/backups/` as
@@ -403,6 +405,16 @@ ocut restore NAME      # restore one (close the TUI first)
 
 There is **no systemd timer**: backups are manual and pre-destructive only. `ocut backup`
 is the deliberate act.
+
+`ocut vacuum` is the other deliberate one. It snapshots first (reason `pre-vacuum`), runs
+SQLite's `VACUUM`, and prints the file before and after with the pages and freelist on each
+side — then re-reads `quick_check` and every row count it printed before, because a rewrite
+is the one step here that could lose a row. It is the only thing that returns the space a
+dropped index leaves behind: dropping one *parks* its pages on the freelist instead of
+releasing them, so the file stays the size it was until something rewrites it. Run it after
+a schema change that drops something, or when the size stops matching the row count — never
+on a schedule, since it rewrites the whole file and needs room for a second copy. **Close
+the TUI first.**
 
 ---
 

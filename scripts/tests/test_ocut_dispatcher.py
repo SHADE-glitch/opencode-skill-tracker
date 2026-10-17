@@ -24,7 +24,7 @@ DISPATCHER = REPO / "bin" / "ocut"
 # case list without landing here is a route no test has ever walked.
 ROUTES = ("tui", "sync", "stats", "tools", "skills", "agents", "plugins", "mcp",
           "models", "show", "recent", "inventory", "export", "health", "format",
-          "backup", "restore")
+          "backup", "restore", "vacuum")
 
 VALUE_FLAGS = ("--db", "--kind", "--limit", "--host-db", "--host-config",
                "--host-home", "--plugin-events")

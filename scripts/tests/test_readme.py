@@ -172,7 +172,7 @@ def test_maintenance_checklists_exist_and_cover_the_same_ground():
     # The commands a reader runs when they suspect capture has decayed.
     for needle in (
         "ocut health", "ocut sync", "ocut sync --full", "ocut backup", "ocut restore",
-        "ocut plugins", "ocut format",
+        "ocut plugins", "ocut format", "ocut vacuum",
     ):
         assert needle in en, f"MAINTENANCE.md missing: {needle}"
         assert needle in zh, f"MAINTENANCE.zh-CN.md missing: {needle}"

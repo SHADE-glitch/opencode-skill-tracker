@@ -476,6 +476,91 @@ def cmd_restore(args) -> int:
     return 0
 
 
+def _file_state(conn, path) -> dict:
+    """What the file looked like, for comparing one rewrite against another."""
+    return {
+        "bytes": path.stat().st_size,
+        "pages": conn.execute("PRAGMA page_count").fetchone()[0],
+        "page_size": conn.execute("PRAGMA page_size").fetchone()[0],
+        "free": conn.execute("PRAGMA freelist_count").fetchone()[0],
+        "check": conn.execute("PRAGMA quick_check").fetchone()[0],
+        # Every aggregate `ocut health` prints, so a rewrite that lost a row says so
+        # here instead of being discovered on the next report.
+        "totals": db.overview(conn),
+    }
+
+
+def cmd_vacuum(args) -> int:
+    """Compact the database file, taking a snapshot first.
+
+    `VACUUM` is the one maintenance action here that rewrites the whole file, so it
+    needs room for a second copy — and it is the only way to actually get back the
+    space a dropped index leaves behind: dropping one *parks* its pages on the
+    freelist, it does not release them. It shipped as a command rather than staying a
+    recipe in the measurements document because the recipe's easiest step to forget is
+    the snapshot in front of it, and the one reading that needed this was taken by hand
+    and then written down as "`ocut` has no such subcommand".
+
+    Measured on the real file, 2026-10-17: 20,824,064 B -> 17,735,680 B, 5,084 pages
+    to 4,330 of 4 KiB, with 592 of the freed pages left by a dropped index and the rest
+    slack inside the pages. Nothing is rebuilt and nothing is re-read by this: the rows
+    come out as they went in, which is what the row counts and `quick_check` below are
+    for.
+    """
+    path = Path(args.db)
+    if not path.exists():
+        print(f"no database at {path} — run: ocut sync", file=sys.stderr)
+        return 1
+    conn = db.open_db(path)
+    try:
+        # Fold the WAL back into the main file *before* anything is measured. Without
+        # this the "before" is the file size of a database whose newest pages are still
+        # in `-wal`, which is how a compaction can look like it grew the file.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = _file_state(conn, path)
+        snapshot = db.snapshot(conn, reason="pre-vacuum")
+        conn.commit()          # VACUUM cannot run inside a transaction
+        conn.execute("VACUUM")
+        after = _file_state(conn, path)
+    except sqlite3.Error as exc:
+        print(f"could not compact {path}: {exc}", file=sys.stderr)
+        if "lock" in str(exc).lower() or "busy" in str(exc).lower():
+            print("  close the TUI (and stop ocut-sync.timer) and retry",
+                  file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    # The file is only truncated to its new page count when the last connection lets go
+    # of it, so the final size is read *after* the close. Reading it before is how the
+    # first version of this command reported a compaction that reclaimed nothing while
+    # dropping 114 of 155 pages.
+    after["bytes"] = path.stat().st_size
+
+    freed = before["bytes"] - after["bytes"]
+    print(f"compacted  {path}")
+    print(f"  before     {before['bytes']:,} B ({before['pages']:,} pages of "
+          f"{before['page_size']:,} B, {before['free']:,} on the freelist)")
+    print(f"  after      {after['bytes']:,} B ({after['pages']:,} pages, "
+          f"{after['free']:,} free)")
+    if freed:
+        print(f"  reclaimed  {freed:,} B ({freed / before['bytes']:.1%} of the file)")
+    else:
+        print("  reclaimed  nothing — the file was already compact")
+    print(f"  snapshot   {snapshot}")
+    if after["check"] != "ok" or after["totals"] != before["totals"]:
+        # The rewrite is the one step in this tool that could lose a row, so it is
+        # checked against its own "before" rather than trusted: a silent difference
+        # here would be found by a panel showing a number that moved for no reason.
+        print(f"  WARNING    the file changed shape — quick_check reads "
+              f"{after['check']!r} and the row totals "
+              f"{'differ' if after['totals'] != before['totals'] else 'match'}\n"
+              f"             restore it:  ocut restore {snapshot.name}",
+              file=sys.stderr)
+        return 1
+    print("  verified   quick_check ok, and every row count is what it was")
+    return 0
+
+
 FORMAT_BEGIN = "<!-- BEGIN generated: ocut format -->"
 FORMAT_END = "<!-- END generated -->"
 
@@ -558,6 +643,7 @@ def main(argv=None) -> int:
     sp.add_argument("name")
     sp.add_argument("--limit", type=int, default=50)
     sub_with_db("backup", help="snapshot the database before a risky step")
+    sub_with_db("vacuum", help="compact the database file (snapshots first)")
     rp = sub_with_db("restore", help="restore a snapshot (omit NAME to list)")
     rp.add_argument("name", nargs="?", default=None)
     fp = sub_with_db("format",
@@ -573,6 +659,8 @@ def main(argv=None) -> int:
     # is missing or corrupt, which is when opening it read-only would fail.
     if args.cmd == "backup":
         return cmd_backup(args)
+    if args.cmd == "vacuum":
+        return cmd_vacuum(args)
     if args.cmd == "restore":
         return cmd_restore(args)
     if args.cmd == "format":

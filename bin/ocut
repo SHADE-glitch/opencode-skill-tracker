@@ -6,8 +6,8 @@
 #   ocut sync --full     rebuild the tracker database from scratch
 #   ocut stats|tools|skills|agents|plugins|mcp|models|show|recent|inventory|export|health
 #                        headless reports (no TUI, standard library only)
-#   ocut backup          snapshot the database before a risky step
-#   ocut restore         list snapshots, or restore one: ocut restore NAME
+#   ocut backup          snapshot the database before a risky step#   ocut restore       list snapshots, or restore one: ocut restore NAME
+#   ocut vacuum         compact the database file (snapshots first)
 #   ocut format          print the format registry; --write regenerates its document
 #
 # Written in bash on purpose: it must still run and print a useful error when the
@@ -107,7 +107,7 @@ case "$cmd" in
     exec "$PY" "$SCRIPTS/ocut-tui.py" "${rest[@]}" ;;
   sync)
     exec "$PY" "$SCRIPTS/ocut-sync.py" "${rest[@]}" ;;
-  backup|restore|stats|tools|skills|agents|plugins|mcp|models|show|recent|inventory|export|health|format)
+  backup|restore|vacuum|stats|tools|skills|agents|plugins|mcp|models|show|recent|inventory|export|health|format)
     exec "$PY" "$SCRIPTS/ocut-stats.py" "$cmd" "${rest[@]}" ;;
   *)
     echo "ocut: unknown command '$cmd'" >&2

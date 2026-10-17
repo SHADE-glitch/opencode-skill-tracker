@@ -127,11 +127,19 @@ ocut format               # the OpenCode format surface, read out of the parser'
 
 ```bash
 sqlite3 -readonly ~/.local/share/opencode-usage-tracker/usage.db "PRAGMA integrity_check;"
+ocut vacuum                                            # close the TUI first
 python3 -m pytest scripts/tests -q                     # no venv needed
 .venv/bin/python -m pytest scripts/tests -q            # full suite incl. TUI
 .venv/bin/python -m pytest scripts/tests -q -n auto    # the same suite in parallel
 bash -n bin/ocut                                       # dispatcher still parses
 ```
+
+The first command is the file itself. `ocut vacuum` snapshots first, rewrites the file and
+prints the pages and freelist on both sides — it is the only thing that returns the space a
+dropped index leaves parked on the freelist, and the only step here that rewrites everything,
+so it is a deliberate act rather than a schedule. It also re-reads `quick_check` and every row
+count it printed before, so a compaction that lost a row fails loudly instead of being found
+by a panel later. Skip it when the file size still matches the row count.
 
 The second and third commands are the same suite on two interpreters; the TUI files skip
 where textual is not installed, which is why both are run.
@@ -280,7 +288,11 @@ traps, all of them paid for on this machine:
 - **A tail is not a conclusion.** There is no output-changing pytest config in this repo — no
   `addopts`, no summary line a second `-q` could suppress (`scripts/tests/conftest.py` holds
   fixtures only) — so the count is always there: read the last line of the log file, not a
-  fragment of a screen.
+  fragment of a screen. `-n auto` (§4, and what CI passes) is a *flag*, not config: it moves
+  the progress rendering to percentages and leaves the summary line exactly where it was, so
+  the rule is unchanged by it. What would break this rule is an `addopts` — which is why the
+  parallel run is typed by the person asking for it, and why CI passes it explicitly instead
+  of putting it in `pyproject.toml`.
 - **A red-check leaves a canary behind.** Proving a guard can fail means editing the
   implementation or the fixture for a moment, and a moment that survives the edit is a
   fake green. `TEMP-` markers in tracked source are refused by
