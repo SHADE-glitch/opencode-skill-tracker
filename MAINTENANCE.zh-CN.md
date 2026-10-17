@@ -185,7 +185,8 @@ bash -n bin/ocut                                       # 分发器仍能解析
 - **schema 只有一份，在 `ocut_db.py` 里。** `TABLES_SQL` 建表、`VIEWS_SQL` 建视图；
   视图一改就升 `SCHEMA_VERSION`，而升级会清空 `sync_state`，让游标被重读而不是被信任。
   `plugin_surface`（hook 上报的工具/命令 id）在每次文件系统重写之后被折回 `inventory`，
-  所以那些面能存活下来。**索引只在这里声明**：`CREATE INDEX IF NOT EXISTS` 只能加、
+  所以那些面能存活下来；不在 inventory 里的插件，其行会在这里被丢掉——hook 只在该插件加载时
+  重写它的面，否则被卸载的插件会永远重新宣称自己的工具。**索引只在这里声明**：`CREATE INDEX IF NOT EXISTS` 只能加、
   永远收不回来，所以 `ensure_schema` 会把当前 `TABLES_SQL` 没点名的 `idx_*` 全部退掉——
   这是重读唯一补不回来的那项 DDL 改动，而在比本版本更新的库上它和别的写入一样被跳过。
 

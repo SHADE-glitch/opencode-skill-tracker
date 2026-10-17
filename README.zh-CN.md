@@ -327,7 +327,7 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
   provider，以及每个插件注册的工具 id。
 - `plugin_usage`：hook 看到的每次插件工具/命令调用一行。这是唯一一张数据来自宿主库之外的表。
 - `plugin_surface`：每个插件加载时注册的工具与命令 id，由 hook 上报；`ocut sync` 在文件系统重写
-  之后把它折回 `inventory`。
+  之后把它折回 `inventory`，并丢掉已不再安装的插件留下的行。
 - `sync_state`：读取器跟踪的每张宿主表一行：rowid 游标，加上宿主自己的 `count(*)`/`max(rowid)`，
   以及一个 `note`——被裁剪或重新编号的表在这里说话。游标会在批次里第一条非终态的 `running`
   tool part 处**回退**，好让在行插入之后才结束的调用被重读；回退有上限，所以一个被中断的会话不会

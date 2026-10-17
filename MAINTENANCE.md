@@ -219,7 +219,10 @@ Recorded so the next reader does not "helpfully" fix them back into a broken sta
   `VIEWS_SQL` the views; `SCHEMA_VERSION` is bumped whenever a view changes, and the
   bump clears `sync_state` so the cursors are re-read rather than trusted.
   `plugin_surface` (the hook's tool/command ids) is folded back into `inventory` after
-  each filesystem rewrite, so the surfaces survive it. **Indexes are declared only
+  each filesystem rewrite, so the surfaces survive it; the rows of a plugin no longer in
+  the inventory are dropped there, because the hook only rewrites a surface when that
+  plugin loads and would otherwise re-advertise a removed plugin's tools forever.
+  **Indexes are declared only
   there**: `CREATE INDEX IF NOT EXISTS` can add one and can never take one back, so
   `ensure_schema` retires every `idx_*` the current `TABLES_SQL` does not name — that
   is the one DDL change a re-read cannot undo, and it is skipped on a database from a

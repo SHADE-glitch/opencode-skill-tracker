@@ -1029,7 +1029,18 @@ def _rebuild_plugin_inventory(conn) -> None:
     Must run AFTER ``scan_inventory``, which DELETEs and rewrites ``inventory`` from
     the filesystem: the surfaces the hook reported have to be re-applied on every
     run, or the first sync's tool rows would be deleted by the next one.
+
+    A plugin that is no longer installed must not keep advertising its tools. The
+    hook only replaces a surface when that plugin loads, so without this sweep a
+    plugin removed while OpenCode was closed would have its rows re-inserted here
+    on every sync and read as installed. The prune is safe to lose — the hook
+    re-emits a surface on the next load — so a config read that temporarily sees
+    nothing costs one sync, not the record. Usage history is untouched: the
+    plugin still lists as ``removed`` with its counts.
     """
+    conn.execute(
+        "DELETE FROM plugin_surface WHERE plugin NOT IN"
+        " (SELECT name FROM inventory WHERE kind='plugin')")
     conn.execute(
         "INSERT OR REPLACE INTO inventory(kind, name, owner_plugin, version,"
         " path, source) SELECT kind, name, plugin, NULL, NULL, 'hook'"

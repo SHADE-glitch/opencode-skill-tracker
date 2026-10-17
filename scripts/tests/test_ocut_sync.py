@@ -1071,6 +1071,45 @@ def test_a_surface_survives_the_next_syncs_inventory_rewrite(tmp_path, tracker):
         == ["compress"]
 
 
+def test_an_uninstalled_plugins_surface_does_not_come_back(tmp_path, tracker):
+    """A removed plugin must stop advertising its tools; its history stays.
+
+    The hook only rewrites a surface when that plugin loads, so a plugin removed
+    from the config while OpenCode was closed kept its rows in ``plugin_surface``
+    — and every sync re-inserted them into ``inventory`` as ``source='hook'``, so
+    its tools read as installed forever while the Plugins tab, which looks at the
+    config, called the plugin removed. The sweep runs before that insert; the
+    usage rows are deliberately left alone, so the tab still shows the plugin
+    with its counts and a `removed` state.
+    """
+    host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])
+    events = sidecar(tmp_path,
+                     {"t": "surface", "plugin": "@acme/demo-plugin@1.2.3",
+                      "tools": ["compress"], "commands": ["dcp-compress"]},
+                     {"t": "call", "ts": 1_700_000_300_000, "sid": "ses_parent",
+                      "cid": "c1", "plugin": "@acme/demo-plugin@1.2.3",
+                      "kind": "tool", "item": "compress", "status": None, "ms": 1})
+    sync.run(db_path=tracker, host_db=host, host_config=cfg,
+             plugin_events=events, quiet=True)
+    assert {r["name"] for r in rows(tracker, "inventory", "source='hook'")} == {
+        "compress", "dcp-compress"}
+
+    # Uninstalled: the same sidecar (the hook cannot report a removal), no entry
+    # in the config.
+    make_config(cfg, plugins=[])
+    sync.run(db_path=tracker, host_db=host, host_config=cfg,
+             plugin_events=events, quiet=True)
+
+    assert rows(tracker, "inventory", "source='hook'") == []
+    conn = db.open_db(tracker)
+    try:
+        plug = next(r for r in db.q_plugins(conn) if r["plugin"] == "demo-plugin")
+    finally:
+        conn.close()
+    assert plug["uses"] == 1, dict(plug)      # history survives the sweep
+    assert plug["tools"] == 0 and plug["commands"] == 0, dict(plug)
+
+
 def test_a_missing_sidecar_is_not_an_error(tmp_path, tracker):
     """The hook may never have run; that is an empty plugin list, not a failure."""
     host, cfg = plugin_host(tmp_path, ["@acme/demo-plugin@1.2.3"])

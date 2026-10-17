@@ -361,7 +361,8 @@ Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
 - `plugin_usage` — one row per plugin tool/command call the hook saw. This is the one
   table fed from outside the host database.
 - `plugin_surface` — the tool and command ids each plugin registers, as reported by the
-  hook at load; `ocut sync` folds it back into `inventory` after the filesystem rewrite.
+  hook at load; `ocut sync` folds it back into `inventory` after the filesystem rewrite,
+  and drops the rows of a plugin that is no longer installed.
 - `sync_state` — one row per host table the reader tracks: the rowid cursor plus the
   host's own `count(*)`/`max(rowid)` and a `note` where a pruned or renumbered table says
   so. The cursor is held back at the first non-final `running` tool part so a call that
