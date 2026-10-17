@@ -1576,3 +1576,37 @@ Cost     The Plugins counts no longer agree with the Dashboard's all-time `Plugi
          not a regression. The window is applied to `u.ts`, the hook's clock, so a call
          recorded with a skewed clock lands in the window its own clock claims.
 Commit   4cdbd77
+
+### D-078 · 2026-10-17 · fix
+Symptom  A plugin removed from the config kept advertising its tools. `plugin_surface` was
+         only ever replaced when that plugin loaded again, so its rows survived an uninstall;
+         `_rebuild_plugin_inventory` then re-inserted them into `inventory` as
+         `source='hook'` on every sync. The Tools tab read those tools as **installed**
+         forever, while the Plugins tab — which reads the config — called the plugin
+         `removed`, and the plugin's `tools`/`commands` columns kept their counts.
+Change   `_rebuild_plugin_inventory` prunes `plugin_surface` to the plugin set
+         `scan_inventory` just wrote, before the fold-back insert. That is the only place
+         that knows both halves, and it already runs after the inventory rewrite. Usage is
+         deliberately not touched: `plugin_usage` still lists the plugin as removed with its
+         history, which is what the state column is for. The prune is safe to lose — the
+         hook re-emits a surface on every load — so a config read that briefly sees no
+         plugins costs one sync, not the record. Both READMEs and both MAINTENANCE files
+         now say the fold-back also drops rows.
+Evidence L0 2026-10-17: `.venv/bin/python -m pytest scripts/tests -q` **336 passed**, 3
+         subtests (335 before the new case). The new case builds a surface and a call for
+         one plugin, syncs, removes the plugin from the config, syncs again, and asserts
+         the tool and command rows are gone while `uses` is still 1 and the plugin still
+         lists. Real data, on copies: a copy of the live database synced against a copy of
+         the real config with `@tarquinen/opencode-dcp@3.2.0` removed — the run applied five
+         new sidecar surface records (DCP's among them) and still ended with
+         `plugin_surface` at 0 rows for DCP, 0 `inventory` rows owned by it, the other
+         three plugins' 10 rows untouched, and all **469** of its `plugin_usage` rows
+         intact.
+Cost     The prune trusts `scan_inventory`'s plugin set, so the inventory name and the
+         hook's name have to keep agreeing (both go through `_plugin_name_version`). If they
+         ever diverge, a live plugin's surface is dropped and its tool counts read 0 until
+         the next OpenCode load re-emits the surface; the record heals itself, but the
+         counts are wrong in between. A plugin whose surface the scan cannot parse still
+         records nothing, which is unchanged — and still indistinguishable from a plugin
+         that registers no tools at all, the notifier case.
+Commit   f7a50ba
